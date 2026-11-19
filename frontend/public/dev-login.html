@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>dev login</title></head>
+<body>
+<script>
+// 开发辅助：/?username=zhouqi&hotel_id=1 → 走真实登录接口 → 写入 localStorage → 跳转目标页
+const q = new URLSearchParams(location.search)
+const username = q.get('username') || 'zhouqi'
+const hotelId = q.get('hotel_id') ? Number(q.get('hotel_id')) : null
+const target = q.get('to') || '/'
+fetch('/api/auth/login', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ username, password: q.get('pw') || '123456', ...(hotelId ? { hotel_id: hotelId } : {}) }),
+})
+  .then(r => r.json())
+  .then(d => {
+    localStorage.setItem('pms_token', d.token)
+    localStorage.setItem('pms_user', JSON.stringify(d.user))
+    localStorage.setItem('pms_active_hotel', JSON.stringify({ id: d.user.hotel_id, name: d.user.hotel_name }))
+    setTimeout(() => { location.href = target }, 300)
+  })
+  .catch(() => { document.body.textContent = '登录失败：请确认后端已启动 (127.0.0.1:8000)' })
+</script>
+</body>
+</html>
