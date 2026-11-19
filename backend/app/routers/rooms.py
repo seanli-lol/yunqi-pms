@@ -19,8 +19,8 @@ def list_room_types(hotel_id: int | None = None, user: User = Depends(get_curren
     hid = resolve_hotel_id(user, hotel_id)
     types = db.query(RoomType).filter(RoomType.hotel_id == hid).order_by(RoomType.id).all()
     return [RoomTypeOut(
-        id=t.id, name=t.name, base_price=t.base_price, capacity=t.capacity,
-        description=t.description,
+        id=t.id, name=t.name, base_price=t.base_price, hourly_price=t.hourly_price,
+        capacity=t.capacity, description=t.description,
         room_count=db.query(Room).filter(Room.room_type_id == t.id).count(),
     ) for t in types]
 
@@ -30,12 +30,15 @@ def create_room_type(body: RoomTypeBody, hotel_id: int | None = None,
                      user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     hid = resolve_hotel_id(user, hotel_id)
     t = RoomType(hotel_id=hid, name=body.name.strip(), base_price=body.base_price,
-                 capacity=body.capacity, description=body.description)
+                 hourly_price=body.hourly_price, capacity=body.capacity, description=body.description)
     db.add(t)
     db.flush()
-    log_op(db, hid, user, "room_type_create", "room_type", t.id, f"新增房型「{t.name}」¥{t.base_price}/晚")
+    price_tag = f" · 钟点 ¥{t.hourly_price}/小时" if t.hourly_price else ""
+    log_op(db, hid, user, "room_type_create", "room_type", t.id,
+           f"新增房型「{t.name}」¥{t.base_price}/晚{price_tag}")
     db.commit()
-    return RoomTypeOut(id=t.id, name=t.name, base_price=t.base_price, capacity=t.capacity,
+    return RoomTypeOut(id=t.id, name=t.name, base_price=t.base_price,
+                       hourly_price=t.hourly_price, capacity=t.capacity,
                        description=t.description, room_count=0)
 
 
@@ -45,10 +48,12 @@ def patch_room_type(type_id: int, body: RoomTypeBody,
     t = db.get(RoomType, type_id)
     if not t or (user.role != "platform_admin" and t.hotel_id != user.hotel_id):
         raise HTTPException(404, "房型不存在")
-    t.name, t.base_price, t.capacity, t.description = body.name.strip(), body.base_price, body.capacity, body.description
+    t.name, t.base_price, t.hourly_price, t.capacity, t.description = (
+        body.name.strip(), body.base_price, body.hourly_price, body.capacity, body.description)
     log_op(db, t.hotel_id, user, "room_type_update", "room_type", t.id, f"更新房型「{t.name}」")
     db.commit()
-    return RoomTypeOut(id=t.id, name=t.name, base_price=t.base_price, capacity=t.capacity,
+    return RoomTypeOut(id=t.id, name=t.name, base_price=t.base_price,
+                       hourly_price=t.hourly_price, capacity=t.capacity,
                        description=t.description,
                        room_count=db.query(Room).filter(Room.room_type_id == t.id).count())
 
@@ -104,13 +109,14 @@ def patch_room(room_id: int, body: RoomPatch, user: User = Depends(get_current_u
     if not r or (user.role != "platform_admin" and r.hotel_id != user.hotel_id):
         raise HTTPException(404, "客房不存在")
     changed = []
+    status_labels = {"vacant_clean": "空净", "vacant_dirty": "空脏", "maintenance": "维修"}
     if body.status and body.status != r.status:
         if body.status == "occupied":
             raise HTTPException(400, "不能直接设为在住，请通过办理入住流程")
         if r.status == "occupied":
             raise HTTPException(400, "该房有在住客人，请先办理退房再调整房态")
         r.status = body.status
-        changed.append(f"房态→{body.status}")
+        changed.append(f"房态→{status_labels.get(body.status, body.status)}")
     if body.notes is not None:
         r.notes = body.notes
     log_op(db, r.hotel_id, user, "room_status", "room", r.id,
@@ -137,6 +143,8 @@ def delete_room(room_id: int, user: User = Depends(get_current_user), db: Sessio
 @router.get("/rooms/available")
 def available_rooms(room_type_id: int, check_in: str, check_out: str,
                     exclude_res_id: int | None = None,
+                    include_dirty: int | None = None,
+                    allow_prev_guest: int | None = None,
                     hotel_id: int | None = None,
                     user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     hid = resolve_hotel_id(user, hotel_id)
@@ -144,9 +152,12 @@ def available_rooms(room_type_id: int, check_in: str, check_out: str,
     cout = date.fromisoformat(check_out)
     if cout <= cin:
         raise HTTPException(400, "离店日期必须晚于入住日期")
+    # include_dirty / allow_prev_guest：入住放宽——空脏房、前客未退（在住）也可入选
     # exclude_res_id：办理入住时排除本预订自身，避免预订已锁定的房被自己挡住
     free = free_rooms(db, hid, room_type_id, cin, cout,
-                      exclude_res_id=exclude_res_id, only_clean=True)
+                      exclude_res_id=exclude_res_id,
+                      only_clean=not include_dirty,
+                      include_checked_in=not allow_prev_guest)
     return [{"id": r.id, "room_number": r.room_number, "floor": r.floor,
              "status": r.status} for r in free]
 
@@ -211,6 +222,8 @@ def rooms_board(
             "check_out": co.isoformat(),
             "status": res.status,
             "rate": res.rate,
+            "stay_type": res.stay_type,
+            "hours": res.hours,
             "balance_due": max(0, balance(res.id)),
             "col_start": col_start,
             "nights": span,
@@ -249,6 +262,7 @@ def rooms_board(
                 "notes": r.notes,
                 "room_type_name": t.name,
                 "base_price": t.base_price,
+                "hourly_price": t.hourly_price,
                 "current_guest": current["guest_name"] if current else None,
                 "current_check_out": current["check_out"] if current else None,
                 "current_code": current["code"] if current else None,

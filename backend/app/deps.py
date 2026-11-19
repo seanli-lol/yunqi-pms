@@ -79,12 +79,16 @@ def dates_overlap(a_in: date, a_out: date, b_in: date, b_out: date) -> bool:
 
 
 def blocking_ids(db: Session, hotel_id: int, room_id: int, cin: date, cout: date,
-                 exclude: int | None = None) -> set[int]:
-    """该房在时段内被哪些预订占用（pending/confirmed/checked_in）"""
+                 exclude: int | None = None, include_checked_in: bool = True) -> set[int]:
+    """该房在时段内被哪些预订占用（pending/confirmed，默认含 checked_in）。
+
+    include_checked_in=False：办理入住用——前客未退也允许入住（业务放宽），
+    只按未到店预订计冲突。"""
+    statuses = ["pending", "confirmed"] + (["checked_in"] if include_checked_in else [])
     res = db.query(Reservation).filter(
         Reservation.hotel_id == hotel_id,
         Reservation.room_id == room_id,
-        Reservation.status.in_(["pending", "confirmed", "checked_in"]),
+        Reservation.status.in_(statuses),
         Reservation.check_in < cout,
         Reservation.check_out > cin,
     ).all()
@@ -92,8 +96,12 @@ def blocking_ids(db: Session, hotel_id: int, room_id: int, cin: date, cout: date
 
 
 def free_rooms(db: Session, hotel_id: int, type_id: int, cin: date, cout: date,
-               exclude_res_id: int | None = None, only_clean: bool = False) -> list[Room]:
-    """时段内该房型未被占用的客房；only_clean=True 时仅空净（入住选房用）"""
+               exclude_res_id: int | None = None, only_clean: bool = False,
+               include_checked_in: bool = True) -> list[Room]:
+    """时段内该房型未被占用的客房；only_clean=True 时仅空净（入住选房用）。
+
+    include_checked_in=False：冲突判断不含在住预订（配合前客未退入住的放宽）。
+    空脏房入选由调用方 only_clean=False 控制（维修房始终排除）。"""
     qy = db.query(Room).filter(
         Room.hotel_id == hotel_id,
         Room.room_type_id == type_id,
@@ -102,10 +110,11 @@ def free_rooms(db: Session, hotel_id: int, type_id: int, cin: date, cout: date,
     if only_clean:
         qy = qy.filter(Room.status == "vacant_clean")
     rooms = qy.all()
+    statuses = ["pending", "confirmed"] + (["checked_in"] if include_checked_in else [])
     res = db.query(Reservation).filter(
         Reservation.hotel_id == hotel_id,
         Reservation.room_id.isnot(None),
-        Reservation.status.in_(["pending", "confirmed", "checked_in"]),
+        Reservation.status.in_(statuses),
         Reservation.check_in < cout,
         Reservation.check_out > cin,
     ).all()

@@ -7,9 +7,9 @@ from sqlalchemy.orm import Session
 from app.db import get_db
 from app.deps import (balance_of, blocking_ids, free_rooms, get_current_user,
                       log_op, resolve_hotel_id)
-from app.models import (Channel, FolioItem, Guest, HousekeepingTask, Payment,
-                        Reservation, Room, RoomType, User)
-from app.schemas import (CheckInBody, CheckOutBody, FolioItemBody,
+from app.models import (Channel, FolioItem, Guest, OperationLog,
+                        Payment, Reservation, Room, RoomType, User)
+from app.schemas import (CheckInBody, CheckOutBody, ExtendBody, FolioItemBody,
                          PaymentBody, ReservationBody, ReservationOut,
                          ReservationPatch)
 
@@ -34,13 +34,15 @@ def res_out(db: Session, r: Reservation) -> ReservationOut:
         room_type_name=rt.name if rt else "",
         room_id=r.room_id,
         room_number=room.room_number if room else None,
+        room_status=room.status if room else None,
         check_in=r.check_in, check_out=r.check_out,
         nights=nights,
         status=r.status,
         channel_id=r.channel_id,
         channel_name=ch.name if ch else None,
         channel_color=ch.color if ch else None,
-        rate=r.rate, notes=r.notes,
+        rate=r.rate, stay_type=r.stay_type, hours=r.hours,
+        notes=r.notes,
         balance_due=max(0, balance_of(db, r.id)),
         operator_name=op.name if op else None,
         created_at=r.created_at,
@@ -117,7 +119,21 @@ def create_reservation(body: ReservationBody, hotel_id: int | None = None,
         raise HTTPException(400, "离店日期必须晚于入住日期")
     if body.rate is not None and body.rate < 0:
         raise HTTPException(400, "房价不能为负数")
-    nights = (body.check_out - body.check_in).days
+
+    # 钟点房：占用整日（check_out = check_in + 1，沿用半开区间冲突判断），按时长计价
+    if body.stay_type == "hourly":
+        if not (1 <= body.hours <= 12):
+            raise HTTPException(400, "钟点房时长需在 1–12 小时之间")
+        check_in = body.check_in
+        check_out = check_in + timedelta(days=1)
+        nights = 1
+        hours = body.hours
+    else:
+        if body.hours:
+            raise HTTPException(400, "仅钟点房可指定入住时长")
+        check_in, check_out = body.check_in, body.check_out
+        nights = (check_out - check_in).days
+        hours = 0
 
     room = None
     rt = None
@@ -128,7 +144,7 @@ def create_reservation(body: ReservationBody, hotel_id: int | None = None,
             raise HTTPException(400, "客房不存在")
         if room.status == "maintenance":
             raise HTTPException(400, f"{room.room_number} 维修中，不可预订")
-        if blocking_ids(db, hid, room.id, body.check_in, body.check_out):
+        if blocking_ids(db, hid, room.id, check_in, check_out):
             raise HTTPException(409, f"{room.room_number} 所选时段已被占用")
         rt = db.get(RoomType, room.room_type_id)
         rate = body.rate if body.rate is not None else rt.base_price
@@ -140,12 +156,21 @@ def create_reservation(body: ReservationBody, hotel_id: int | None = None,
         rt = db.get(RoomType, body.room_type_id)
         if not rt or rt.hotel_id != hid:
             raise HTTPException(400, "房型不存在")
-        free = free_rooms(db, hid, rt.id, body.check_in, body.check_out)
+        free = free_rooms(db, hid, rt.id, check_in, check_out)
         if not free:
             raise HTTPException(409, "所选房型该时段已满房")
         room = free[0]  # 预留空净房；入住时允许改派
         rate = body.rate if body.rate is not None else rt.base_price
         room_type_id = rt.id
+
+    if body.stay_type == "hourly":
+        if rate <= 0:
+            raise HTTPException(400, "请设置钟点房价")
+        if body.rate is None:
+            hourly = rt.hourly_price if rt else 0
+            if not hourly:
+                raise HTTPException(400, f"房型「{rt.name if rt else ''}」未配置钟点价，请先在设置中配置或手动输入价格")
+            rate = hourly
 
     if body.channel_id:
         ch = db.get(Channel, body.channel_id)
@@ -155,28 +180,37 @@ def create_reservation(body: ReservationBody, hotel_id: int | None = None,
     guest = upsert_guest(db, hid, body.guest_name, body.guest_phone, body.guest_id_number)
     r = Reservation(
         hotel_id=hid,
-        code=gen_code(db, body.check_in),
+        code=gen_code(db, check_in),
         guest_id=guest.id,
         room_type_id=room_type_id,
         room_id=room.id if room else None,
-        check_in=body.check_in,
-        check_out=body.check_out,
+        check_in=check_in,
+        check_out=check_out,
         status=body.status,
         channel_id=body.channel_id,
         rate=rate,
+        stay_type=body.stay_type,
+        hours=hours,
         notes=body.notes,
         created_by=user.id,
     )
     db.add(r)
     db.flush()
     # 预生成房费账目（在住挂账可见）
+    if body.stay_type == "hourly":
+        fee_desc = f"钟点房费 · {hours} 小时 × ¥{rate}"
+        fee_amount = hours * rate
+    else:
+        fee_desc = f"房费 · {nights} 晚 × ¥{rate}"
+        fee_amount = nights * rate
     db.add(FolioItem(
         hotel_id=hid, reservation_id=r.id, category="room_charge",
-        description=f"房费 · {nights} 晚 × ¥{rate}",
-        amount=nights * rate, created_by=user.id,
+        description=fee_desc,
+        amount=fee_amount, created_by=user.id,
     ))
+    stay_tag = " · 钟点" if body.stay_type == "hourly" else ""
     log_op(db, hid, user, "reservation_create", "reservation", r.id,
-           f"创建预订 {r.code} · {guest.name} · {rt.name}{(' · ' + room.room_number + ' 房') if room else ''} · {body.check_in:%m/%d}–{body.check_out:%m/%d}")
+           f"创建预订 {r.code} · {guest.name} · {rt.name}{(' · ' + room.room_number + ' 房') if room else ''} · {check_in:%m/%d}–{check_out:%m/%d}{stay_tag}")
     db.commit()
     return res_out(db, r)
 
@@ -190,6 +224,9 @@ def move_reservation(res_id: int, body: ReservationPatch,
         raise HTTPException(404, "预订不存在")
     if r.status not in ("pending", "confirmed", "checked_in"):
         raise HTTPException(400, "当前状态不可调整（仅待确认 / 已确认 / 在住可拖动）")
+    # 钟点房占用整日固定：改期会破坏「时长 × 单价」的计费语义，仅允许换房（同占整日）
+    if r.stay_type == "hourly" and (body.check_in or body.check_out):
+        raise HTTPException(400, "钟点房预订不可拖动改期（占整日固定），如需调整请延住或重新开单")
 
     cin = body.check_in or r.check_in
     cout = body.check_out or r.check_out
@@ -213,14 +250,9 @@ def move_reservation(res_id: int, body: ReservationPatch,
     span_changed = (cin, cout) != (r.check_in, r.check_out)
     room_changed = new_room_id != r.room_id
 
-    # 在住预订换房：旧房转空脏并生成清洁任务，新房转为在住
+    # 在住预订换房：旧房转空脏，新房转为在住
     if r.status == "checked_in" and room_changed and old_room:
         old_room.status = "vacant_dirty"
-        db.add(HousekeepingTask(
-            hotel_id=r.hotel_id, room_id=old_room.id, task_type="checkout",
-            status="pending", priority="high", created_by=user.id,
-            notes=f"{r.code} 换房自动生成",
-        ))
         room.status = "occupied"
 
     r.room_id = room.id
@@ -228,10 +260,13 @@ def move_reservation(res_id: int, body: ReservationPatch,
     r.check_out = cout
 
     # 同步房费账目（按新晚数重算第一条房费）
+    # ⚠️ 已知边界：延住（POST /extend）追加的「延住房费」行不参与重算——若先延住再拖动改期，
+    # 首条房费按新晚数整体重算，叠加延住行会双重计费；前台应优先用延住入口调整在住住期。
+    # 钟点预订不按晚重算（账目 = 小时 × 单价，换房不影响）。
     nights = (cout - cin).days
     fee = db.query(FolioItem).filter(
         FolioItem.reservation_id == r.id, FolioItem.category == "room_charge").first()
-    if fee and nights > 0:
+    if fee and nights > 0 and r.stay_type != "hourly":
         fee.amount = nights * r.rate
         fee.description = f"房费 · {nights} 晚 × ¥{r.rate}"
 
@@ -290,15 +325,18 @@ def check_in(res_id: int, body: CheckInBody, user: User = Depends(get_current_us
     room = db.get(Room, body.room_id)
     if not room or room.hotel_id != r.hotel_id:
         raise HTTPException(400, "客房不存在")
-    if room.status != "vacant_clean":
-        raise HTTPException(400, f"{room.room_number} 当前不是空净房，不可入住")
+    if room.status == "maintenance":
+        raise HTTPException(400, f"{room.room_number} 维修中，不可入住")
     # 直接预订已锁定本房时允许房型差异；改派其他房间时房型必须一致
     if body.room_id != r.room_id and room.room_type_id != r.room_type_id:
         raise HTTPException(400, f"{room.room_number} 房型与预订不符")
-    if blocking_ids(db, r.hotel_id, room.id, r.check_in, r.check_out, exclude=r.id):
-        raise HTTPException(409, f"{room.room_number} 所选时段已被占用")
+    # 业务放宽：脏房、前客未退均可入住——冲突只按未到店预订计（checked_in 不阻挡）
+    if blocking_ids(db, r.hotel_id, room.id, r.check_in, r.check_out,
+                    exclude=r.id, include_checked_in=False):
+        raise HTTPException(409, f"{room.room_number} 所选时段已被其他预订占用")
 
     # 若原预留了其他空房，不释放（预订记录仍挂最终房号）
+    prev_status = room.status  # 覆盖前留档：脏房/前客在住要写进日志
     r.room_id = room.id
     r.status = "checked_in"
     room.status = "occupied"
@@ -310,8 +348,9 @@ def check_in(res_id: int, body: CheckInBody, user: User = Depends(get_current_us
                f"入住实收 ¥{body.amount_received} · {dict(cash='现金', wechat='微信', alipay='支付宝', card='刷卡')[body.payment_method]}")
     g = db.get(Guest, r.guest_id)
     rt = db.get(RoomType, r.room_type_id)
+    tag = "（前客未退）" if prev_status == "occupied" else ("（脏房入住）" if prev_status == "vacant_dirty" else "")
     log_op(db, r.hotel_id, user, "check_in", "reservation", r.id,
-           f"办理入住 {g.name if g else ''} · {r.code} · 分配 {room.room_number} {rt.name if rt else ''}")
+           f"办理入住 {g.name if g else ''} · {r.code} · 分配 {room.room_number} {rt.name if rt else ''}{tag}")
     db.commit()
     return res_out(db, r)
 
@@ -344,20 +383,105 @@ def check_out(res_id: int, body: CheckOutBody, user: User = Depends(get_current_
 
     r.status = "checked_out"
     room = db.get(Room, r.room_id) if r.room_id else None
+    # 功能放宽后同房可能有另一位在住客人：此时退房不动房态
+    other_guests = []
     if room:
+        other_guests = (db.query(Reservation)
+                        .filter(Reservation.hotel_id == r.hotel_id,
+                                Reservation.room_id == room.id,
+                                Reservation.status == "checked_in",
+                                Reservation.id != r.id)
+                        .all())
+    if room and not other_guests:
+        # 退房 → 房态转空脏；由前台在房态盘点「设净」恢复为净房
         room.status = "vacant_dirty"
-        db.add(HousekeepingTask(
-            hotel_id=r.hotel_id, room_id=room.id, task_type="checkout",
-            status="pending", priority="high", created_by=user.id,
-            notes=f"{r.code} 退房自动生成",
-        ))
     g = db.get(Guest, r.guest_id)
     bal_after = balance_of(db, r.id)
     log_op(db, r.hotel_id, user, "check_out", "reservation", r.id,
            f"退房结算 {g.name if g else ''} · {room.room_number if room else ''} · "
-           f"{'结清' if bal_after <= 0 else f'未结清 ¥{bal_after}'} · 房态转空脏")
+           f"{'结清' if bal_after <= 0 else f'未结清 ¥{bal_after}'}"
+           + (" · 房态转空脏" if room and not other_guests else " · 同房仍有在住客人，房态不变"))
     db.commit()
     return res_out(db, r)
+
+
+# ---------- 延住（自定义天数/价格，追加账目不改原房费） ----------
+@router.post("/{res_id}/extend")
+def extend_reservation(res_id: int, body: ExtendBody,
+                       user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    r = db.get(Reservation, res_id)
+    if not r or (user.role != "platform_admin" and r.hotel_id != user.hotel_id):
+        raise HTTPException(404, "预订不存在")
+    if r.status != "checked_in":
+        raise HTTPException(400, "仅「在住」预订可延住")
+    if body.nights < 0 or body.hours < 0:
+        raise HTTPException(400, "延住晚数/小时数不能为负")
+    rate = body.rate if body.rate is not None else r.rate
+    if rate < 0:
+        raise HTTPException(400, "延住价格不能为负数")
+
+    if r.stay_type == "hourly":
+        # 钟点房按小时延长：离店日不变（占整日），时长与账目累加
+        if body.hours <= 0:
+            raise HTTPException(400, "请输入延住小时数")
+        new_hours = r.hours + body.hours
+        if new_hours > 12:
+            raise HTTPException(400, "钟点房时长累计不可超过 12 小时")
+        r.hours = new_hours
+        amount = body.hours * rate
+        desc = f"延住房费 · {body.hours} 小时 × ¥{rate}"
+    else:
+        if body.hours:
+            raise HTTPException(400, "仅钟点房可按小时延住")
+        if body.nights <= 0:
+            raise HTTPException(400, "请输入延住晚数")
+        new_out = r.check_out + timedelta(days=body.nights)
+        # 冲突只按未到店预订计（checked_in 不阻挡，与入住放宽口径一致）
+        if r.room_id:
+            conflict = blocking_ids(db, r.hotel_id, r.room_id, r.check_in, new_out,
+                                    exclude=r.id, include_checked_in=False)
+            if conflict:
+                room = db.get(Room, r.room_id)
+                raise HTTPException(409, f"{room.room_number if room else '客房'} 延住时段已被其他预订占用")
+        r.check_out = new_out
+        amount = body.nights * rate
+        desc = f"延住房费 · {body.nights} 晚 × ¥{rate}"
+
+    db.add(FolioItem(hotel_id=r.hotel_id, reservation_id=r.id,
+                     category="room_charge", description=desc,
+                     amount=amount, created_by=user.id))
+    db.flush()
+    g = db.get(Guest, r.guest_id)
+    unit = f"{body.hours} 小时" if r.stay_type == "hourly" else f"{body.nights} 晚"
+    log_op(db, r.hotel_id, user, "reservation_extend", "reservation", r.id,
+           f"延住 {g.name if g else ''} · {r.code}：+{unit} × ¥{rate}，应收 ¥{amount}，"
+           f"{'时长 ' + str(r.hours) + ' 小时' if r.stay_type == 'hourly' else '新离店 ' + format(r.check_out, '%m/%d')}")
+    db.commit()
+    return res_out(db, r)
+
+
+# ---------- 预订操作日志（详情弹层展开区） ----------
+@router.get("/{res_id}/logs")
+def reservation_logs(res_id: int,
+                     user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    r = db.get(Reservation, res_id)
+    if not r or (user.role != "platform_admin" and r.hotel_id != user.hotel_id):
+        raise HTTPException(404, "预订不存在")
+    # payment 类日志的 object_id 同样存预订 id，一并纳入
+    ops = (db.query(OperationLog)
+           .filter(OperationLog.hotel_id == r.hotel_id,
+                   OperationLog.object_id == r.id,
+                   OperationLog.object_type.in_(["reservation", "payment"]))
+           .order_by(OperationLog.created_at.desc(), OperationLog.id.desc())
+           .limit(100)
+           .all())
+    return [{
+        "id": o.id,
+        "time": o.created_at.strftime("%m-%d %H:%M"),
+        "action": o.action,
+        "summary": o.summary,
+        "operator": o.operator_name or "系统",
+    } for o in ops]
 
 
 # ---------- 详情（房态盘 / 前台弹层依赖） ----------

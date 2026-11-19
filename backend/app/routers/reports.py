@@ -7,8 +7,8 @@ from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.deps import get_current_user, resolve_hotel_id
-from app.models import (Channel, FolioItem, Guest, HousekeepingTask,
-                        OperationLog, Payment, Reservation, Room, RoomType)
+from app.models import (Channel, FolioItem, Guest, OperationLog,
+                        Payment, Reservation, Room, RoomType)
 
 router = APIRouter(prefix="/api", tags=["reports"])
 
@@ -235,10 +235,6 @@ def dashboard(hotel_id: int | None = None,
             unpaid.append({"reservation_id": r.id, "balance": bal})
     unpaid_amount = sum(x["balance"] for x in unpaid)
 
-    hk_pending = db.query(HousekeepingTask).filter(
-        HousekeepingTask.hotel_id == hid,
-        HousekeepingTask.status.in_(["pending", "in_progress"])).count()
-
     # 抵店列表（前 4 条）与离店列表（前 3 条）
     guests = {g.id: g for g in db.query(Guest).filter(Guest.hotel_id == hid).all()}
     rooms_map = {r.id: r for r in rooms}
@@ -280,7 +276,6 @@ def dashboard(hotel_id: int | None = None,
         "departures": len(departures),
         "unpaid_count": len(unpaid), "unpaid_amount": unpaid_amount,
         "pending_confirm": pending_count,
-        "housekeeping_pending": hk_pending,
         "maintenance_count": maintenance,
         "revenue_today": revenue_today,
         "revenue_room": room_rev,

@@ -4,7 +4,7 @@ import {
   api, fmtMoney, md, todayIso,
   type Reservation,
 } from '../api'
-import { CheckInDialog } from '../dialogs'
+import { CheckInDialog, ExtendDialog } from '../dialogs'
 import { Badge, Dialog, Field, PageHead, Segmented, Spinner, useToast } from '../ui'
 
 export default function FrontDesk() {
@@ -14,6 +14,8 @@ export default function FrontDesk() {
   const [tab, setTab] = useState<'arr' | 'in' | 'dep'>('arr')
   const [checkinRes, setCheckinRes] = useState<Reservation | null>(null)
   const [checkoutRes, setCheckoutRes] = useState<Reservation | null>(null)
+  /** 延住目标预订（在住列表） */
+  const [extendRes, setExtendRes] = useState<Reservation | null>(null)
 
   const arrivals = useQuery({
     queryKey: ['fd-arrivals', today],
@@ -28,12 +30,17 @@ export default function FrontDesk() {
     qc.invalidateQueries({ queryKey: ['fd-inhouse'] })
     qc.invalidateQueries({ queryKey: ['board'] })
     qc.invalidateQueries({ queryKey: ['dashboard'] })
-    qc.invalidateQueries({ queryKey: ['housekeeping'] })
   }
 
   const mut = useMutation({
     mutationFn: (p: { path: string; body?: any; label: string }) => api.post(p.path, p.body ?? {}),
-    onSuccess: (_d, p) => { toast(p.label); setCheckinRes(null); setCheckoutRes(null); invalidate() },
+    onSuccess: (_d, p) => {
+      toast(p.label)
+      setCheckinRes(null)
+      setCheckoutRes(null)
+      setExtendRes(null)
+      invalidate()
+    },
     onError: (e: any) => toast(e.message ?? '操作失败'),
   })
 
@@ -101,9 +108,7 @@ export default function FrontDesk() {
                     <span className="list-side">
                       <button
                         className="btn btn-quiet btn-sm"
-                        onClick={() => api.patch(`/api/reservations/${r.id}`, { check_out: addDay(r.check_out, 1) })
-                          .then(() => { toast('已延住一天'); invalidate() })
-                          .catch((e) => toast(e.message))}
+                        onClick={() => setExtendRes(r)}
                       >延住</button>
                       <button className="btn btn-ghost btn-sm" onClick={() => setCheckoutRes(r)}>退房结算</button>
                     </span>
@@ -142,17 +147,19 @@ export default function FrontDesk() {
       {/* 入住向导 */}
       {checkinRes && <CheckInDialog res={checkinRes} busy={mut.isPending} onClose={() => setCheckinRes(null)} onConfirm={(body, label) => mut.mutate({ path: `/api/reservations/${checkinRes.id}/check-in`, body, label })} />}
 
+      {/* 延住弹窗（在住列表） */}
+      {extendRes && (
+        <ExtendDialog
+          res={extendRes} busy={false}
+          onClose={() => setExtendRes(null)}
+          onConfirm={(body, label) => mut.mutate({ path: `/api/reservations/${extendRes.id}/extend`, body, label })}
+        />
+      )}
+
       {/* 退房结算 */}
       {checkoutRes && <CheckOutDialog res={checkoutRes} onClose={() => setCheckoutRes(null)} onConfirm={(body, label) => mut.mutate({ path: `/api/reservations/${checkoutRes.id}/check-out`, body, label })} />}
     </>
   )
-}
-
-function addDay(iso: string, n: number) {
-  const [y, m, d] = iso.split('-').map(Number)
-  const dt = new Date(y, m - 1, d + n)
-  const pad = (x: number) => (x < 10 ? '0' : '') + x
-  return `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())}`
 }
 
 function CheckOutDialog({ res, onClose, onConfirm }: {
@@ -211,7 +218,7 @@ function CheckOutDialog({ res, onClose, onConfirm }: {
               </select>
             </Field>
           )}
-          <p className="hint warn">结算完成后，房态将转为空脏，并自动生成退房清洁任务。</p>
+          <p className="hint warn">结算完成后，房态将转为空脏，前台可在房态盘点「设净」恢复为净房。</p>
         </>
       ) : <Spinner />}
     </Dialog>

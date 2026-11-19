@@ -1,7 +1,7 @@
 """数据模型：多店隔离，业务表均挂 hotel_id"""
 from datetime import date, datetime
 
-from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db import Base
@@ -52,6 +52,8 @@ class RoomType(Base):
     hotel_id: Mapped[int] = mapped_column(ForeignKey("hotels.id"), index=True)
     name: Mapped[str] = mapped_column(String(40))
     base_price: Mapped[int] = mapped_column(Integer)
+    # 钟点房价（元/小时）；0 = 该房型不支持钟点房
+    hourly_price: Mapped[int] = mapped_column(Integer, default=0)
     capacity: Mapped[int] = mapped_column(Integer, default=2)
     description: Mapped[str] = mapped_column(String(120), default="")
 
@@ -97,6 +99,9 @@ class Reservation(Base):
     status: Mapped[str] = mapped_column(String(20), default="confirmed")
     channel_id: Mapped[int | None] = mapped_column(ForeignKey("channels.id"), nullable=True)
     rate: Mapped[int] = mapped_column(Integer, default=0)
+    # stay_type: normal（整晚）/ hourly（钟点房）；hourly 时 hours 为入住时长（小时）
+    stay_type: Mapped[str] = mapped_column(String(10), default="normal")
+    hours: Mapped[int] = mapped_column(Integer, default=0)
     notes: Mapped[str] = mapped_column(String(200), default="")
     created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
@@ -129,23 +134,6 @@ class Payment(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
 
 
-class HousekeepingTask(Base):
-    __tablename__ = "housekeeping_tasks"
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    hotel_id: Mapped[int] = mapped_column(ForeignKey("hotels.id"), index=True)
-    room_id: Mapped[int] = mapped_column(ForeignKey("rooms.id"))
-    task_type: Mapped[str] = mapped_column(String(20), default="checkout")  # checkout / daily / deep / repair / inspection
-    # pending / in_progress / done
-    status: Mapped[str] = mapped_column(String(20), default="pending")
-    priority: Mapped[str] = mapped_column(String(10), default="mid")  # high / mid / low
-    assignee: Mapped[str] = mapped_column(String(40), default="")
-    notes: Mapped[str] = mapped_column(Text, default="")
-    created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
-    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-
-
 class OperationLog(Base):
     """操作日志：经营报表单日明细展示谁在何时做了什么"""
     __tablename__ = "operation_logs"
@@ -154,7 +142,7 @@ class OperationLog(Base):
     hotel_id: Mapped[int] = mapped_column(ForeignKey("hotels.id"), index=True)
     user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     operator_name: Mapped[str] = mapped_column(String(40), default="")
-    action: Mapped[str] = mapped_column(String(30))  # reservation_create / reservation_confirm / check_in / check_out / payment / folio_add / housekeeping_done / room_status ...
+    action: Mapped[str] = mapped_column(String(30))  # reservation_create / check_in / check_out / payment / folio_add / room_status ...
     object_type: Mapped[str] = mapped_column(String(30), default="")  # reservation / room / payment / task
     object_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     summary: Mapped[str] = mapped_column(String(200), default="")

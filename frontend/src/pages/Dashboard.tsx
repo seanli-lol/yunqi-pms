@@ -79,16 +79,6 @@ export default function Dashboard() {
                 <span className="list-side muted">›</span>
               </a>
             )}
-            {data.housekeeping_pending > 0 && (
-              <a className="list-row" style={{ cursor: 'pointer' }} onClick={() => nav('/housekeeping')}>
-                <span className="dot dot-orange" />
-                <span className="list-main">
-                  <span className="list-title">{data.housekeeping_pending} 项清洁任务待完成</span>
-                  <span className="list-sub">完成清洁后自动转为空净</span>
-                </span>
-                <span className="list-side muted">›</span>
-              </a>
-            )}
             {data.unpaid_count > 0 && (
               <a className="list-row" style={{ cursor: 'pointer' }} onClick={() => nav('/billing')}>
                 <span className="dot dot-red" />
@@ -104,7 +94,7 @@ export default function Dashboard() {
                 <span className="dot dot-red" />
                 <span className="list-main">
                   <span className="list-title">{data.maintenance_count} 间客房维修中</span>
-                  <span className="list-sub">维修完成后需清洁方可转空净</span>
+                  <span className="list-sub">维修完成后在房态盘点「设净」恢复可售</span>
                 </span>
                 <span className="list-side muted">›</span>
               </a>

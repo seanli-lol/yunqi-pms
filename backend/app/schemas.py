@@ -95,6 +95,7 @@ class ChannelOut(ChannelBody):
 class RoomTypeBody(BaseModel):
     name: str
     base_price: int
+    hourly_price: int = 0  # 钟点房价（元/小时）；0 = 不支持钟点房
     capacity: int = 2
     description: str = ""
 
@@ -139,6 +140,8 @@ class ReservationBody(BaseModel):
     room_id: int | None = None        # 房态盘直接预订：锁定房号
     channel_id: int | None = None
     rate: int | None = None
+    stay_type: Literal["normal", "hourly"] = "normal"
+    hours: int = 0                    # 钟点房：入住时长（小时）
     notes: str = ""
     status: Literal["pending", "confirmed"] = "confirmed"
 
@@ -148,6 +151,13 @@ class ReservationPatch(BaseModel):
     room_id: int | None = None
     check_in: date | None = None
     check_out: date | None = None
+
+
+class ExtendBody(BaseModel):
+    """延住：普通预订按晚数延长，钟点预订按小时延长"""
+    nights: int = 1
+    hours: int = 0
+    rate: int | None = None           # 应收单价（默认取预订当前 rate）
 
 
 class CheckInBody(BaseModel):
@@ -183,6 +193,8 @@ class ReservationOut(BaseModel):
     room_type_name: str
     room_id: int | None
     room_number: str | None
+    # 房间当前房态（已离店预订据此决定是否提供「转为净房」）
+    room_status: str | None = None
     check_in: date
     check_out: date
     nights: int
@@ -191,6 +203,8 @@ class ReservationOut(BaseModel):
     channel_name: str | None
     channel_color: str | None
     rate: int
+    stay_type: str
+    hours: int
     notes: str
     balance_due: int
     operator_name: str | None
@@ -215,30 +229,6 @@ class GuestOut(GuestBody):
 
 class GuestDetail(GuestOut):
     history: list[dict] = []
-
-
-# ---------- housekeeping ----------
-class TaskBody(BaseModel):
-    room_id: int
-    task_type: Literal["checkout", "daily", "deep", "repair", "inspection"] = "daily"
-    priority: Literal["high", "mid", "low"] = "mid"
-    assignee: str = ""
-    notes: str = ""
-
-
-class TaskOut(BaseModel):
-    id: int
-    room_id: int
-    room_number: str
-    room_type_name: str
-    floor: int
-    task_type: str
-    status: str
-    priority: str
-    assignee: str
-    notes: str
-    created_at: datetime | None = None
-    completed_at: datetime | None = None
 
 
 # ---------- reports ----------

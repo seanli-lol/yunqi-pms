@@ -296,16 +296,18 @@ function AddChannelDialog({ open, onClose, onSubmit }: {
 function TypesTab() {
   const toast = useToast()
   const qc = useQueryClient()
-  const [addOpen, setAddOpen] = useState(false)
+  /** 编辑目标房型（null = 不打开；'new' = 新建） */
+  const [editing, setEditing] = useState<RoomType | 'new' | null>(null)
   const [fName, setFName] = useState('')
   const [fPrice, setFPrice] = useState('')
+  const [fHourly, setFHourly] = useState('')
   const [fCap, setFCap] = useState(2)
   const [fDesc, setFDesc] = useState('')
   const list = useQuery({ queryKey: ['room-types'], queryFn: () => api.get<RoomType[]>('/api/room-types') })
   const mut = useMutation({
     mutationFn: (p: { method: string; path: string; body?: any }) =>
       p.method === 'post' ? api.post(p.path, p.body) : api.patch(p.path, p.body),
-    onSuccess: (d: any, p) => { toast(p.method === 'post' ? '房型已创建' : '房型已更新'); qc.invalidateQueries({ queryKey: ['room-types'] }) },
+    onSuccess: (_d, p) => { toast(p.method === 'post' ? '房型已创建' : '房型已更新'); qc.invalidateQueries({ queryKey: ['room-types'] }) },
     onError: (e: any) => toast(e.message ?? '操作失败'),
   })
   const delMut = useMutation({
@@ -314,27 +316,53 @@ function TypesTab() {
     onError: (e: any) => toast(e.message ?? '删除失败'),
   })
 
+  const openEdit = (t: RoomType | 'new') => {
+    if (t === 'new') {
+      setFName(''); setFPrice(''); setFHourly(''); setFCap(2); setFDesc('')
+    } else {
+      setFName(t.name); setFPrice(String(t.base_price)); setFHourly(t.hourly_price ? String(t.hourly_price) : '')
+      setFCap(t.capacity); setFDesc(t.description)
+    }
+    setEditing(t)
+  }
+
+  const submit = () => {
+    const price = Number(fPrice)
+    if (!fName.trim() || !price) { toast('请填写名称与价格'); return }
+    const body = {
+      name: fName, base_price: price,
+      hourly_price: fHourly === '' ? 0 : Math.max(0, Number(fHourly) || 0),
+      capacity: fCap, description: fDesc,
+    }
+    if (editing === 'new') mut.mutate({ method: 'post', path: '/api/room-types', body })
+    else if (editing) mut.mutate({ method: 'patch', path: `/api/room-types/${editing.id}`, body })
+    setEditing(null)
+  }
+
+  const dialogOpen = editing !== null
+  const dialogTitle = editing === 'new' ? '添加房型' : '编辑房型'
   return (
     <>
       <div className="card">
         <div className="card-head">
           <div className="section-sub" style={{ fontSize: 13.5 }}>共 {(list.data ?? []).length} 种房型</div>
-          <button className="btn btn-primary btn-sm" onClick={() => setAddOpen(true)}>添加房型</button>
+          <button className="btn btn-primary btn-sm" onClick={() => openEdit('new')}>添加房型</button>
         </div>
         {list.isLoading ? <Spinner /> : (
           <div className="table-wrap">
             <table className="table">
-              <thead><tr><th>房型</th><th className="num">基准价</th><th className="num">可住</th><th className="num">间数</th><th>说明</th><th>操作</th></tr></thead>
+              <thead><tr><th>房型</th><th className="num">基准价</th><th className="num">钟点价</th><th className="num">可住</th><th className="num">间数</th><th>说明</th><th>操作</th></tr></thead>
               <tbody>
                 {(list.data ?? []).map(t => (
                   <tr key={t.id}>
                     <td data-label="房型" className="strong">{t.name}</td>
                     <td className="num" data-label="基准价">{fmtMoney(t.base_price)}</td>
+                    <td className="num" data-label="钟点价">{t.hourly_price ? `${fmtMoney(t.hourly_price)}/小时` : <span className="muted">不支持</span>}</td>
                     <td className="num" data-label="可住">{t.capacity} 人</td>
                     <td className="num" data-label="间数">{t.room_count}</td>
                     <td data-label="说明">{t.description || '—'}</td>
                     <td className="no-label">
-                      <button className="btn btn-quiet btn-sm" onClick={() => toast('编辑房型（演示）')}>编辑</button>
+                      <button className="btn btn-quiet btn-sm" onClick={() => openEdit(t)}>编辑</button>
                       <button className="btn btn-quiet btn-sm" style={{ color: 'var(--danger-deep)' }}
                               onClick={() => delMut.mutate(t.id)}>删除</button>
                     </td>
@@ -347,27 +375,26 @@ function TypesTab() {
       </div>
 
       <Dialog
-        open={addOpen} onClose={() => setAddOpen(false)} title="添加房型"
+        open={dialogOpen} onClose={() => setEditing(null)} title={dialogTitle}
         foot={
           <>
-            <button className="btn btn-ghost" onClick={() => setAddOpen(false)}>取消</button>
-            <button className="btn btn-primary" onClick={() => {
-              const price = Number(fPrice)
-              if (!fName.trim() || !price) { toast('请填写名称与价格'); return }
-              mut.mutate({ method: 'post', path: '/api/room-types', body: { name: fName, base_price: price, capacity: fCap, description: fDesc } })
-              setFName(''); setFPrice(''); setFCap(2); setFDesc('')
-              setAddOpen(false)
-            }}>创建房型</button>
+            <button className="btn btn-ghost" onClick={() => setEditing(null)}>取消</button>
+            <button className="btn btn-primary" onClick={submit}>{editing === 'new' ? '创建房型' : '保存修改'}</button>
           </>
         }
       >
         <Field label="房型名称" required><input className="input" value={fName} onChange={e => setFName(e.target.value)} placeholder="如：商务大床房" /></Field>
         <div className="form-row">
-          <Field label="基准价" required><input className="input" type="number" value={fPrice} onChange={e => setFPrice(e.target.value)} placeholder="每晚价格" /></Field>
+          <Field label="基准价" required hint="整晚价格（元/晚）。">
+            <input className="input" type="number" value={fPrice} onChange={e => setFPrice(e.target.value)} placeholder="每晚价格" />
+          </Field>
           <Field label="可住人数">
             <select className="select" value={fCap} onChange={e => setFCap(Number(e.target.value))}><option value={2}>2 人</option><option value={3}>3 人</option><option value={4}>4 人</option></select>
           </Field>
         </div>
+        <Field label="钟点价（元/小时，选填）" hint="填写后该房型支持钟点房，开单时可按小时计价；留空表示不支持钟点房。">
+          <input className="input" type="number" value={fHourly} onChange={e => setFHourly(e.target.value)} placeholder="如 45" />
+        </Field>
         <Field label="说明"><textarea className="input" rows={2} value={fDesc} onChange={e => setFDesc(e.target.value)} placeholder="床型、景观、设施等" /></Field>
       </Dialog>
     </>
@@ -530,7 +557,7 @@ function StaffTab({ users, loading }: { users?: UserRow[]; loading: boolean }) {
           </div>
         )}
       </div>
-      <p className="hint mt-16">权限说明：平台管理员可管理全部酒店；酒店管理员可管理本店员工与配置；前台可操作房态、预订、入住退房与收款；客房部仅可更新清洁任务。</p>
+      <p className="hint mt-16">权限说明：平台管理员可管理全部酒店；酒店管理员可管理本店员工与配置；前台可操作房态、预订、入住退房与收款。</p>
 
       <AddStaffDialog
         open={addOpen} onClose={() => setAddOpen(false)}
@@ -590,7 +617,7 @@ function AddStaffDialog({ open, onClose, hotels, canPickHotel, defaultHotelId, o
       <div className="form-row">
         <Field label="角色">
           <select className="select" value={role} onChange={e => setRole(e.target.value)}>
-            <option value="receptionist">前台</option><option value="housekeeper">客房部</option><option value="admin">管理员</option>
+            <option value="receptionist">前台</option><option value="admin">管理员</option>
           </select>
         </Field>
         <Field label="初始密码"><input className="input" value={pwd} onChange={e => setPwd(e.target.value)} /></Field>

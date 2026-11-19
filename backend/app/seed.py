@@ -4,7 +4,7 @@ from datetime import date, datetime, timedelta
 
 from sqlalchemy.orm import Session
 
-from app.models import (Channel, FolioItem, Guest, HousekeepingTask, Hotel,
+from app.models import (Channel, FolioItem, Guest, Hotel,
                         OperationLog, Payment, Reservation, Room, RoomType, User)
 from app.security import hash_password
 
@@ -65,12 +65,13 @@ def ensure_seed(db: Session) -> None:
 
     # ---------- 房型 ----------
     def add_types(h):
-        defs = [("大床房", 480, 2, "1.8m 大床 · 城景"), ("双床房", 580, 2, "1.2m 双床 · 城景"),
-                ("观景大床房", 780, 2, "2m 大床 · 湖景阳台"), ("湖景套房", 1280, 4, "客厅 + 卧室 · 湖景"),
-                ("亲子房", 680, 3, "大床 + 儿童床 · 主题布置")]
+        defs = [("大床房", 480, 45, 2, "1.8m 大床 · 城景"), ("双床房", 580, 55, 2, "1.2m 双床 · 城景"),
+                ("观景大床房", 780, 0, 2, "2m 大床 · 湖景阳台"), ("湖景套房", 1280, 0, 4, "客厅 + 卧室 · 湖景"),
+                ("亲子房", 680, 0, 3, "大床 + 儿童床 · 主题布置")]
         out = {}
-        for name, price, cap, desc in defs:
-            t = RoomType(hotel_id=h.id, name=name, base_price=price, capacity=cap, description=desc)
+        for name, price, hourly, cap, desc in defs:
+            t = RoomType(hotel_id=h.id, name=name, base_price=price, hourly_price=hourly,
+                         capacity=cap, description=desc)
             db.add(t)
             db.flush()
             out[name] = t
@@ -119,8 +120,9 @@ def ensure_seed(db: Session) -> None:
     # 其他两店的房型与客房（简洁布局）
     for h, (big, twin, base_floor) in ((hm, (13, 13, 2)), (hq, (21, 21, 2))):
         tmap = {}
-        for name, price, cap in (("大床房", 480, 2), ("双床房", 580, 2)):
-            t = RoomType(hotel_id=h.id, name=name, base_price=price, capacity=cap, description="")
+        for name, price, hourly, cap in (("大床房", 480, 45, 2), ("双床房", 580, 55, 2)):
+            t = RoomType(hotel_id=h.id, name=name, base_price=price, hourly_price=hourly,
+                         capacity=cap, description="")
             db.add(t)
             db.flush()
             tmap[name] = t
@@ -261,32 +263,14 @@ def ensure_seed(db: Session) -> None:
     db.add(Payment(hotel_id=hx.id, reservation_id=r_gaoyuan.id, method="wechat",
                    amount=1205, created_by=u_qi.id, created_at=_dt(0, 11, 32)))
 
-    # ---------- 清洁任务 ----------
-    def add_task(room_no, status, priority, assignee, created_h, done_h=None, ttype="checkout"):
-        db.add(HousekeepingTask(
-            hotel_id=hx.id, room_id=room_by_no[room_no].id, task_type=ttype,
-            status=status, priority=priority, assignee=assignee,
-            created_by=u_qi.id, created_at=_dt(0, created_h, 0),
-            completed_at=_dt(0, done_h, 0) if done_h else None,
-        ))
-
-    add_task("204", "pending", "high", "张桂芳", 14)
-    add_task("208", "pending", "high", "刘红燕", 9)
-    add_task("303", "pending", "mid", "张桂芳", 13)
-    add_task("501", "pending", "low", "张桂芳", 9)
-    add_task("403", "in_progress", "high", "刘红燕", 13)
-    add_task("301", "done", "mid", "张桂芳", 9, done_h=12, ttype="daily")
-    add_task("407", "done", "low", "张桂芳", 9, done_h=15, ttype="daily")
-    add_task("505", "done", "low", "张桂芳", 9, done_h=9, ttype="checkout")
-
     # ---------- 今日操作日志（单日明细演示） ----------
     logs = [
         (9, 5, u_qi, "check_in", "reservation", "办理入住 赵磊 · 209 大床房 · 押金 ¥1,000"),
         (9, 21, u_qi, "reservation_confirm", "reservation", "电话确认 刘洋 · 双床房 11/18 – 11/21"),
         (10, 47, u_lin, "reservation_create", "reservation", "创建预订 孙悦 · 410 观景大床房 · 11/19 – 11/22"),
         (11, 32, u_qi, "payment", "payment", "收款 ¥1,205 · 高媛 · 微信 · 账单结清"),
-        (12, 20, u_zhang, "housekeeping_done", "task", "清洁完成 301 · 房态转为空净"),
-        (15, 2, u_zhang, "housekeeping_done", "task", "清洁完成 407 · 房态转为空净"),
+        (12, 20, u_zhang, "room_status", "room", "客房 301 · 房态→空净"),
+        (15, 2, u_zhang, "room_status", "room", "客房 407 · 房态→空净"),
         (16, 40, u_qi, "folio_add", "reservation", "加收杂费 迷你吧 ¥32 · 402 王芳"),
         (17, 30, u_lin, "reservation_create", "reservation", "创建预订 罗静 · 409 观景大床房 · 11/19 – 11/22"),
     ]

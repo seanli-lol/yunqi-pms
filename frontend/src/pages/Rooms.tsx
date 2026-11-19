@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
-  api, addDaysIso, fmtMoney, md, todayIso, ROOM_STATUS_LABEL,
-  type Board, type BoardRoom, type CalBlock, type Channel, type Reservation, type Room,
+  api, addDaysIso, fmtMoney, md, todayIso, ROOM_STATUS_LABEL, OP_ACTION_LABEL, OP_ACTION_COLOR,
+  type Board, type BoardRoom, type CalBlock, type Channel, type OpLog, type Reservation, type Room,
 } from '../api'
 import { Badge, Dialog, Field, PageHead, Segmented, Spinner, useToast, RES_STATUS_BADGE } from '../ui'
-import { CheckInDialog } from '../dialogs'
+import { CheckInDialog, ExtendDialog } from '../dialogs'
 
 const CELL = 88
 const LAB_W = 150
@@ -38,6 +38,10 @@ export default function Rooms() {
   const [vacantRoom, setVacantRoom] = useState<Room | null>(null)
   const [bookRoom, setBookRoom] = useState<{ room: Room; checkIn: string } | null>(null)
   const [checkinRes, setCheckinRes] = useState<Reservation | null>(null)
+  /** 延住目标预订（详情弹层内「延住」按钮打开） */
+  const [extendRes, setExtendRes] = useState<Reservation | null>(null)
+  /** 详情弹层内操作日志展开区 */
+  const [showLogs, setShowLogs] = useState(false)
   /** 拖动中的房号 → 高亮目标行 */
   const [dragOverRoom, setDragOverRoom] = useState<number | null>(null)
 
@@ -132,6 +136,11 @@ export default function Rooms() {
         toast('维修中的客房不可调入')
         return
       }
+      // 钟点房：改日期才拦（后端同口径），纯换房放行（仍占整日）
+      if (block.stay_type === 'hourly' && col !== block.col_start) {
+        toast('钟点房预订不可改期，如需调整请延住或重新开单')
+        return
+      }
       if (targetRoom.id === room.id && col === block.col_start) return
 
       const newIn = (board.data?.day_list[col] ?? {}).date!
@@ -175,16 +184,18 @@ export default function Rooms() {
 
   /* ---------- 直接预订 ---------- */
   const bookMut = useMutation({
-    mutationFn: (p: { guest_name: string; guest_phone: string; channel_id: number | null; notes: string }) =>
+    mutationFn: (p: { guest_name: string; guest_phone: string; channel_id: number | null; notes: string; stay_type: 'normal' | 'hourly'; hours: number; rate: number | null }) =>
       api.post<Reservation>('/api/reservations', {
         guest_name: p.guest_name, guest_phone: p.guest_phone,
         room_id: bookRoom!.room.id,
         check_in: bookRoom!.checkIn,
         check_out: addDaysIso(bookRoom!.checkIn, 1),
         channel_id: p.channel_id, notes: p.notes,
+        stay_type: p.stay_type, hours: p.hours,
+        rate: p.rate,
       }),
     onSuccess: (r) => {
-      toast(`预订已创建：${r.code} · ${r.room_number}（${md(r.check_in)}–${md(r.check_out)}）`)
+      toast(`预订已创建：${r.code} · ${r.room_number}（${md(r.check_in)}–${md(r.check_out)}${r.stay_type === 'hourly' ? ` · 钟点 ${r.hours} 小时` : ''}）`)
       setBookRoom(null)
       invalidate()
     },
@@ -222,6 +233,26 @@ export default function Rooms() {
       invalidate()
     },
     onError: (e: any) => toast(e.message ?? '入住失败'),
+  })
+
+  /* ---------- 延住（详情弹层 / ExtendDialog） ---------- */
+  const extendMut = useMutation({
+    mutationFn: (p: { id: number; body: { nights: number; hours: number; rate: number } }) =>
+      api.post(`/api/reservations/${p.id}/extend`, p.body),
+    onSuccess: (_d, p) => {
+      toast(p.body.hours > 0 ? `已延住 ${p.body.hours} 小时` : `已延住 ${p.body.nights} 晚，应收已追加到账单`)
+      setExtendRes(null)
+      setDetailRes(null)
+      invalidate()
+    },
+    onError: (e: any) => toast(e.message ?? '延住失败'),
+  })
+
+  /* ---------- 预订操作日志（详情弹层展开区，懒加载） ---------- */
+  const logsQuery = useQuery({
+    queryKey: ['reservation-logs', detailRes?.id],
+    enabled: detailRes !== null && showLogs,
+    queryFn: () => api.get<OpLog[]>(`/api/reservations/${detailRes!.id}/logs`),
   })
 
   /* ---------- 渲染 ---------- */
@@ -294,17 +325,33 @@ export default function Rooms() {
                   className={`cal-row cal-room${dragOverRoom === room.id ? ' drag-over' : ''}`}
                   onClick={(e) => onCalClick(e, room)}
                 >
-                  <div className="cal-lab">{room.number}</div>
+                  <div className={`cal-lab${room.status === 'vacant_dirty' ? ' dirty' : room.status === 'maintenance' ? ' maint' : ''}`}>
+                    {room.number}
+                    {(room.status === 'vacant_dirty' || room.status === 'maintenance') && (
+                      <button
+                        className="cal-setclean"
+                        title={room.status === 'maintenance' ? '完成维修并设为净房' : '已退房 / 待清洁：点击设为净房'}
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          statusMut.mutate({
+                            room_id: room.id, status: 'vacant_clean',
+                            label: `${room.number} 已设为净房${room.status === 'maintenance' ? '（维修完成）' : ''}`,
+                          })
+                        }}
+                      >设净</button>
+                    )}
+                  </div>
                   {room.status === 'maintenance' || room.notes.includes('维修') ? (
                     <div className="cal-maint">维修{room.notes ? ` · ${room.notes}` : ''}</div>
                   ) : (
                     room.blocks.map(b => {
                       const cls = b.status === 'checked_in' ? 'stay'
                         : b.status === 'checked_out' ? 'past' : 'future'
+                      const hourly = b.stay_type === 'hourly'
                       return (
                         <div
                           key={b.id}
-                          className={`cal-block ${cls}`}
+                          className={`cal-block ${cls}${hourly ? ' hourly' : ''}`}
                           data-res-id={b.id}
                           style={{ gridColumn: `${b.col_start + 2} / span ${b.nights}`, ['--src' as any]: b.channel_color }}
                           onPointerDown={(e) => onBlockPointerDown(e, b, room)}
@@ -313,8 +360,8 @@ export default function Rooms() {
                             setDetailRes({ id: b.id } as Reservation)
                           }}
                         >
-                          <span className="g">{b.guest_name}</span>
-                          <span className="s">{b.channel_name}</span>
+                          <span className="g">{b.guest_name}{hourly ? ' · 钟点' : ''}</span>
+                          <span className="s">{hourly ? `${b.hours ?? 0} 小时` : b.channel_name}</span>
                           {(b.status === 'checked_in' || b.status === 'checked_out') && b.balance_due > 0 && <span className="owe">欠</span>}
                         </div>
                       )
@@ -426,8 +473,14 @@ export default function Rooms() {
                 {vacantRoom?.status === 'vacant_clean' && (
                   <button
                     className="btn btn-ghost"
-                    onClick={() => { statusMut.mutate({ room_id: vacantRoom!.id, status: 'vacant_dirty', label: `${vacantRoom!.room_number} 已设为空脏，并生成清洁任务` }); setVacantRoom(null) }}
+                    onClick={() => { statusMut.mutate({ room_id: vacantRoom!.id, status: 'vacant_dirty', label: `${vacantRoom!.room_number} 已设为空脏（待清洁）` }); setVacantRoom(null) }}
                   >设为空脏</button>
+                )}
+                {vacantRoom?.status === 'vacant_dirty' && (
+                  <button
+                    className="btn btn-ghost"
+                    onClick={() => { statusMut.mutate({ room_id: vacantRoom!.id, status: 'vacant_clean', label: `${vacantRoom!.room_number} 已设为净房` }); setVacantRoom(null) }}
+                  >设为净房</button>
                 )}
                 <button
                   className="btn btn-primary"
@@ -444,7 +497,7 @@ export default function Rooms() {
             <div className="info-row"><span>基准价</span><span>{fmtMoney(vacantRoom.base_price)} / 晚</span></div>
             <div className="info-row">
               <span>说明</span>
-              <span>{vacantRoom.status === 'maintenance' ? '维修完成并质检后，需清洁转为空净方可恢复可售' : vacantRoom.status === 'vacant_dirty' ? '该房可先预订；入住前需完成清洁并转为空净' : '空净房可直接预订或办理入住'}</span>
+              <span>{vacantRoom.status === 'maintenance' ? '维修完成后点「完成维修」即可恢复可售' : vacantRoom.status === 'vacant_dirty' ? '该房可先预订，也可直接入住（记脏房入住）；整理后点「设为净房」' : '空净房可直接预订或办理入住'}</span>
             </div>
           </>
         )}
@@ -469,18 +522,24 @@ export default function Rooms() {
               {(resQuery.data.status === 'pending' || resQuery.data.status === 'confirmed') && (
                 <button className="btn btn-primary" onClick={() => setCheckinRes(resQuery.data)}>办理入住</button>
               )}
+              {resQuery.data.status === 'checked_out' && resQuery.data.room_id && resQuery.data.room_status === 'vacant_dirty' && (
+                <button
+                  className="btn btn-primary"
+                  onClick={() => {
+                    statusMut.mutate({
+                      room_id: resQuery.data!.room_id!, status: 'vacant_clean',
+                      label: `${resQuery.data!.room_number} 已转为净房`,
+                    })
+                    setDetailRes(null)
+                  }}
+                >转为净房</button>
+              )}
               {resQuery.data.status === 'checked_in' && (
                 <>
                   <button
                     className="btn btn-ghost"
-                    onClick={() => {
-                      const r = resQuery.data!
-                      // 延住一天
-                      api.patch(`/api/reservations/${r.id}`, { check_out: addDaysIso(r.check_out, 1) })
-                        .then(() => { toast('已延住一天'); setDetailRes(null); invalidate() })
-                        .catch((e) => toast(e.message))
-                    }}
-                  >延住一天</button>
+                    onClick={() => setExtendRes(resQuery.data)}
+                  >延住</button>
                   <button
                     className="btn btn-primary"
                     onClick={() => {
@@ -508,8 +567,11 @@ export default function Rooms() {
           <>
             <div className="info-row"><span>当前住客</span><span>{resQuery.data.guest_name} {resQuery.data.vip_level && <Badge color="purple">{resQuery.data.vip_level}</Badge>}</span></div>
             <div className="info-row"><span>联系电话</span><span>{resQuery.data.guest_phone || '未留'}</span></div>
-            <div className="info-row"><span>住期</span><span>{md(resQuery.data.check_in)} – {md(resQuery.data.check_out)} · 共 {resQuery.data.nights} 晚</span></div>
-            <div className="info-row"><span>房价</span><span>{fmtMoney(resQuery.data.rate)} / 晚</span></div>
+            <div className="info-row">
+              <span>住期</span>
+              <span>{md(resQuery.data.check_in)} – {md(resQuery.data.check_out)} · {resQuery.data.stay_type === 'hourly' ? `钟点 ${resQuery.data.hours} 小时` : `共 ${resQuery.data.nights} 晚`}</span>
+            </div>
+            <div className="info-row"><span>房价</span><span>{fmtMoney(resQuery.data.rate)}{resQuery.data.stay_type === 'hourly' ? ' / 小时' : ' / 晚'}</span></div>
             <div className="info-row">
               <span>预订来源</span>
               <span>
@@ -530,6 +592,37 @@ export default function Rooms() {
               </span>
             </div>
             {resQuery.data.notes && <div className="info-row"><span>备注</span><span>{resQuery.data.notes}</span></div>}
+            {resQuery.data.status === 'checked_out' && (
+              <div className="info-row">
+                <span>房态</span>
+                <span>
+                  {resQuery.data.room_status === 'vacant_clean' ? '空净 · 可售'
+                    : resQuery.data.room_status === 'vacant_dirty' ? '空脏 · 待清洁（可在下方转为净房）'
+                    : resQuery.data.room_status === 'maintenance' ? '维修中'
+                    : resQuery.data.room_status === 'occupied' ? '在住' : '—'}
+                </span>
+              </div>
+            )}
+
+            {/* ---------- 操作日志展开区 ---------- */}
+            <div className="oplog-toggle" onClick={() => setShowLogs(v => !v)}>
+              <span>操作日志（本预订全部留痕）</span>
+              <span className="arr">{showLogs ? '▴ 收起' : '▾ 展开'}</span>
+            </div>
+            {showLogs && (
+              <div className="oplog-list">
+                {logsQuery.isLoading && <div className="muted" style={{ padding: '8px 0' }}>加载中…</div>}
+                {logsQuery.data?.length === 0 && <div className="muted" style={{ padding: '8px 0' }}>暂无操作记录</div>}
+                {(logsQuery.data ?? []).map(o => (
+                  <div key={o.id} className="oplog-row">
+                    <span className="t">{o.time}</span>
+                    <Badge color={OP_ACTION_COLOR[o.action] ?? 'gray'}>{OP_ACTION_LABEL[o.action] ?? o.action}</Badge>
+                    <span className="s">{o.summary}</span>
+                    <span className="op">{o.operator}</span>
+                  </div>
+                ))}
+              </div>
+            )}
           </>
         )}
       </Dialog>
@@ -542,6 +635,15 @@ export default function Rooms() {
           onConfirm={(body, label) => checkinMut.mutate({ body, label })}
         />
       )}
+
+      {/* ---------- 延住弹窗（预订详情内） ---------- */}
+      {extendRes && (
+        <ExtendDialog
+          res={extendRes} busy={extendMut.isPending}
+          onClose={() => setExtendRes(null)}
+          onConfirm={(body) => extendMut.mutate({ id: extendRes.id, body })}
+        />
+      )}
     </>
   )
 }
@@ -551,6 +653,7 @@ function toRoom(r: BoardRoom): Room {
     id: r.id, room_number: r.number, floor: r.floor, status: r.status,
     notes: r.notes, room_type_id: 0,
     room_type_name: r.room_type_name, base_price: r.base_price,
+    hourly_price: r.hourly_price ?? 0,
   }
 }
 
@@ -562,14 +665,32 @@ function BookDialog({ open, room, checkIn, channels, busy, onClose, onSubmit }: 
   channels: Channel[]
   busy: boolean
   onClose: () => void
-  onSubmit: (p: { guest_name: string; guest_phone: string; channel_id: number | null; notes: string }) => void
+  onSubmit: (p: { guest_name: string; guest_phone: string; channel_id: number | null; notes: string; stay_type: 'normal' | 'hourly'; hours: number; rate: number | null }) => void
 }) {
   const [name, setName] = useState('')
   const [phone, setPhone] = useState('')
   const [channelId, setChannelId] = useState<number | null>(null)
-  useEffect(() => { if (open) { setName(''); setPhone('') } }, [open])
+  /** 整晚 / 钟点：房型未配钟点价时隐藏钟点选项 */
+  const [stayType, setStayType] = useState<'normal' | 'hourly'>('normal')
+  const [hours, setHours] = useState(4)
+  const [rateText, setRateText] = useState('')
+  useEffect(() => {
+    if (open) {
+      setName(''); setPhone(''); setChannelId(null); setRateText('')
+      setStayType('normal'); setHours(4)
+    }
+  }, [open])
 
   if (!room || !checkIn) return null
+  const hourlyAvail = (room.hourly_price ?? 0) > 0
+  const isHourly = stayType === 'hourly'
+  const rate = rateText === '' ? null : Math.max(0, Math.round(Number(rateText) || 0))
+  const showRate = isHourly || rateText !== ''
+  const effPrice = rate ?? (isHourly ? room.hourly_price! : room.base_price)
+  const summary = isHourly
+    ? `钟点 ${hours} 小时 · ¥${effPrice}/小时 · 应收 ¥${(hours * effPrice).toLocaleString()}`
+    : `1 晚 · ¥${effPrice}/晚`
+
   return (
     <Dialog
       open={open} onClose={onClose}
@@ -581,12 +702,16 @@ function BookDialog({ open, room, checkIn, channels, busy, onClose, onSubmit }: 
           <button className="btn btn-ghost" onClick={onClose}>取消</button>
           <button
             className="btn btn-primary" disabled={busy || !name.trim()}
-            onClick={() => onSubmit({ guest_name: name, guest_phone: phone, channel_id: channelId, notes: '' })}
+            onClick={() => onSubmit({
+              guest_name: name, guest_phone: phone, channel_id: channelId, notes: '',
+              stay_type: stayType, hours: stayType === 'hourly' ? hours : 0,
+              rate: showRate ? effPrice : null,
+            })}
           >确认预订</button>
         </>
       }
     >
-      <div className="book-room-summary">{room.room_number} · {room.room_type_name || '客房'}{room.base_price ? ` · ${fmtMoney(room.base_price)} / 晚` : ''} · {md(checkIn)} 入住</div>
+      <div className="book-room-summary">{room.room_number} · {room.room_type_name || '客房'} · {md(checkIn)} 入住 · {summary}</div>
       <div className="form-row">
         <Field label="客人姓名" required>
           <input className="input" value={name} onChange={e => setName(e.target.value)} placeholder="请输入姓名" />
@@ -595,6 +720,29 @@ function BookDialog({ open, room, checkIn, channels, busy, onClose, onSubmit }: 
           <input className="input" value={phone} onChange={e => setPhone(e.target.value)} placeholder="可留空，到店时补录" />
         </Field>
       </div>
+      {hourlyAvail && (
+        <Field label="入住方式">
+          <div className="segmented">
+            <button className={stayType === 'normal' ? 'active' : ''} onClick={() => setStayType('normal')}>整晚</button>
+            <button className={stayType === 'hourly' ? 'active' : ''} onClick={() => setStayType('hourly')}>钟点</button>
+          </div>
+          <span className="hint">钟点价 ¥{room.hourly_price}/小时（设置 → 房型 中配置）；钟点房占用当日整天，创建后不可拖动改期。</span>
+        </Field>
+      )}
+      {stayType === 'hourly' && (
+        <Field label="入住时长">
+          <div className="chips">
+            {[2, 3, 4, 6, 8].map(x => (
+              <button key={x} className={`chip${hours === x ? ' active' : ''}`} onClick={() => setHours(x)}>{x} 小时</button>
+            ))}
+          </div>
+        </Field>
+      )}
+      <Field label="价格（选填，默认按系统设置价）" hint={showRate ? undefined : '留空则按 ¥' + (isHourly ? room.hourly_price : room.base_price) + (isHourly ? '/小时' : '/晚') + ' 计价。'}>
+        <input className="input" inputMode="numeric" value={rateText}
+               onChange={e => setRateText(e.target.value.replace(/[^\d]/g, ''))}
+               placeholder={isHourly ? String(room.hourly_price) : String(room.base_price)} />
+      </Field>
       <Field label="来源">
         <select className="select" value={channelId ?? ''} onChange={e => setChannelId(e.target.value ? Number(e.target.value) : null)}>
           {channels.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}

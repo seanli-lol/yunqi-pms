@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import {
   BedDouble, BellRing, CalendarDays, ChevronRight, Ellipsis, LayoutDashboard,
-  ReceiptText, SlidersHorizontal, Sparkles, Users, ChartColumn,
+  ReceiptText, SlidersHorizontal, Users, ChartColumn,
 } from 'lucide-react'
 import { Overlay } from './ui'
 import { useAuth } from './auth'
@@ -17,7 +17,6 @@ const NAV = [
   { group: '经营', items: [
     { to: '/billing', label: '账务', icon: ReceiptText, tab: 'more' },
     { to: '/guests', label: '客户', icon: Users, tab: 'more' },
-    { to: '/housekeeping', label: '客房清洁', icon: Sparkles, tab: 'hk' },
     { to: '/reports', label: '经营报表', icon: ChartColumn, tab: 'more' },
   ]},
   { group: '系统', items: [
@@ -29,7 +28,6 @@ const TABS = [
   { to: '/', label: '仪表盘', icon: LayoutDashboard, tab: 'dash' },
   { to: '/rooms', label: '房态盘', icon: BedDouble, tab: 'rooms' },
   { to: '/front-desk', label: '前台', icon: BellRing, tab: 'desk' },
-  { to: '/housekeeping', label: '清洁', icon: Sparkles, tab: 'hk' },
 ]
 
 function MoreSheet({ open, onClose }: { open: boolean; onClose: () => void }) {

@@ -5,14 +5,15 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import FRONTEND_ORIGINS
-from app.db import Base, SessionLocal, engine
-from app.routers import auth, channels, guests, hotels, housekeeping, reports, reservations, rooms
+from app.db import Base, SessionLocal, engine, run_sqlite_migrations
+from app.routers import auth, channels, guests, hotels, reports, reservations, rooms
 from app.seed import ensure_seed
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     Base.metadata.create_all(bind=engine)
+    run_sqlite_migrations()
     db = SessionLocal()
     try:
         ensure_seed(db)
@@ -37,7 +38,6 @@ app.include_router(channels.router)
 app.include_router(rooms.router)
 app.include_router(reservations.router)
 app.include_router(guests.router)
-app.include_router(housekeeping.router)
 app.include_router(reports.router)
 
 

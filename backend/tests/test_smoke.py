@@ -1,4 +1,4 @@
-"""冒烟测试：登录 / 建订 / 冲突 / 入住 / 清洁 / 退房全链路"""
+"""冒烟测试：登录 / 建订 / 冲突 / 入住 / 退房 / 设净全链路"""
 import os
 import tempfile
 
@@ -101,6 +101,7 @@ def test_checkin_checkout_flow():
     from datetime import date, timedelta
     rooms = client.get("/api/rooms", headers=h).json()
     room_403 = next(x for x in rooms if x["room_number"] == "403")
+    assert room_403["status"] == "vacant_dirty"
     cin = date.today().isoformat()
     cout = (date.today() + timedelta(days=1)).isoformat()
     r = client.post("/api/reservations", headers=h, json={
@@ -109,16 +110,7 @@ def test_checkin_checkout_flow():
     })
     assert r.status_code == 200
     rid = r.json()["id"]
-    # 入住（403 当前是空脏 → 应被拒绝）
-    r = client.post(f"/api/reservations/{rid}/check-in", headers=h,
-                    json={"room_id": room_403["id"], "amount_received": 500})
-    assert r.status_code == 400  # 非空净
-    # 清洁任务完成 → 空净（种子中 403 为进行中任务）
-    tasks = client.get("/api/housekeeping?status=in_progress", headers=h).json()
-    t403 = next(t for t in tasks if t["room_number"] == "403")
-    r = client.post(f"/api/housekeeping/{t403['id']}/complete", headers=h)
-    assert r.status_code == 200
-    # 入住成功
+    # 业务放宽：脏房可直接入住（不再强制空净）
     r = client.post(f"/api/reservations/{rid}/check-in", headers=h,
                     json={"room_id": room_403["id"], "amount_received": 500, "payment_method": "wechat"})
     assert r.status_code == 200, r.text
@@ -127,15 +119,26 @@ def test_checkin_checkout_flow():
     r = client.post(f"/api/reservations/{rid}/folio-items", headers=h,
                     json={"category": "other", "description": "迷你吧", "amount": 58})
     assert r.status_code == 200
-    # 退房：未结清 → 409；强制 → 成功且生成清洁任务
+    # 退房：未结清 → 409；强制 → 成功且房态转空脏
     r = client.post(f"/api/reservations/{rid}/check-out", headers=h, json={"force": False, "payments": []})
     assert r.status_code == 409
     r = client.post(f"/api/reservations/{rid}/check-out", headers=h,
                     json={"force": True, "payments": [{"method": "cash", "amount": 58}]})
     assert r.status_code == 200
     assert r.json()["status"] == "checked_out"
-    tasks = client.get("/api/housekeeping?status=pending", headers=h).json()
-    assert any(t["room_number"] == "403" for t in tasks)
+    rooms = client.get("/api/rooms", headers=h).json()
+    assert next(x for x in rooms if x["room_number"] == "403")["status"] == "vacant_dirty"
+    # 详情接口带出房态（前端据此显示「转为净房」）
+    detail = client.get(f"/api/reservations/{rid}", headers=h).json()
+    assert detail["room_status"] == "vacant_dirty"
+    # 日历一键设净：房态转空净
+    r = client.patch(f"/api/rooms/{room_403['id']}", headers=h, json={"status": "vacant_clean"})
+    assert r.status_code == 200
+    rooms = client.get("/api/rooms", headers=h).json()
+    assert next(x for x in rooms if x["room_number"] == "403")["status"] == "vacant_clean"
+    # 已退房预订的房态同步为净房（「转为净房」按钮随之隐藏）
+    detail = client.get(f"/api/reservations/{rid}", headers=h).json()
+    assert detail["room_status"] == "vacant_clean"
     # 操作日志应有记录
     day = client.get(f"/api/reports/day?day={date.today().isoformat()}", headers=h).json()
     actions = [o["action"] for o in day["operations"]]
@@ -212,6 +215,11 @@ def test_board_direct_booking_checkin_flow():
     ids2 = {x["id"] for x in av2}
     assert room["id"] in ids2
     assert all(x["status"] == "vacant_clean" for x in av2)
+    # 放宽参数：include_dirty 带入空脏房（如 303）；预离店（check_out=今天）的占房也会出现
+    av3 = client.get(f"{base}&exclude_res_id={res['id']}&include_dirty=1", headers=h).json()
+    assert {x["id"] for x in av3} >= ids2
+    assert any(x["status"] == "vacant_dirty" for x in av3)
+    assert all(x["status"] in ("vacant_clean", "vacant_dirty", "occupied") for x in av3)
     # 锁定房办理入住 → 退房
     r = client.post(f"/api/reservations/{res['id']}/check-in", headers=h,
                     json={"room_id": room["id"], "amount_received": 0})
@@ -223,3 +231,181 @@ def test_board_direct_booking_checkin_flow():
     assert r.status_code == 200, r.text
     assert r.json()["status"] == "checked_out"
     assert r.json()["balance_due"] == 0
+
+
+def test_hourly_booking_flow():
+    """钟点房全链路：建单→账目→详情→入住→退房；冲突与校验"""
+    from datetime import date, timedelta
+    tok = _login("zhouqi", hotel_id=1)["token"]
+    h = _headers(tok)
+    rooms = client.get("/api/rooms", headers=h).json()
+    # 选观景大床房（钟点需手动传价），避开前面测试用掉的大床房空净房
+    room = next(x for x in rooms if x["room_type_name"] == "观景大床房" and x["status"] == "vacant_clean")
+    cin = (date.today() + timedelta(days=30)).isoformat()
+    # 时长越界
+    r = client.post("/api/reservations", headers=h, json={
+        "guest_name": "钟点客", "check_in": cin, "check_out": (date.today() + timedelta(days=31)).isoformat(),
+        "room_id": room["id"], "stay_type": "hourly", "hours": 20,
+    })
+    assert r.status_code == 400
+    # 正常创建：手动传钟点价 45
+    r = client.post("/api/reservations", headers=h, json={
+        "guest_name": "钟点客", "check_in": cin, "check_out": (date.today() + timedelta(days=31)).isoformat(),
+        "room_id": room["id"], "stay_type": "hourly", "hours": 4, "status": "confirmed", "rate": 45,
+    })
+    assert r.status_code == 200, r.text
+    res = r.json()
+    assert res["stay_type"] == "hourly" and res["hours"] == 4
+    assert res["rate"] == 45
+    assert res["nights"] == 1
+    # 同房同时段再订 → 冲突（钟点占整日）
+    r = client.post("/api/reservations", headers=h, json={
+        "guest_name": "钟点客2", "check_in": cin, "check_out": (date.today() + timedelta(days=31)).isoformat(),
+        "room_id": room["id"],
+    })
+    assert r.status_code == 409
+    # 钟点房不可拖动改期
+    r = client.patch(f"/api/reservations/{res['id']}", headers=h,
+                     json={"check_in": (date.today() + timedelta(days=31)).isoformat(),
+                           "check_out": (date.today() + timedelta(days=32)).isoformat()})
+    assert r.status_code == 400
+    # 账目：钟点房费 4 × 45 = 180
+    folio = client.get(f"/api/reservations/{res['id']}/folio", headers=h).json()
+    assert folio["items"][0]["description"] == "钟点房费 · 4 小时 × ¥45"
+    assert folio["total_charge"] == 180
+    # 入住 → 退房
+    r = client.post(f"/api/reservations/{res['id']}/check-in", headers=h,
+                    json={"room_id": room["id"], "amount_received": 180, "payment_method": "cash"})
+    assert r.status_code == 200, r.text
+    r = client.post(f"/api/reservations/{res['id']}/check-out", headers=h,
+                    json={"force": False, "payments": []})
+    assert r.status_code == 200, r.text
+    assert r.json()["balance_due"] == 0
+    # 未配钟点价的房型（房型未传价）→ 400（亲子房无钟点价）
+    room2 = next(x for x in rooms if x["room_type_name"] == "亲子房" and x["status"] == "vacant_clean")
+    r = client.post("/api/reservations", headers=h, json={
+        "guest_name": "钟点客3", "check_in": cin, "check_out": (date.today() + timedelta(days=31)).isoformat(),
+        "room_id": room2["id"], "stay_type": "hourly", "hours": 3,
+    })
+    assert r.status_code == 400
+    # 大床房空净房按房型自动取钟点价 45（前面直接预订测试后应有空净房可用）
+    big_clean = next(x for x in rooms if x["room_type_name"] == "大床房" and x["status"] == "vacant_clean")
+    r = client.post("/api/reservations", headers=h, json={
+        "guest_name": "钟点客4", "check_in": cin, "check_out": (date.today() + timedelta(days=31)).isoformat(),
+        "room_id": big_clean["id"], "stay_type": "hourly", "hours": 3,
+    })
+    assert r.status_code == 200, r.text
+    assert r.json()["rate"] == 45
+    # 房态盘 block 输出 stay_type/hours
+    board = client.get("/api/rooms/board?days=45", headers=h).json()
+    blk = next(b for g in board["groups"] for rm in g["rooms"] for b in rm["blocks"] if b["id"] == res["id"])
+    assert blk["stay_type"] == "hourly" and blk["hours"] == 4
+
+
+def test_extend_reservation():
+    """延住：自定义天数+价格→增量账目；冲突 409；日志；钟点按小时延"""
+    from app.routers.auth import _login_attempts
+    _login_attempts.clear()
+    from datetime import date, timedelta
+    tok = _login("zhouqi", hotel_id=1)["token"]
+    h = _headers(tok)
+    rooms = client.get("/api/rooms", headers=h).json()
+    room = next(x for x in rooms if x["room_type_name"] == "大床房" and x["status"] == "vacant_clean")
+    cin = date.today().isoformat()
+    cout = (date.today() + timedelta(days=2)).isoformat()
+    r = client.post("/api/reservations", headers=h, json={
+        "guest_name": "延住客", "check_in": cin, "check_out": cout,
+        "room_id": room["id"], "status": "confirmed", "rate": 400,
+    })
+    assert r.status_code == 200, r.text
+    res = r.json()
+    rid = res["id"]
+    r = client.post(f"/api/reservations/{rid}/check-in", headers=h,
+                    json={"room_id": room["id"], "amount_received": 800})
+    assert r.status_code == 200, r.text
+    # 住期 [今天, +2)：挡路客订 [+4, +6)（与当前住期不重叠，可建单）
+    r2 = client.post("/api/reservations", headers=h, json={
+        "guest_name": "挡路客", "check_in": (date.today() + timedelta(days=4)).isoformat(),
+        "check_out": (date.today() + timedelta(days=6)).isoformat(),
+        "room_id": room["id"], "status": "confirmed",
+    })
+    assert r2.status_code == 200, r2.text
+    # 延住 2 晚 × ¥450（自定义价）→ 新离店 +4，不与挡路客冲突
+    r = client.post(f"/api/reservations/{rid}/extend", headers=h,
+                    json={"nights": 2, "rate": 450})
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["check_out"] == (date.today() + timedelta(days=4)).isoformat()
+    folio = client.get(f"/api/reservations/{rid}/folio", headers=h).json()
+    ext = [x for x in folio["items"] if "延住" in x["description"]]
+    assert len(ext) == 1
+    assert ext[0]["amount"] == 900
+    assert folio["total_charge"] == 800 + 900  # 原房费不动，追加增量
+    # 再延 1 晚 → 撞上挡路客 [+4, +6) → 409
+    r = client.post(f"/api/reservations/{rid}/extend", headers=h,
+                    json={"nights": 1, "rate": 450})
+    assert r.status_code == 409
+    # 日志：reservation_extend 已落
+    logs = client.get(f"/api/reservations/{rid}/logs", headers=h).json()
+    actions = [o["action"] for o in logs]
+    assert "reservation_extend" in actions
+    assert "reservation_create" in actions and "check_in" in actions
+    assert all(o["operator"] for o in logs)
+    # 钟点房按小时延住
+    hroom = next(x for x in rooms if x["room_type_name"] == "双床房" and x["status"] == "vacant_clean")
+    hcin = (date.today() + timedelta(days=40)).isoformat()
+    r = client.post("/api/reservations", headers=h, json={
+        "guest_name": "钟点延客", "check_in": hcin, "check_out": (date.today() + timedelta(days=41)).isoformat(),
+        "room_id": hroom["id"], "stay_type": "hourly", "hours": 2, "status": "confirmed",
+    })
+    assert r.status_code == 200, r.text
+    hres = r.json()
+    r = client.post(f"/api/reservations/{hres['id']}/check-in", headers=h,
+                    json={"room_id": hroom["id"], "amount_received": 0})
+    assert r.status_code == 200, r.text
+    r = client.post(f"/api/reservations/{hres['id']}/extend", headers=h,
+                    json={"hours": 2, "rate": 55})
+    assert r.status_code == 200, r.text
+    assert r.json()["hours"] == 4
+    assert r.json()["check_out"] == hres["check_out"]  # 离店日不变
+    folio = client.get(f"/api/reservations/{hres['id']}/folio", headers=h).json()
+    ext = [x for x in folio["items"] if "延住" in x["description"]]
+    assert ext and ext[0]["amount"] == 110  # 2 小时 × 55
+    # 在住预订退房后不可再延
+    r = client.post(f"/api/reservations/{rid}/check-out", headers=h,
+                    json={"force": True, "payments": []})
+    assert r.status_code == 200
+    r = client.post(f"/api/reservations/{rid}/extend", headers=h, json={"nights": 1})
+    assert r.status_code == 400
+
+
+def test_reservation_logs_endpoint():
+    """预订日志端点：按预订聚合操作留痕，含收款类"""
+    from datetime import date, timedelta
+    tok = _login("zhouqi", hotel_id=1)["token"]
+    h = _headers(tok)
+    rooms = client.get("/api/rooms", headers=h).json()
+    room = next(x for x in rooms if x["status"] == "vacant_clean")
+    cin = (date.today() + timedelta(days=50)).isoformat()
+    cout = (date.today() + timedelta(days=51)).isoformat()
+    r = client.post("/api/reservations", headers=h, json={
+        "guest_name": "日志客", "check_in": cin, "check_out": cout,
+        "room_id": room["id"], "status": "confirmed",
+    })
+    assert r.status_code == 200, r.text
+    rid = r.json()["id"]
+    # 产生一条收款日志
+    r = client.post(f"/api/reservations/{rid}/payments", headers=h,
+                    json={"method": "wechat", "amount": 100})
+    assert r.status_code == 200
+    r = client.get(f"/api/reservations/{rid}/logs", headers=h)
+    assert r.status_code == 200
+    logs = r.json()
+    actions = [o["action"] for o in logs]
+    assert "reservation_create" in actions and "payment" in actions
+    assert all(set(o) >= {"time", "action", "summary", "operator"} for o in logs)
+    # 倒序：最新在前
+    assert logs[0]["action"] == "payment"
+    # 他人酒店不可见
+    r = client.get(f"/api/reservations/{rid}/logs", headers=_headers(_login("admin")["token"]))
+    assert r.status_code == 200  # 平台管理员可查

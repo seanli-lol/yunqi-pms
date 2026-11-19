@@ -4,7 +4,7 @@ import {
   CartesianGrid, Bar, BarChart, Line, LineChart,
   ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from 'recharts'
-import { api, fmtMoney, todayIso } from '../api'
+import { api, fmtMoney, todayIso, OP_ACTION_LABEL, OP_ACTION_COLOR } from '../api'
 import { PageHead, Segmented, Spinner, useToast } from '../ui'
 
 type Preset = '7' | '30' | 'month' | 'custom'
@@ -231,23 +231,8 @@ export default function Reports() {
                       <tr key={i}>
                         <td data-label="时间">{o.time}</td>
                         <td data-label="操作类型">
-                          <span className={`badge ${
-                            o.action.startsWith('check_in') ? 'badge-green'
-                            : o.action.startsWith('check_out') ? 'badge-red'
-                            : o.action.startsWith('payment') ? 'badge-orange'
-                            : o.action.startsWith('housekeeping') ? 'badge-gray'
-                            : 'badge-blue'}`}>
-                            {({ check_in: '办理入住', check_out: '退房结算', payment: '收款',
-                                reservation_create: '预订创建', reservation_confirm: '预订确认',
-                                reservation_cancel: '取消预订', reservation_move: '调整预订',
-                                folio_add: '加收杂费', housekeeping_done: '清洁完成',
-                                housekeeping_start: '开始清洁', guest_create: '新增客户',
-                                hotel_create: '创建酒店', hotel_update: '更新酒店',
-                                user_create: '创建员工', user_update: '更新员工',
-                                channel_create: '新增渠道', channel_update: '更新渠道',
-                                room_type_create: '新增房型', room_type_update: '更新房型',
-                                room_create: '新增客房', room_status: '房态变更',
-                                housekeeping_create: '创建清洁任务' } as Record<string, string>)[o.action] ?? o.action}
+                          <span className={`badge badge-${OP_ACTION_COLOR[o.action] ?? 'blue'}`}>
+                            {OP_ACTION_LABEL[o.action] ?? o.action}
                           </span>
                         </td>
                         <td data-label="内容摘要">{o.summary}</td>
@@ -260,7 +245,7 @@ export default function Reports() {
                   </tbody>
                 </table>
               </div>
-              <p className="hint mt-16">操作记录涵盖预订、入住、退房、收款、清洁等全部关键动作；换一天查看时，指标与记录随之切换。</p>
+              <p className="hint mt-16">操作记录涵盖预订、入住、退房、收款与房态调整等全部关键动作；换一天查看时，指标与记录随之切换。</p>
             </>
           )}
         </div>

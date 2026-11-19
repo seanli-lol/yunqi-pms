@@ -88,17 +88,18 @@ export const api = {
 // ---------- 类型 ----------
 export interface Hotel { id: number; name: string; city: string; address: string; contact_name: string; is_active: boolean; room_count: number; staff_count: number; status: string }
 export interface Channel { id: number; name: string; color: string; sort_order: number; is_active: boolean }
-export interface RoomType { id: number; name: string; base_price: number; capacity: number; description: string; room_count: number }
-export interface Room { id: number; room_number: string; floor: number; status: string; notes: string; room_type_id: number; room_type_name: string; base_price: number }
+export interface RoomType { id: number; name: string; base_price: number; hourly_price: number; capacity: number; description: string; room_count: number }
+export interface Room { id: number; room_number: string; floor: number; status: string; notes: string; room_type_id: number; room_type_name: string; base_price: number; hourly_price?: number }
 export interface CalBlock {
   id: number; code: string; guest_name: string; channel_id: number | null
   channel_name: string; channel_color: string
   check_in: string; check_out: string; status: string; rate: number
+  stay_type?: string; hours?: number
   balance_due: number; col_start: number; nights: number
 }
 export interface BoardRoom {
   id: number; number: string; floor: number; status: string; notes: string
-  room_type_name: string; base_price: number
+  room_type_name: string; base_price: number; hourly_price?: number
   current_guest: string | null; current_check_out: string | null; current_code: string | null
   blocks: CalBlock[]
 }
@@ -113,11 +114,14 @@ export interface Reservation {
   id: number; code: string; guest_id: number; guest_name: string; guest_phone: string
   vip_level: string; room_type_id: number; room_type_name: string
   room_id: number | null; room_number: string | null
+  room_status?: string | null
   check_in: string; check_out: string; nights: number; status: string
   channel_id: number | null; channel_name: string | null; channel_color: string | null
-  rate: number; notes: string; balance_due: number
+  rate: number; stay_type: string; hours: number
+  notes: string; balance_due: number
   operator_name: string | null; created_at: string
 }
+export interface OpLog { id: number; time: string; action: string; summary: string; operator: string }
 export interface Folio {
   items: { id: number; category: string; description: string; amount: number; created_at: string; operator: string }[]
   payments: { id: number; method: string; amount: number; created_at: string; operator: string }[]
@@ -130,16 +134,11 @@ export interface Guest {
   stay_count: number; total_spend: number; last_stay: string | null
   history?: { reservation_id: number; room_number: string; check_in: string; check_out: string; status: string; amount: number }[]
 }
-export interface Task {
-  id: number; room_id: number; room_number: string; room_type_name: string; floor: number
-  task_type: string; status: string; priority: string; assignee: string; notes: string
-  created_at: string | null; completed_at: string | null
-}
 export interface DashData {
   occupancy_today: number; occupied: number; total_rooms: number
   arrivals: number; arrivals_ready: number; departures: number
   unpaid_count: number; unpaid_amount: number; pending_confirm: number
-  housekeeping_pending: number; maintenance_count: number
+  maintenance_count: number
   revenue_today: number; revenue_room: number; revenue_other: number
   today_label: string
   arrival_items: Reservation[]
@@ -189,4 +188,38 @@ export const ROOM_STATUS_LABEL: Record<string, string> = {
 
 export const PAY_METHOD_LABEL: Record<string, string> = {
   cash: '现金', wechat: '微信', alipay: '支付宝', card: '刷卡',
+}
+
+/** 操作日志 action → 中文标签（报表页与预订详情共用） */
+export const OP_ACTION_LABEL: Record<string, string> = {
+  reservation_create: '创建预订', reservation_confirm: '确认预订', reservation_cancel: '取消预订',
+  reservation_move: '调整预订', reservation_extend: '延住',
+  check_in: '办理入住', check_out: '退房结算',
+  payment: '收款', folio_add: '加收费用',
+  room_status: '房态调整', room_create: '新增客房',
+  room_type_create: '新增房型', room_type_update: '更新房型',
+  guest_create: '新增客人',
+  hotel_create: '新增酒店', hotel_update: '更新酒店',
+  user_create: '新增员工', user_update: '更新员工',
+  channel_create: '新增渠道', channel_update: '更新渠道',
+  channel_disable: '停用渠道', channel_delete: '删除渠道',
+  // 历史库遗留的清洁任务日志（功能已下线，保住旧记录的展示）
+  housekeeping_create: '清洁任务', housekeeping_start: '清洁任务', housekeeping_done: '清洁任务',
+}
+
+/** 操作日志 action → 徽章颜色 */
+export const OP_ACTION_COLOR: Record<string, string> = {
+  reservation_create: 'blue', reservation_confirm: 'green', reservation_cancel: 'red',
+  reservation_move: 'blue', reservation_extend: 'purple',
+  check_in: 'green', check_out: 'gray',
+  payment: 'green', folio_add: 'orange',
+  room_status: 'gray', room_create: 'blue',
+  room_type_create: 'blue', room_type_update: 'blue',
+  guest_create: 'blue',
+  hotel_create: 'blue', hotel_update: 'blue',
+  user_create: 'blue', user_update: 'blue',
+  channel_create: 'blue', channel_update: 'blue',
+  channel_disable: 'gray', channel_delete: 'red',
+  // 历史库遗留的清洁任务日志（功能已下线，保住旧记录的展示）
+  housekeeping_create: 'gray', housekeeping_start: 'gray', housekeeping_done: 'gray',
 }

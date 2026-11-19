@@ -106,10 +106,10 @@ export default function Reservations() {
                       <div className="cell-main">{r.guest_name} {r.vip_level && <span className="badge badge-purple" style={{ marginLeft: 4 }}>{r.vip_level}</span>}</div>
                       <div className="cell-sub">{maskPhone(r.guest_phone)}</div>
                     </td>
-                    <td data-label="房型">{r.room_type_name}{r.room_number ? ` · ${r.room_number}` : ''}</td>
+                    <td data-label="房型">{r.room_type_name}{r.room_number ? ` · ${r.room_number}` : ''}{r.stay_type === 'hourly' && <span className="badge badge-purple" style={{ marginLeft: 4 }}>钟点 {r.hours}h</span>}</td>
                     <td data-label="入住 – 离店">{md(r.check_in)} – {md(r.check_out)}</td>
                     <td className="num" data-label="晚数">{r.nights}</td>
-                    <td className="num" data-label="房费">{fmtMoney(r.rate * r.nights)}</td>
+                    <td className="num" data-label="房费">{fmtMoney(r.stay_type === 'hourly' ? r.rate * r.hours : r.rate * r.nights)}</td>
                     <td data-label="来源">
                       {r.channel_name && (
                         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
@@ -176,10 +176,13 @@ function NewReservationDialog({ open, onClose, channels, types, onSubmit, onDone
   const [cout, setCout] = useState(new Date(Date.now() + 86400000).toISOString().slice(0, 10))
   const [channelId, setChannelId] = useState<number | null>(null)
   const [notes, setNotes] = useState('')
+  /** 整晚 / 钟点（所选房型支持钟点时可选） */
+  const [stayType, setStayType] = useState<'normal' | 'hourly'>('normal')
+  const [hours, setHours] = useState(4)
 
   useEffect(() => {
     if (open) {
-      setName(''); setPhone(''); setChannelId(null); setNotes('')
+      setName(''); setPhone(''); setChannelId(null); setNotes(''); setStayType('normal'); setHours(4)
       const t = new Date()
       const pad = (x: number) => (x < 10 ? '0' : '') + x
       setCin(`${t.getFullYear()}-${pad(t.getMonth() + 1)}-${pad(t.getDate())}`)
@@ -190,6 +193,7 @@ function NewReservationDialog({ open, onClose, channels, types, onSubmit, onDone
 
   const nights = Math.round((new Date(cout).getTime() - new Date(cin).getTime()) / 86400000)
   const type = types.find(t => t.id === typeId)
+  const hourlyAvail = (type?.hourly_price ?? 0) > 0
 
   const submit = () => {
     if (!name.trim()) { toast('请输入客人姓名'); return }
@@ -198,6 +202,7 @@ function NewReservationDialog({ open, onClose, channels, types, onSubmit, onDone
       guest_name: name, guest_phone: phone, guest_id_number: '',
       check_in: cin, check_out: cout, room_type_id: typeId,
       channel_id: channelId, notes,
+      stay_type: stayType, hours: stayType === 'hourly' ? hours : 0,
       status: 'confirmed',
     })
     onDone()
@@ -228,16 +233,36 @@ function NewReservationDialog({ open, onClose, channels, types, onSubmit, onDone
           {types.map(t => <option key={t.id} value={t.id}>{t.name} · ¥{t.base_price}/晚 · {t.room_count} 间</option>)}
         </select>
       </Field>
+      {hourlyAvail && (
+        <Field label="入住方式">
+          <div className="segmented">
+            <button className={stayType === 'normal' ? 'active' : ''} onClick={() => setStayType('normal')}>整晚</button>
+            <button className={stayType === 'hourly' ? 'active' : ''} onClick={() => setStayType('hourly')}>钟点</button>
+          </div>
+          <span className="hint">钟点价 ¥{type!.hourly_price}/小时；钟点房按入住日占整日，时长 {hours} 小时。</span>
+        </Field>
+      )}
+      {hourlyAvail && stayType === 'hourly' && (
+        <Field label="入住时长">
+          <div className="chips">
+            {[2, 3, 4, 6, 8].map(x => (
+              <button key={x} className={`chip${hours === x ? ' active' : ''}`} onClick={() => setHours(x)}>{x} 小时</button>
+            ))}
+          </div>
+        </Field>
+      )}
       <div className="form-row">
         <Field label="入住日期" required hint="默认为今天，可修改。">
           <input className="input" type="date" value={cin} onChange={e => setCin(e.target.value)} />
         </Field>
         <Field label="离店日期" required>
-          <input className="input" type="date" value={cout} onChange={e => setCout(e.target.value)} />
+          <input className="input" type="date" value={cout} onChange={e => setCout(e.target.value)} disabled={stayType === 'hourly'} />
         </Field>
       </div>
       <p className="hint">
-        {nights > 0 && type ? `共 ${nights} 晚 · 房费合计 ¥${(nights * type.base_price).toLocaleString()} · 预订后将自动预留空净房，入住时可改派。` : '请选择房型与日期。'}
+        {stayType === 'hourly' && hourlyAvail
+          ? `钟点房费 ¥${(type!.hourly_price * hours).toLocaleString()}（${hours} 小时 × ¥${type!.hourly_price}）· 按入住日占用整天，创建后将自动预留空净房。`
+          : nights > 0 && type ? `共 ${nights} 晚 · 房费合计 ¥${(nights * type.base_price).toLocaleString()} · 预订后将自动预留空净房，入住时可改派。` : '请选择房型与日期。'}
       </p>
       <div className="form-row mt-16">
         <Field label="来源">
