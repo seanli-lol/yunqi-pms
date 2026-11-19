@@ -293,8 +293,24 @@ textarea.input { height: auto; padding: 12px 14px; resize: vertical; }
 .dialog-sub { font-size: 13px; color: var(--text-secondary); margin-top: 3px; }
 .dialog-body { padding: 20px 24px; }
 .dialog-foot {
-  display: flex; justify-content: flex-end; align-items: center; gap: 10px; padding: 6px 24px 24px;
+  display: flex; justify-content: flex-end; align-items: center; gap: 10px; row-gap: 10px;
+  flex-wrap: wrap; padding: 6px 24px 24px;
 }
+/* 详情弹层内的次要/危险操作区（撤销入住等）：与主流程按钮分区，避免误触 */
+.sub-ops {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--hairline-soft);
+}
+.sub-ops .hint { flex: 1; min-width: 220px; }
+/* 后果说明块：浅红底逐条列出不可逆影响 */
+.danger-note {
+  margin-top: 16px; padding: 13px 15px;
+  background: var(--danger-tint); border: 1px solid #f5c9c5;
+  border-radius: 12px; font-size: 13px; line-height: 1.55; color: var(--danger-deep);
+}
+.danger-note b { font-weight: 600; }
+.danger-note ul { margin: 6px 0 0; padding-left: 18px; list-style: disc; }
+.danger-note li { margin-top: 4px; }
 .overlay.drawer-wrap { display: block; padding: 0; }
 .drawer {
   position: absolute; top: 0; right: 0; bottom: 0; width: min(460px, 100%);
@@ -396,18 +412,6 @@ textarea.input { height: auto; padding: 12px 14px; resize: vertical; }
 .pick-room .fl { font-size: 11px; color: var(--text-tertiary); margin-top: 2px; }
 .pick-room.active .fl { color: var(--accent-deep); }
 
-.kanban { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; align-items: start; }
-.kan-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
-.kan-head { display: flex; align-items: center; justify-content: space-between; padding: 2px 4px; }
-.kan-title { font-size: 14px; font-weight: 600; }
-.task { padding: 14px 16px; display: flex; flex-direction: column; gap: 8px; }
-.task-top { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
-.task-room { font-size: 16px; font-weight: 600; letter-spacing: -0.01em; }
-.task-type { font-size: 12.5px; color: var(--text-secondary); }
-.task-foot { display: flex; align-items: center; justify-content: space-between; font-size: 12.5px; color: var(--text-tertiary); flex-wrap: wrap; gap: 6px; }
-.task-assignee { display: inline-flex; align-items: center; gap: 6px; }
-.task-actions { display: flex; gap: 8px; }
-
 /* ========== 房态盘：日历视图 ========== */
 .cal-src-legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12.5px; color: var(--text-secondary); align-items: center; }
 .cal-src-legend span { display: inline-flex; align-items: center; gap: 6px; }
@@ -447,9 +451,26 @@ textarea.input { height: auto; padding: 12px 14px; resize: vertical; }
 .cal-lab {
   grid-column: 1; grid-row: 1; position: sticky; left: 0; z-index: 2;
   background: var(--bg); border-right: 1px solid var(--hairline-soft);
-  display: flex; align-items: center; justify-content: center;
+  display: flex; align-items: center; justify-content: center; gap: 5px;
+  /* 左右同宽内边距：无论是否显示「设净」，房号都保持水平居中 */
+  padding: 0 36px;
   font-size: 14.5px; font-weight: 600; color: var(--text-primary);
 }
+/* 脏房 / 维修房的房号着色（设净后自动恢复常态色） */
+.cal-lab.dirty { color: var(--warning-deep); background: var(--warning-tint); }
+.cal-lab.maint { color: var(--danger-deep); background: var(--danger-tint); }
+/* 日历房号旁「设净」小按钮：空脏/维修房一键转净（点击不触发行开单）
+   绝对定位到标签右侧，避免挤压房号导致各行房号不对齐 */
+.cal-setclean {
+  position: absolute; right: 7px; top: 50%; transform: translateY(-50%);
+  border: 0; cursor: pointer; font-size: 10.5px; font-weight: 600;
+  color: var(--success-deep, #1E7B3C); background: rgba(52, 199, 89, .14);
+  border-radius: 100px; padding: 2px 7px; line-height: 1.4;
+  transition: background var(--dur) var(--ease), transform var(--dur) var(--ease);
+}
+.cal-setclean:hover { background: rgba(52, 199, 89, .26); }
+.cal-setclean:active { transform: translateY(-50%) scale(.94); }
+@media (prefers-reduced-motion: reduce) { .cal-setclean:active { transform: translateY(-50%); } }
 .cal-block {
   grid-row: 1; align-self: center; z-index: 1;
   height: 42px; margin: 0 3px; border-radius: 9px; padding: 5px 8px 5px 13px;
@@ -491,6 +512,29 @@ textarea.input { height: auto; padding: 12px 14px; resize: vertical; }
 .info-row > span:first-child { color: var(--text-secondary); flex-shrink: 0; }
 .info-row > *:last-child { text-align: right; font-weight: 500; }
 
+/* 预订详情弹层内的操作日志展开区 */
+.oplog-toggle {
+  display: flex; justify-content: space-between; align-items: center;
+  margin-top: 14px; padding: 11px 14px; cursor: pointer; user-select: none;
+  background: var(--bg-secondary); border-radius: 12px;
+  font-size: 13.5px; font-weight: 600; color: var(--text-secondary);
+  transition: background var(--dur) var(--ease);
+}
+.oplog-toggle:hover { background: var(--hairline-soft); }
+.oplog-toggle .arr { font-weight: 500; font-size: 12.5px; }
+.oplog-list {
+  margin-top: 10px; max-height: 260px; overflow-y: auto;
+  border: 1px solid var(--hairline-soft); border-radius: 12px;
+}
+.oplog-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 9px 14px; font-size: 13px; border-bottom: 1px solid var(--hairline-soft);
+}
+.oplog-row:last-child { border-bottom: 0; }
+.oplog-row .t { color: var(--text-tertiary); font-variant-numeric: tabular-nums; flex-shrink: 0; font-size: 12px; }
+.oplog-row .s { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-primary); }
+.oplog-row .op { color: var(--text-tertiary); flex-shrink: 0; font-size: 12px; }
+
 .book-room-summary {
   background: var(--accent-tint); border-radius: 12px; padding: 12px 16px;
   font-size: 14.5px; font-weight: 600; color: var(--accent-deep); margin-bottom: 18px;
@@ -516,7 +560,6 @@ textarea.input { height: auto; padding: 12px 14px; resize: vertical; }
 @media (max-width: 1023px) {
   .main { padding: 28px 28px 60px; }
   .stats { grid-template-columns: repeat(2, 1fr); }
-  .kanban { grid-template-columns: 1fr; }
 }
 @media (max-width: 767px) {
   .sidebar { display: none; }
@@ -531,6 +574,10 @@ textarea.input { height: auto; padding: 12px 14px; resize: vertical; }
   .grid-2, .grid-3 { grid-template-columns: 1fr; }
   .filter-bar .search { max-width: none; }
   .dialog { max-height: 92vh; border-radius: 18px; }
+  /* 弹层底部：提示独占一行，按钮等分铺满（多按钮时不落单） */
+  .dialog-foot { flex-wrap: wrap; row-gap: 10px; }
+  .dialog-foot > .hint { flex: 1 0 100%; margin-right: 0 !important; }
+  .dialog-foot > .btn { flex: 1 1 0; min-width: 0; padding: 0 12px; }
   .table thead { display: none; }
   .table, .table tbody { display: block; }
   .table tbody tr {
