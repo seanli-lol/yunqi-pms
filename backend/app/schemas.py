@@ -153,6 +153,17 @@ class ReservationPatch(BaseModel):
     check_out: date | None = None
 
 
+class RegistrationBody(BaseModel):
+    """在住登记信息更正（姓名 / 手机号 / 房价 / 来源 / 备注）。
+
+    字段为 None 表示不修改；房价改动会按新价重算首条房费账目。"""
+    guest_name: str | None = None
+    guest_phone: str | None = None
+    rate: int | None = None
+    channel_id: int | None = None
+    notes: str | None = None
+
+
 class ExtendBody(BaseModel):
     """延住：普通预订按晚数延长，钟点预订按小时延长"""
     nights: int = 1

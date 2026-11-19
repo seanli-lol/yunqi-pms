@@ -2,7 +2,8 @@ import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   api, addDaysIso, fmtMoney, md, todayIso, ROOM_STATUS_LABEL, OP_ACTION_LABEL, OP_ACTION_COLOR,
-  type Board, type BoardRoom, type CalBlock, type Channel, type OpLog, type Reservation, type Room,
+  type Board, type BoardRoom, type CalBlock, type Channel, type Folio, type OpLog,
+  type RegistrationBody, type Reservation, type Room,
 } from '../api'
 import { Badge, Dialog, Field, PageHead, Segmented, Spinner, useToast, RES_STATUS_BADGE } from '../ui'
 import { CheckInDialog, ExtendDialog } from '../dialogs'
@@ -40,6 +41,9 @@ export default function Rooms() {
   const [checkinRes, setCheckinRes] = useState<Reservation | null>(null)
   /** 延住目标预订（详情弹层内「延住」按钮打开） */
   const [extendRes, setExtendRes] = useState<Reservation | null>(null)
+  /** 编辑登记信息 / 撤销入住目标预订（详情弹层内打开） */
+  const [editRes, setEditRes] = useState<Reservation | null>(null)
+  const [undoRes, setUndoRes] = useState<Reservation | null>(null)
   /** 详情弹层内操作日志展开区 */
   const [showLogs, setShowLogs] = useState(false)
   /** 拖动中的房号 → 高亮目标行 */
@@ -246,6 +250,40 @@ export default function Rooms() {
       invalidate()
     },
     onError: (e: any) => toast(e.message ?? '延住失败'),
+  })
+
+  /* ---------- 编辑在住登记信息 ---------- */
+  const editMut = useMutation({
+    mutationFn: (p: { id: number; body: RegistrationBody }) =>
+      api.patch<Reservation>(`/api/reservations/${p.id}/registration`, p.body),
+    onSuccess: (r) => {
+      toast('登记信息已更新，操作已留痕')
+      setEditRes(null)
+      setDetailRes(null)
+      qc.invalidateQueries({ queryKey: ['reservation'] })
+      invalidate()
+    },
+    onError: (e: any) => toast(e.message ?? '保存失败'),
+  })
+
+  /* ---------- 撤销入住（入住反方向：退回已确认、删收款、房态转空脏） ---------- */
+  const undoMut = useMutation({
+    mutationFn: (p: { id: number; label: string }) =>
+      api.post<Reservation>(`/api/reservations/${p.id}/undo-check-in`),
+    onSuccess: (_d, p) => {
+      toast(p.label)
+      setUndoRes(null)
+      setDetailRes(null)
+      invalidate()
+    },
+    onError: (e: any) => toast(e.message ?? '撤销失败'),
+  })
+
+  // 撤销弹层要展示真实已收金额：取账目接口的 total_paid（不能用房价推算）
+  const undoFolio = useQuery({
+    queryKey: ['folio', undoRes?.id],
+    enabled: undoRes !== null,
+    queryFn: () => api.get<Folio>(`/api/reservations/${undoRes!.id}/folio`),
   })
 
   /* ---------- 预订操作日志（详情弹层展开区，懒加载） ---------- */
@@ -538,6 +576,10 @@ export default function Rooms() {
                 <>
                   <button
                     className="btn btn-ghost"
+                    onClick={() => { setEditRes(resQuery.data!); setDetailRes(null) }}
+                  >编辑登记</button>
+                  <button
+                    className="btn btn-ghost"
                     onClick={() => setExtendRes(resQuery.data)}
                   >延住</button>
                   <button
@@ -604,6 +646,14 @@ export default function Rooms() {
               </div>
             )}
 
+            {/* 低频/危险操作区：与主流程按钮分开放，避免误触（版式同原型 .sub-ops） */}
+            {resQuery.data.status === 'checked_in' && (
+              <div className="sub-ops">
+                <span className="hint">登记信息填错可「编辑登记」更正；撤销入住会把房态退回空脏，并删除本次入住产生的收款。</span>
+                <button className="btn btn-danger-ghost btn-sm" onClick={() => { setUndoRes(resQuery.data!); setDetailRes(null) }}>撤销入住</button>
+              </div>
+            )}
+
             {/* ---------- 操作日志展开区 ---------- */}
             <div className="oplog-toggle" onClick={() => setShowLogs(v => !v)}>
               <span>操作日志（本预订全部留痕）</span>
@@ -644,7 +694,147 @@ export default function Rooms() {
           onConfirm={(body) => extendMut.mutate({ id: extendRes.id, body })}
         />
       )}
+
+      {/* ---------- 编辑登记信息（在住） ---------- */}
+      {editRes && (
+        <EditRegistrationDialog
+          res={editRes} channels={channelList} busy={editMut.isPending}
+          onClose={() => { setEditRes(null); setDetailRes(editRes) }}
+          onConfirm={(body) => editMut.mutate({ id: editRes.id, body })}
+        />
+      )}
+
+      {/* ---------- 撤销入住（在住） ---------- */}
+      {undoRes && (
+        <UndoCheckInDialog
+          res={undoRes} paid={undoFolio.data?.total_paid} busy={undoMut.isPending}
+          onClose={() => { setUndoRes(null); setDetailRes(undoRes) }}
+          onConfirm={() => undoMut.mutate({
+            id: undoRes.id,
+            label: `已撤销 ${undoRes.guest_name} 的入住，房态转空脏`,
+          })}
+        />
+      )}
     </>
+  )
+}
+
+/* ---------- 编辑在住登记信息（姓名 / 手机号 / 房价 / 来源 / 备注） ---------- */
+function EditRegistrationDialog({ res, channels, busy, onClose, onConfirm }: {
+  res: Reservation
+  channels: Channel[]
+  busy: boolean
+  onClose: () => void
+  onConfirm: (body: RegistrationBody) => void
+}) {
+  const [name, setName] = useState(res.guest_name)
+  const [phone, setPhone] = useState(res.guest_phone)
+  const [rateText, setRateText] = useState(String(res.rate))
+  const [channelId, setChannelId] = useState<number | null>(res.channel_id)
+  const [notes, setNotes] = useState(res.notes)
+
+  const hourly = res.stay_type === 'hourly'
+  const rate = Math.max(0, Math.round(Number(rateText) || 0))
+  const units = hourly ? res.hours : res.nights
+  const unitLabel = hourly ? '小时' : '晚'
+  const total = units * rate
+
+  return (
+    <Dialog
+      open onClose={onClose}
+      title="编辑登记信息"
+      sub={`${res.room_number ?? '未分配'} · ${res.guest_name} · 已入住 ${md(res.check_in)} – ${md(res.check_out)}`}
+      foot={
+        <>
+          <span className="hint" style={{ marginRight: 'auto' }}>操作人：当前登录账号</span>
+          <button className="btn btn-ghost" onClick={onClose}>取消</button>
+          <button
+            className="btn btn-primary" disabled={busy || !name.trim()}
+            onClick={() => onConfirm({
+              guest_name: name, guest_phone: phone,
+              rate, channel_id: channelId, notes,
+            })}
+          >保存修改</button>
+        </>
+      }
+    >
+      <div className="form-row">
+        <Field label="客人姓名" required>
+          <input className="input" value={name} onChange={e => setName(e.target.value)} placeholder="请输入姓名" />
+        </Field>
+        <Field label="手机号">
+          <input className="input" value={phone} onChange={e => setPhone(e.target.value)} placeholder="可留空，到店时补录" />
+        </Field>
+      </div>
+      <div className="form-row">
+        <Field
+          label={`房价（元 / ${unitLabel}）`}
+          hint={`修改后将按新房价重算该预订的房费账目（${units} ${unitLabel} × ¥${rate} = ¥${total.toLocaleString()}）。`}
+        >
+          <input
+            className="input" inputMode="numeric" value={rateText}
+            onChange={e => setRateText(e.target.value.replace(/[^\d]/g, ''))}
+          />
+        </Field>
+        <Field label="预订来源">
+          <select className="select" value={channelId ?? ''} onChange={e => setChannelId(e.target.value ? Number(e.target.value) : null)}>
+            <option value="">未指定</option>
+            {channels.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+          </select>
+        </Field>
+      </div>
+      <Field label="备注">
+        <input className="input" value={notes} onChange={e => setNotes(e.target.value)} placeholder="如：高楼层、无烟房" />
+      </Field>
+      <p className="hint">保存后同步更新客户档案，并在预订日志留痕（操作人、修改前后内容）。</p>
+    </Dialog>
+  )
+}
+
+/* ---------- 撤销入住确认（入住反向：退回已确认、删收款、房态转空脏） ---------- */
+function UndoCheckInDialog({ res, paid, busy, onClose, onConfirm }: {
+  res: Reservation
+  /** 该预订当前已收合计（账目接口 total_paid，未加载时 undefined） */
+  paid?: number
+  busy: boolean
+  onClose: () => void
+  onConfirm: () => void
+}) {
+  const received = paid ?? 0
+  return (
+    <Dialog
+      open onClose={onClose}
+      title="撤销入住"
+      sub={`${res.room_number ?? '未分配'} · ${res.guest_name} · ${res.code}`}
+      foot={
+        <>
+          <span className="hint" style={{ marginRight: 'auto' }}>操作人：当前登录账号</span>
+          <button className="btn btn-ghost" onClick={onClose}>保留在住</button>
+          <button className="btn btn-danger-ghost" disabled={busy || paid === undefined} onClick={onConfirm}>确认撤销入住</button>
+        </>
+      }
+    >
+      <div className="info-row"><span>撤销后退回状态</span><span>已确认（预订保留，可重新办理入住）</span></div>
+      <div className="info-row"><span>房间房态</span><span>空脏 · 待清洁</span></div>
+      <div className="info-row">
+        <span>该预订已收款</span>
+        <span style={{ color: received > 0 ? 'var(--danger-deep)' : undefined }}>
+          {paid === undefined ? '读取中…' : received > 0 ? `${fmtMoney(received)} · 撤销后删除（无退款凭证）` : '无收款'}
+        </span>
+      </div>
+      <div className="danger-note">
+        <b>撤销将立即生效，且不可自动恢复：</b>
+        <ul>
+          <li>房态退回「空脏」，需在房态盘点「设净」才能再次售卖；</li>
+          <li>
+            该预订的全部收款记录会被删除（{received > 0 ? `${fmtMoney(received)}，` : ''}
+            余额回到 {fmtMoney(res.balance_due + received)}）；
+          </li>
+          <li>预订恢复为「已确认」，原锁定房号 {res.room_number ?? '—'} 仍保留；</li>
+          <li>全程写入操作日志，可在预订详情「操作日志」中追溯。</li>
+        </ul>
+      </div>
+    </Dialog>
   )
 }
 

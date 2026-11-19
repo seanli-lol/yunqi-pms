@@ -10,8 +10,8 @@ from app.deps import (balance_of, blocking_ids, free_rooms, get_current_user,
 from app.models import (Channel, FolioItem, Guest, OperationLog,
                         Payment, Reservation, Room, RoomType, User)
 from app.schemas import (CheckInBody, CheckOutBody, ExtendBody, FolioItemBody,
-                         PaymentBody, ReservationBody, ReservationOut,
-                         ReservationPatch)
+                         PaymentBody, RegistrationBody, ReservationBody,
+                         ReservationOut, ReservationPatch)
 
 router = APIRouter(prefix="/api/reservations", tags=["reservations"])
 
@@ -351,6 +351,127 @@ def check_in(res_id: int, body: CheckInBody, user: User = Depends(get_current_us
     tag = "（前客未退）" if prev_status == "occupied" else ("（脏房入住）" if prev_status == "vacant_dirty" else "")
     log_op(db, r.hotel_id, user, "check_in", "reservation", r.id,
            f"办理入住 {g.name if g else ''} · {r.code} · 分配 {room.room_number} {rt.name if rt else ''}{tag}")
+    db.commit()
+    return res_out(db, r)
+
+
+# ---------- 编辑在住登记信息（更正姓名 / 手机号 / 房价 / 来源 / 备注） ----------
+@router.patch("/{res_id}/registration")
+def edit_registration(res_id: int, body: RegistrationBody,
+                      user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    r = db.get(Reservation, res_id)
+    if not r or (user.role != "platform_admin" and r.hotel_id != user.hotel_id):
+        raise HTTPException(404, "预订不存在")
+    if r.status != "checked_in":
+        raise HTTPException(400, "仅「在住」预订可编辑登记信息")
+
+    g = db.get(Guest, r.guest_id)
+    changes: list[str] = []
+
+    # ---- 客人姓名 / 手机号：同步客户档案 ----
+    new_name = body.guest_name.strip() if body.guest_name is not None else None
+    new_phone = body.guest_phone.strip() if body.guest_phone is not None else None
+    if new_name is not None and not new_name:
+        raise HTTPException(400, "客人姓名不能为空")
+    if new_phone is not None and new_phone:
+        dup = (db.query(Guest)
+               .filter(Guest.hotel_id == r.hotel_id, Guest.phone == new_phone,
+                       Guest.id != g.id)
+               .first())
+        if dup:
+            raise HTTPException(400, f"手机号已属于客户档案「{dup.name}」，请核对后再改")
+    if g:
+        if new_name is not None and new_name != g.name:
+            changes.append(f"姓名 {g.name}→{new_name}")
+            g.name = new_name
+        if new_phone is not None and new_phone != g.phone:
+            changes.append(f"手机号 {g.phone or '未留'}→{new_phone or '未留'}")
+            g.phone = new_phone
+
+    # ---- 房价：按新单价重算首条房费账目（延住追加行不动） ----
+    if body.rate is not None:
+        if body.rate < 0:
+            raise HTTPException(400, "房价不能为负数")
+        if body.rate != r.rate:
+            old_rate = r.rate
+            r.rate = body.rate
+            fee = (db.query(FolioItem)
+                   .filter(FolioItem.reservation_id == r.id, FolioItem.category == "room_charge")
+                   .order_by(FolioItem.id)
+                   .first())
+            if fee:
+                if r.stay_type == "hourly":
+                    fee.amount = r.hours * r.rate
+                    fee.description = f"钟点房费 · {r.hours} 小时 × ¥{r.rate}"
+                else:
+                    nights = (r.check_out - r.check_in).days
+                    fee.amount = nights * r.rate
+                    fee.description = f"房费 · {nights} 晚 × ¥{r.rate}"
+            changes.append(f"房价 ¥{old_rate}→¥{body.rate}")
+
+    # ---- 来源渠道 ----
+    if body.channel_id is not None and body.channel_id != r.channel_id:
+        ch = db.get(Channel, body.channel_id)
+        if not ch or ch.hotel_id != r.hotel_id:
+            raise HTTPException(400, "来源渠道不存在")
+        old = db.get(Channel, r.channel_id) if r.channel_id else None
+        changes.append(f"来源 {old.name if old else '未填'}→{ch.name}")
+        r.channel_id = ch.id
+
+    # ---- 备注 ----
+    if body.notes is not None and body.notes != r.notes:
+        changes.append(f"备注「{r.notes or '空'}」→「{body.notes or '空'}」")
+        r.notes = body.notes
+
+    if not changes:
+        return res_out(db, r)
+
+    log_op(db, r.hotel_id, user, "reservation_edit", "reservation", r.id,
+           f"编辑在住登记 {r.code}（{g.name if g else ''}）：{' · '.join(changes)}")
+    db.commit()
+    return res_out(db, r)
+
+
+# ---------- 撤销入住（入住反向：退回已确认、删除收款、房态转空脏） ----------
+@router.post("/{res_id}/undo-check-in")
+def undo_check_in(res_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    r = db.get(Reservation, res_id)
+    if not r or (user.role != "platform_admin" and r.hotel_id != user.hotel_id):
+        raise HTTPException(404, "预订不存在")
+    if r.status != "checked_in":
+        raise HTTPException(400, "仅「在住」预订可撤销入住")
+
+    g = db.get(Guest, r.guest_id)
+    room = db.get(Room, r.room_id) if r.room_id else None
+
+    # 彻底撤销：删除该预订全部收款记录（不生成退款凭证），账目房费保留
+    pays = db.query(Payment).filter(Payment.reservation_id == r.id).all()
+    paid_total = sum(p.amount for p in pays)
+    for p in pays:
+        db.delete(p)
+
+    r.status = "confirmed"
+
+    # 同房还有其他在住客人（前客未退场景）时不动房态，否则退回空脏待清洁
+    other_guests = []
+    if room:
+        other_guests = (db.query(Reservation)
+                        .filter(Reservation.hotel_id == r.hotel_id,
+                                Reservation.room_id == room.id,
+                                Reservation.status == "checked_in",
+                                Reservation.id != r.id)
+                        .all())
+    if room and not other_guests:
+        room.status = "vacant_dirty"
+
+    if paid_total > 0:
+        log_op(db, r.hotel_id, user, "payment", "payment", r.id,
+               f"撤销入住删除收款 ¥{paid_total}（共 {len(pays)} 笔，无退款凭证）")
+    log_op(db, r.hotel_id, user, "check_in_undo", "reservation", r.id,
+           f"撤销入住 {g.name if g else ''} · {r.code} · {room.room_number if room else '未分配'} · "
+           f"退回已确认"
+           + (f" · 房态转空脏" if room and not other_guests else " · 同房仍有在住客人，房态不变")
+           + (f" · 删除收款 ¥{paid_total}" if paid_total > 0 else ""))
     db.commit()
     return res_out(db, r)
 

@@ -122,6 +122,14 @@ export interface Reservation {
   operator_name: string | null; created_at: string
 }
 export interface OpLog { id: number; time: string; action: string; summary: string; operator: string }
+/** 在住登记信息更正（字段为 null 表示不修改） */
+export interface RegistrationBody {
+  guest_name?: string
+  guest_phone?: string
+  rate?: number
+  channel_id?: number | null
+  notes?: string
+}
 export interface Folio {
   items: { id: number; category: string; description: string; amount: number; created_at: string; operator: string }[]
   payments: { id: number; method: string; amount: number; created_at: string; operator: string }[]
@@ -193,8 +201,8 @@ export const PAY_METHOD_LABEL: Record<string, string> = {
 /** 操作日志 action → 中文标签（报表页与预订详情共用） */
 export const OP_ACTION_LABEL: Record<string, string> = {
   reservation_create: '创建预订', reservation_confirm: '确认预订', reservation_cancel: '取消预订',
-  reservation_move: '调整预订', reservation_extend: '延住',
-  check_in: '办理入住', check_out: '退房结算',
+  reservation_move: '调整预订', reservation_extend: '延住', reservation_edit: '编辑登记',
+  check_in: '办理入住', check_in_undo: '撤销入住', check_out: '退房结算',
   payment: '收款', folio_add: '加收费用',
   room_status: '房态调整', room_create: '新增客房',
   room_type_create: '新增房型', room_type_update: '更新房型',
@@ -210,8 +218,8 @@ export const OP_ACTION_LABEL: Record<string, string> = {
 /** 操作日志 action → 徽章颜色 */
 export const OP_ACTION_COLOR: Record<string, string> = {
   reservation_create: 'blue', reservation_confirm: 'green', reservation_cancel: 'red',
-  reservation_move: 'blue', reservation_extend: 'purple',
-  check_in: 'green', check_out: 'gray',
+  reservation_move: 'blue', reservation_extend: 'purple', reservation_edit: 'blue',
+  check_in: 'green', check_in_undo: 'orange', check_out: 'gray',
   payment: 'green', folio_add: 'orange',
   room_status: 'gray', room_create: 'blue',
   room_type_create: 'blue', room_type_update: 'blue',

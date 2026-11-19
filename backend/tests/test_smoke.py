@@ -409,3 +409,95 @@ def test_reservation_logs_endpoint():
     # 他人酒店不可见
     r = client.get(f"/api/reservations/{rid}/logs", headers=_headers(_login("admin")["token"]))
     assert r.status_code == 200  # 平台管理员可查
+
+
+def test_edit_registration_and_undo_check_in():
+    """在住登记信息更正 + 撤销入住（反方向房态流转）"""
+    from app.routers.auth import _login_attempts
+    _login_attempts.clear()
+    from datetime import date, timedelta
+    tok = _login("zhouqi", hotel_id=1)["token"]
+    h = _headers(tok)
+    rooms = client.get("/api/rooms", headers=h).json()
+    room = next(x for x in rooms if x["status"] == "vacant_clean")
+    ch = client.get("/api/channels", headers=h).json()[0]
+    cin = (date.today() + timedelta(days=60)).isoformat()
+    cout = (date.today() + timedelta(days=62)).isoformat()
+    r = client.post("/api/reservations", headers=h, json={
+        "guest_name": "登记原名", "guest_phone": "13900001111",
+        "check_in": cin, "check_out": cout, "room_id": room["id"],
+    })
+    assert r.status_code == 200, r.text
+    res = r.json()
+    rid = res["id"]
+    fee_before = res["balance_due"]
+    assert fee_before == 2 * res["rate"]  # 2 晚房费
+
+    # 未入住 → 不可编辑登记 / 不可撤销
+    r = client.patch(f"/api/reservations/{rid}/registration", headers=h, json={"guest_name": "改名"})
+    assert r.status_code == 400
+    r = client.post(f"/api/reservations/{rid}/undo-check-in", headers=h)
+    assert r.status_code == 400
+
+    # 入住并收取部分款项
+    paid = 100
+    r = client.post(f"/api/reservations/{rid}/check-in", headers=h,
+                    json={"room_id": room["id"], "amount_received": paid, "payment_method": "cash"})
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] == "checked_in"
+
+    # ---- 编辑登记：姓名 / 手机号 / 房价 / 来源 / 备注 ----
+    new_rate = res["rate"] + 20
+    r = client.patch(f"/api/reservations/{rid}/registration", headers=h, json={
+        "guest_name": "登记改名", "guest_phone": "13900002222",
+        "rate": new_rate, "channel_id": ch["id"], "notes": "改到高楼层",
+    })
+    assert r.status_code == 200, r.text
+    out = r.json()
+    assert out["guest_name"] == "登记改名"
+    assert out["guest_phone"] == "13900002222"
+    assert out["rate"] == new_rate
+    assert out["channel_id"] == ch["id"]
+    assert out["notes"] == "改到高楼层"
+    # 房费账目按新单价重算：2 晚 × 新价，且只重算首条房费行
+    folio = client.get(f"/api/reservations/{rid}/folio", headers=h).json()
+    room_rows = [x for x in folio["items"] if x["category"] == "room_charge"]
+    assert len(room_rows) == 1
+    assert room_rows[0]["amount"] == 2 * new_rate
+    assert folio["total_charge"] == 2 * new_rate
+    assert folio["balance_due"] == 2 * new_rate - paid
+
+    # 姓名为空 → 400；房价为负 → 400
+    r = client.patch(f"/api/reservations/{rid}/registration", headers=h, json={"guest_name": "  "})
+    assert r.status_code == 400
+    r = client.patch(f"/api/reservations/{rid}/registration", headers=h, json={"rate": -1})
+    assert r.status_code == 400
+
+    # ---- 撤销入住 ----
+    room_before = next(x for x in client.get("/api/rooms", headers=h).json() if x["id"] == room["id"])
+    assert room_before["status"] == "occupied"
+    r = client.post(f"/api/reservations/{rid}/undo-check-in", headers=h)
+    assert r.status_code == 200, r.text
+    out = r.json()
+    assert out["status"] == "confirmed"
+    assert out["room_id"] == room["id"]  # 原锁定房号保留
+    # 收款被删除（无退款凭证），账单回到全额应收
+    folio = client.get(f"/api/reservations/{rid}/folio", headers=h).json()
+    assert folio["payments"] == []
+    assert folio["total_paid"] == 0
+    assert folio["balance_due"] == 2 * new_rate
+    # 房态退回空脏
+    room_after = next(x for x in client.get("/api/rooms", headers=h).json() if x["id"] == room["id"])
+    assert room_after["status"] == "vacant_dirty"
+    # 撤销后不可再次撤销；可重新办理入住
+    r = client.post(f"/api/reservations/{rid}/undo-check-in", headers=h)
+    assert r.status_code == 400
+    r = client.post(f"/api/reservations/{rid}/check-in", headers=h,
+                    json={"room_id": room["id"], "amount_received": 0})
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] == "checked_in"
+    # 操作日志留痕：编辑 / 撤销 / 删收款
+    logs = client.get(f"/api/reservations/{rid}/logs", headers=h).json()
+    actions = [o["action"] for o in logs]
+    assert "reservation_edit" in actions
+    assert "check_in_undo" in actions
