@@ -126,9 +126,16 @@ export interface OpLog { id: number; time: string; action: string; summary: stri
 export interface RegistrationBody {
   guest_name?: string
   guest_phone?: string
+  /** 普通房：改入住天数（离店日 = 入住日 + 天数） */
+  nights?: number
   rate?: number
   channel_id?: number | null
   notes?: string
+}
+/** 更正实收：把整单已收金额调整到目标总额 */
+export interface PaidTotalBody {
+  amount: number
+  method?: 'cash' | 'wechat' | 'alipay' | 'card'
 }
 export interface Folio {
   items: { id: number; category: string; description: string; amount: number; created_at: string; operator: string }[]
@@ -202,8 +209,8 @@ export const PAY_METHOD_LABEL: Record<string, string> = {
 export const OP_ACTION_LABEL: Record<string, string> = {
   reservation_create: '创建预订', reservation_confirm: '确认预订', reservation_cancel: '取消预订',
   reservation_move: '调整预订', reservation_extend: '延住', reservation_edit: '编辑登记',
-  check_in: '办理入住', check_in_undo: '撤销入住', check_out: '退房结算',
-  payment: '收款', folio_add: '加收费用',
+  check_in: '办理入住', check_in_undo: '撤销入住', check_out: '退房结算', check_out_undo: '撤销退房',
+  payment: '收款', payment_adjust: '更正实收', folio_add: '加收费用',
   room_status: '房态调整', room_create: '新增客房',
   room_type_create: '新增房型', room_type_update: '更新房型',
   guest_create: '新增客人',
@@ -219,8 +226,8 @@ export const OP_ACTION_LABEL: Record<string, string> = {
 export const OP_ACTION_COLOR: Record<string, string> = {
   reservation_create: 'blue', reservation_confirm: 'green', reservation_cancel: 'red',
   reservation_move: 'blue', reservation_extend: 'purple', reservation_edit: 'blue',
-  check_in: 'green', check_in_undo: 'orange', check_out: 'gray',
-  payment: 'green', folio_add: 'orange',
+  check_in: 'green', check_in_undo: 'orange', check_out: 'gray', check_out_undo: 'orange',
+  payment: 'green', payment_adjust: 'blue', folio_add: 'orange',
   room_status: 'gray', room_create: 'blue',
   room_type_create: 'blue', room_type_update: 'blue',
   guest_create: 'blue',

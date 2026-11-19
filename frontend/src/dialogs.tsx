@@ -69,7 +69,7 @@ export function CheckInDialog({ res, busy, onClose, onConfirm }: {
       )}
       <p className="hint">脏房 / 前客未退的房间也可直接入住，选房时已标注，请酌情安排。</p>
       <div className="form-row mt-24">
-        <Field label="实收金额">
+        <Field label="实收金额（整单总额）">
           <input
             className="input" inputMode="numeric" placeholder="0"
             value={amount}
@@ -84,14 +84,14 @@ export function CheckInDialog({ res, busy, onClose, onConfirm }: {
         </Field>
       </div>
       <p className="hint">
-        应收 {fmtMoney(res.balance_due)}（{res.stay_type === 'hourly' ? `钟点房费 ${fmtMoney(res.rate * res.hours)}` : `房费 ${fmtMoney(res.rate * res.nights)}`}）· 实收 0 = 到店后结清 · 免押金入住
+        应收 {fmtMoney(res.balance_due)}（{res.stay_type === 'hourly' ? `钟点房费 ${fmtMoney(res.rate * res.hours)}` : `房费 ${fmtMoney(res.rate * res.nights)}（整单总价）`}）· 实收填本次入住整单总额 · 实收 0 = 到店后结清 · 免押金入住
       </p>
       <p className="hint">手机号：{res.guest_phone || '未留（到店补录）'} · 预订来源 {res.channel_name ?? '—'}</p>
     </Dialog>
   )
 }
 
-/* ---------- 延住弹窗（普通按晚 / 钟点按小时，自定义应收单价） ---------- */
+/* ---------- 延住弹窗（普通按晚 / 钟点按小时，自定义应收总额） ---------- */
 export function ExtendDialog({ res, busy, onClose, onConfirm }: {
   res: Reservation
   busy: boolean
@@ -101,15 +101,25 @@ export function ExtendDialog({ res, busy, onClose, onConfirm }: {
   const hourly = res.stay_type === 'hourly'
   const [nights, setNights] = useState('1')
   const [hours, setHours] = useState('1')
-  const [rate, setRate] = useState(String(res.rate))
+  /** 延住总价（整单）：按数量折算单价提交，后端仍按「数量 × 单价」入账 */
+  const [totalText, setTotalText] = useState(String(hourly ? res.rate : res.rate))
   const n = Math.max(0, Math.round(Number(nights) || 0))
   const h = Math.max(0, Math.round(Number(hours) || 0))
-  const r = Math.max(0, Math.round(Number(rate) || 0))
+  const units = hourly ? h : n
+  const unitLabel = hourly ? '小时' : '晚'
+  const total = Math.max(0, Math.round(Number(totalText) || 0))
+  const rate = units > 0 ? Math.round(total / units) : 0
+  const amount = rate * units
   // 提交体按预订类型裁剪：普通预订不携带 hours，钟点预订不携带 nights（后端按类型校验）
-  const body = hourly ? { nights: 0, hours: h, rate: r } : { nights: n, hours: 0, rate: r }
-  const amount = (hourly ? h : n) * r
+  const body = hourly ? { nights: 0, hours: h, rate } : { nights: n, hours: 0, rate }
   const newOut = addDaysIso(res.check_out, n)
   const remain = 12 - res.hours
+
+  /** 改数量：按当前折合单价重算总价 */
+  const onUnitsChange = (nextUnits: number) => {
+    const u = (units > 0 ? Math.round(total / units) : 0) || res.rate
+    setTotalText(String(Math.max(0, nextUnits) * u))
+  }
 
   return (
     <Dialog
@@ -133,21 +143,32 @@ export function ExtendDialog({ res, busy, onClose, onConfirm }: {
       {hourly ? (
         <Field label="延住小时数" required hint={`当前 ${res.hours} 小时，累计不可超过 12 小时。`}>
           <input className="input" inputMode="numeric" value={hours}
-                 onChange={e => setHours(e.target.value.replace(/[^\d]/g, ''))} placeholder="1" />
+                 onChange={e => {
+                   const digits = e.target.value.replace(/[^\d]/g, '')
+                   setHours(digits)
+                   onUnitsChange(Math.round(Number(digits) || 0))
+                 }} placeholder="1" />
         </Field>
       ) : (
         <Field label="延住晚数" required hint={`离店日 ${md(res.check_out)} → 延住后 ${md(newOut)}`}>
           <input className="input" inputMode="numeric" value={nights}
-                 onChange={e => setNights(e.target.value.replace(/[^\d]/g, ''))} placeholder="1" />
+                 onChange={e => {
+                   const digits = e.target.value.replace(/[^\d]/g, '')
+                   setNights(digits)
+                   onUnitsChange(Math.round(Number(digits) || 0))
+                 }} placeholder="1" />
         </Field>
       )}
-      <Field label="应收价格（单价）" hint={`默认为系统设置房价 ¥${res.rate}，可修改。`}>
-        <input className="input" inputMode="numeric" value={rate}
-               onChange={e => setRate(e.target.value.replace(/[^\d]/g, ''))} />
+      <Field
+        label="延住总价（整单，元）"
+        hint={`折合 ¥${rate}/${unitLabel}（${units} ${unitLabel}）· 本次应收 ¥${amount.toLocaleString()}；改数量时按折合单价自动重算。`}
+      >
+        <input className="input" inputMode="numeric" value={totalText}
+               onChange={e => setTotalText(e.target.value.replace(/[^\d]/g, ''))} />
       </Field>
       <p className="hint">
         本次应收：<b>¥{amount.toLocaleString()}</b>
-        {hourly ? `（${h} 小时 × ¥${r}，延住后共 ${res.hours + h} 小时）` : `（${n} 晚 × ¥${r}，新离店 ${md(newOut)}）`}
+        {hourly ? `（${h} 小时 × ¥${rate}，延住后共 ${res.hours + h} 小时）` : `（${n} 晚 × ¥${rate}，新离店 ${md(newOut)}）`}
       </p>
     </Dialog>
   )

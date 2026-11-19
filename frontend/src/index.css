@@ -491,6 +491,15 @@ textarea.input { height: auto; padding: 12px 14px; resize: vertical; }
 .cal-block.stay { background: #e8f1fb; border-color: #c5ddf5; color: var(--accent-deep); }
 .cal-block.future { background: #fff3e2; border-color: #f5dfc0; color: var(--warning-deep); }
 .cal-block.past { background: #ededf0; border-color: #dddde3; color: var(--text-secondary); }
+/* 按住空白格横向拖选多天：虚线选区（松手后按选中天数开单） */
+.cal-select {
+  grid-row: 1; align-self: center; z-index: 1;
+  height: 42px; margin: 0 3px; border-radius: 9px;
+  border: 1.5px dashed var(--accent, #0071E3); background: rgba(0, 113, 227, .10);
+  color: var(--accent-deep, #0066CC); font-size: 11.5px; font-weight: 600;
+  display: flex; align-items: center; justify-content: center;
+  pointer-events: none;
+}
 .owe {
   position: absolute; right: 4px; top: 4px;
   background: var(--danger); color: #fff;

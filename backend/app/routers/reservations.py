@@ -10,10 +10,12 @@ from app.deps import (balance_of, blocking_ids, free_rooms, get_current_user,
 from app.models import (Channel, FolioItem, Guest, OperationLog,
                         Payment, Reservation, Room, RoomType, User)
 from app.schemas import (CheckInBody, CheckOutBody, ExtendBody, FolioItemBody,
-                         PaymentBody, RegistrationBody, ReservationBody,
-                         ReservationOut, ReservationPatch)
+                         PaidTotalBody, PaymentBody, RegistrationBody,
+                         ReservationBody, ReservationOut, ReservationPatch)
 
 router = APIRouter(prefix="/api/reservations", tags=["reservations"])
+
+METHOD_LABEL = dict(cash="现金", wechat="微信", alipay="支付宝", card="刷卡")
 
 
 # ---------- 序列化 ----------
@@ -57,6 +59,23 @@ def gen_code(db: Session, check_in: date) -> str:
         if not db.query(Reservation).filter(Reservation.code == code).first():
             return code
         n += 1
+
+
+def recalc_room_charge(db: Session, r: Reservation) -> None:
+    """按当前房价与住期重算首条房费账目（延住追加行不参与，沿用既有边界）。"""
+    fee = (db.query(FolioItem)
+           .filter(FolioItem.reservation_id == r.id, FolioItem.category == "room_charge")
+           .order_by(FolioItem.id)
+           .first())
+    if not fee:
+        return
+    if r.stay_type == "hourly":
+        fee.amount = r.hours * r.rate
+        fee.description = f"钟点房费 · {r.hours} 小时 × ¥{r.rate}"
+    else:
+        nights = (r.check_out - r.check_in).days
+        fee.amount = nights * r.rate
+        fee.description = f"房费 · {nights} 晚 × ¥{r.rate}"
 
 
 def upsert_guest(db: Session, hotel_id: int, name: str, phone: str, id_number: str) -> Guest:
@@ -215,7 +234,7 @@ def create_reservation(body: ReservationBody, hotel_id: int | None = None,
     return res_out(db, r)
 
 
-# ---------- 拖动改期 / 换房 ----------
+# ---------- 拖动改期 / 换房 / 调整预订（日期、房价） ----------
 @router.patch("/{res_id}")
 def move_reservation(res_id: int, body: ReservationPatch,
                      user: User = Depends(get_current_user), db: Session = Depends(get_db)):
@@ -224,6 +243,8 @@ def move_reservation(res_id: int, body: ReservationPatch,
         raise HTTPException(404, "预订不存在")
     if r.status not in ("pending", "confirmed", "checked_in"):
         raise HTTPException(400, "当前状态不可调整（仅待确认 / 已确认 / 在住可拖动）")
+    if body.rate is not None and body.rate < 0:
+        raise HTTPException(400, "房价不能为负数")
     # 钟点房占用整日固定：改期会破坏「时长 × 单价」的计费语义，仅允许换房（同占整日）
     if r.stay_type == "hourly" and (body.check_in or body.check_out):
         raise HTTPException(400, "钟点房预订不可拖动改期（占整日固定），如需调整请延住或重新开单")
@@ -232,52 +253,55 @@ def move_reservation(res_id: int, body: ReservationPatch,
     cout = body.check_out or r.check_out
     if cout <= cin:
         raise HTTPException(400, "离店日期必须晚于入住日期")
-    new_room_id = body.room_id if body.room_id is not None else r.room_id
-    if new_room_id is None:
-        raise HTTPException(400, "该预订未锁定房号，请在预订管理中办理")
-
-    room = db.get(Room, new_room_id)
-    if not room or room.hotel_id != r.hotel_id:
-        raise HTTPException(400, "客房不存在")
-    if room.status == "maintenance":
-        raise HTTPException(400, f"{room.room_number} 维修中，不可调入")
-
-    conflict = blocking_ids(db, r.hotel_id, room.id, cin, cout, exclude=r.id)
-    if conflict:
-        raise HTTPException(409, f"{room.room_number} 所选时段已被占用")
 
     old_room = db.get(Room, r.room_id) if r.room_id else None
     span_changed = (cin, cout) != (r.check_in, r.check_out)
-    room_changed = new_room_id != r.room_id
+    rate_changed = body.rate is not None and body.rate != r.rate
 
-    # 在住预订换房：旧房转空脏，新房转为在住
-    if r.status == "checked_in" and room_changed and old_room:
-        old_room.status = "vacant_dirty"
-        room.status = "occupied"
+    # 换房 / 校验只在真的指定或已锁定房号时进行；按房型预订（未锁房）允许只改日期
+    if body.room_id is not None or r.room_id is not None:
+        new_room_id = body.room_id if body.room_id is not None else r.room_id
+        room = db.get(Room, new_room_id)
+        if not room or room.hotel_id != r.hotel_id:
+            raise HTTPException(400, "客房不存在")
+        if room.status == "maintenance":
+            raise HTTPException(400, f"{room.room_number} 维修中，不可调入")
+        conflict = blocking_ids(db, r.hotel_id, room.id, cin, cout, exclude=r.id)
+        if conflict:
+            raise HTTPException(409, f"{room.room_number} 所选时段已被占用")
+        room_changed = new_room_id != r.room_id
+        # 在住预订换房：旧房转空脏，新房转为在住
+        if r.status == "checked_in" and room_changed and old_room:
+            old_room.status = "vacant_dirty"
+            room.status = "occupied"
+        r.room_id = room.id
+    else:
+        # 按房型预订（未锁房号）：只改日期，不涉及房间与冲突
+        room = None
+        room_changed = False
 
-    r.room_id = room.id
     r.check_in = cin
     r.check_out = cout
+    if rate_changed:
+        r.rate = body.rate
 
-    # 同步房费账目（按新晚数重算第一条房费）
+    # 同步房费账目（按新晚数 / 新房价重算第一条房费）
     # ⚠️ 已知边界：延住（POST /extend）追加的「延住房费」行不参与重算——若先延住再拖动改期，
     # 首条房费按新晚数整体重算，叠加延住行会双重计费；前台应优先用延住入口调整在住住期。
     # 钟点预订不按晚重算（账目 = 小时 × 单价，换房不影响）。
-    nights = (cout - cin).days
-    fee = db.query(FolioItem).filter(
-        FolioItem.reservation_id == r.id, FolioItem.category == "room_charge").first()
-    if fee and nights > 0 and r.stay_type != "hourly":
-        fee.amount = nights * r.rate
-        fee.description = f"房费 · {nights} 晚 × ¥{r.rate}"
+    if span_changed or rate_changed:
+        recalc_room_charge(db, r)
 
     detail = []
     if room_changed:
-        detail.append(f"{old_room.room_number if old_room else '—'} → {room.room_number}")
+        detail.append(f"{old_room.room_number if old_room else '—'} → {room.room_number if room else '—'}")
     if span_changed:
         detail.append(f"{cin:%m/%d}–{cout:%m/%d}")
+    if rate_changed:
+        detail.append(f"房价 ¥{body.rate}/晚")
     guest = db.get(Guest, r.guest_id)
     log_op(db, r.hotel_id, user, "reservation_move", "reservation", r.id,
-           f"调整预订 {r.code}（{guest.name if guest else ''}）：{' · '.join(detail)}")
+           f"调整预订 {r.code}（{guest.name if guest else ''}）：{' · '.join(detail) or '无变化'}")
     db.commit()
     return res_out(db, r)
 
@@ -307,9 +331,18 @@ def cancel_reservation(res_id: int, user: User = Depends(get_current_user), db: 
     if r.status not in ("pending", "confirmed"):
         raise HTTPException(400, "仅待确认 / 已确认的预订可取消")
     r.status = "cancelled"
+    # 取消是整条流转里唯一清除已收款的环节（撤销入住 / 撤销退房都保留款项）
+    pays = db.query(Payment).filter(Payment.reservation_id == r.id).all()
+    paid_total = sum(p.amount for p in pays)
+    for p in pays:
+        db.delete(p)
     g = db.get(Guest, r.guest_id)
+    if paid_total > 0:
+        log_op(db, r.hotel_id, user, "payment", "payment", r.id,
+               f"取消预订清除收款 ¥{paid_total}（共 {len(pays)} 笔，无退款凭证）")
     log_op(db, r.hotel_id, user, "reservation_cancel", "reservation", r.id,
-           f"取消预订 {r.code}（{g.name if g else ''}）")
+           f"取消预订 {r.code}（{g.name if g else ''}）"
+           + (f" · 清除已收款 ¥{paid_total}" if paid_total > 0 else ""))
     db.commit()
     return res_out(db, r)
 
@@ -322,6 +355,9 @@ def check_in(res_id: int, body: CheckInBody, user: User = Depends(get_current_us
         raise HTTPException(404, "预订不存在")
     if r.status not in ("pending", "confirmed"):
         raise HTTPException(400, "仅待确认 / 已确认的预订可办理入住")
+    # 未来入住的预订只能保持预订状态：入住/退房都必须等到入住日当天之后
+    if r.check_in > date.today():
+        raise HTTPException(400, f"入住日期为 {r.check_in:%m/%d}，尚未到店，当前只能预订，入住日当天方可办理入住")
     room = db.get(Room, body.room_id)
     if not room or room.hotel_id != r.hotel_id:
         raise HTTPException(400, "客房不存在")
@@ -345,7 +381,7 @@ def check_in(res_id: int, body: CheckInBody, user: User = Depends(get_current_us
         db.add(Payment(hotel_id=r.hotel_id, reservation_id=r.id,
                        method=body.payment_method, amount=body.amount_received, created_by=user.id))
         log_op(db, r.hotel_id, user, "payment", "payment", r.id,
-               f"入住实收 ¥{body.amount_received} · {dict(cash='现金', wechat='微信', alipay='支付宝', card='刷卡')[body.payment_method]}")
+               f"入住实收 ¥{body.amount_received} · {METHOD_LABEL[body.payment_method]}")
     g = db.get(Guest, r.guest_id)
     rt = db.get(RoomType, r.room_type_id)
     tag = "（前客未退）" if prev_status == "occupied" else ("（脏房入住）" if prev_status == "vacant_dirty" else "")
@@ -388,26 +424,32 @@ def edit_registration(res_id: int, body: RegistrationBody,
             changes.append(f"手机号 {g.phone or '未留'}→{new_phone or '未留'}")
             g.phone = new_phone
 
-    # ---- 房价：按新单价重算首条房费账目（延住追加行不动） ----
-    if body.rate is not None:
-        if body.rate < 0:
-            raise HTTPException(400, "房价不能为负数")
-        if body.rate != r.rate:
-            old_rate = r.rate
-            r.rate = body.rate
-            fee = (db.query(FolioItem)
-                   .filter(FolioItem.reservation_id == r.id, FolioItem.category == "room_charge")
-                   .order_by(FolioItem.id)
-                   .first())
-            if fee:
-                if r.stay_type == "hourly":
-                    fee.amount = r.hours * r.rate
-                    fee.description = f"钟点房费 · {r.hours} 小时 × ¥{r.rate}"
-                else:
-                    nights = (r.check_out - r.check_in).days
-                    fee.amount = nights * r.rate
-                    fee.description = f"房费 · {nights} 晚 × ¥{r.rate}"
-            changes.append(f"房价 ¥{old_rate}→¥{body.rate}")
+    # ---- 入住天数（仅普通房）：离店日 = 入住日 + 天数，冲突只按未到店预订计 ----
+    if body.nights is not None:
+        if r.stay_type == "hourly":
+            raise HTTPException(400, "钟点房按小时计，请用「延住」调整时长")
+        if body.nights < 1:
+            raise HTTPException(400, "入住天数至少 1 晚")
+        new_out = r.check_in + timedelta(days=body.nights)
+        if new_out != r.check_out:
+            if r.room_id:
+                conflict = blocking_ids(db, r.hotel_id, r.room_id, r.check_in, new_out,
+                                        exclude=r.id, include_checked_in=False)
+                if conflict:
+                    room = db.get(Room, r.room_id)
+                    raise HTTPException(409, f"{room.room_number if room else '客房'} 新住期已被其他预订占用")
+            changes.append(f"住期 {r.check_out:%m/%d}→{new_out:%m/%d}（{body.nights} 晚）")
+            r.check_out = new_out
+
+    # ---- 房价（单价）/ 天数：重算首条房费账目（延住追加行不动） ----
+    if body.rate is not None and body.rate < 0:
+        raise HTTPException(400, "房价不能为负数")
+    rate_changed = body.rate is not None and body.rate != r.rate
+    if rate_changed:
+        changes.append(f"房价 ¥{r.rate}→¥{body.rate}")
+        r.rate = body.rate
+    if rate_changed or body.nights is not None:
+        recalc_room_charge(db, r)
 
     # ---- 来源渠道 ----
     if body.channel_id is not None and body.channel_id != r.channel_id:
@@ -432,7 +474,7 @@ def edit_registration(res_id: int, body: RegistrationBody,
     return res_out(db, r)
 
 
-# ---------- 撤销入住（入住反向：退回已确认、删除收款、房态转空脏） ----------
+# ---------- 撤销入住（入住反向：退回已确认、房态转空脏，已收款保留） ----------
 @router.post("/{res_id}/undo-check-in")
 def undo_check_in(res_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     r = db.get(Reservation, res_id)
@@ -443,13 +485,9 @@ def undo_check_in(res_id: int, user: User = Depends(get_current_user), db: Sessi
 
     g = db.get(Guest, r.guest_id)
     room = db.get(Room, r.room_id) if r.room_id else None
+    paid_total = sum(p.amount for p in db.query(Payment).filter(Payment.reservation_id == r.id).all())
 
-    # 彻底撤销：删除该预订全部收款记录（不生成退款凭证），账目房费保留
-    pays = db.query(Payment).filter(Payment.reservation_id == r.id).all()
-    paid_total = sum(p.amount for p in pays)
-    for p in pays:
-        db.delete(p)
-
+    # 款项保留：只有「取消预订」才清除已收款（撤销入住/撤销退房均不动 payments）
     r.status = "confirmed"
 
     # 同房还有其他在住客人（前客未退场景）时不动房态，否则退回空脏待清洁
@@ -464,14 +502,87 @@ def undo_check_in(res_id: int, user: User = Depends(get_current_user), db: Sessi
     if room and not other_guests:
         room.status = "vacant_dirty"
 
-    if paid_total > 0:
-        log_op(db, r.hotel_id, user, "payment", "payment", r.id,
-               f"撤销入住删除收款 ¥{paid_total}（共 {len(pays)} 笔，无退款凭证）")
     log_op(db, r.hotel_id, user, "check_in_undo", "reservation", r.id,
            f"撤销入住 {g.name if g else ''} · {r.code} · {room.room_number if room else '未分配'} · "
            f"退回已确认"
            + (f" · 房态转空脏" if room and not other_guests else " · 同房仍有在住客人，房态不变")
-           + (f" · 删除收款 ¥{paid_total}" if paid_total > 0 else ""))
+           + (f" · 已收款 ¥{paid_total} 保留" if paid_total > 0 else ""))
+    db.commit()
+    return res_out(db, r)
+
+
+# ---------- 撤销退房（退房反向：回到在住，已收款保留） ----------
+@router.post("/{res_id}/undo-check-out")
+def undo_check_out(res_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    r = db.get(Reservation, res_id)
+    if not r or (user.role != "platform_admin" and r.hotel_id != user.hotel_id):
+        raise HTTPException(404, "预订不存在")
+    if r.status != "checked_out":
+        raise HTTPException(400, "仅「已退房」预订可撤销退房")
+
+    g = db.get(Guest, r.guest_id)
+    room = db.get(Room, r.room_id) if r.room_id else None
+    paid_total = sum(p.amount for p in db.query(Payment).filter(Payment.reservation_id == r.id).all())
+
+    r.status = "checked_in"
+    # 房间恢复在住；维修中的房不强行改状态（房态由前台决定），并在日志里注明
+    room_kept_maint = False
+    if room:
+        if room.status == "maintenance":
+            room_kept_maint = True
+        else:
+            room.status = "occupied"
+
+    log_op(db, r.hotel_id, user, "check_out_undo", "reservation", r.id,
+           f"撤销退房 {g.name if g else ''} · {r.code} · {room.room_number if room else '未分配'} · 回到在住"
+           + (" · 房间维修中，房态保持维修" if room_kept_maint else " · 房态恢复在住")
+           + (f" · 已收款 ¥{paid_total} 保留" if paid_total > 0 else ""))
+    db.commit()
+    return res_out(db, r)
+
+
+# ---------- 更正实收（把整单已收金额调整到目标总额） ----------
+@router.patch("/{res_id}/paid-total")
+def adjust_paid_total(res_id: int, body: PaidTotalBody,
+                      user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    r = db.get(Reservation, res_id)
+    if not r or (user.role != "platform_admin" and r.hotel_id != user.hotel_id):
+        raise HTTPException(404, "预订不存在")
+    if r.status not in ("checked_in", "checked_out"):
+        raise HTTPException(400, "仅「在住 / 已退房」预订可更正实收")
+    if body.amount < 0:
+        raise HTTPException(400, "实收金额不能为负数")
+
+    pays = (db.query(Payment)
+            .filter(Payment.reservation_id == r.id)
+            .order_by(Payment.id)
+            .all())
+    cur = sum(p.amount for p in pays)
+    target = body.amount
+    if target == cur:
+        return res_out(db, r)
+
+    if target > cur:
+        # 补收差额：新增一笔收款，保留原有逐笔记录
+        diff = target - cur
+        db.add(Payment(hotel_id=r.hotel_id, reservation_id=r.id,
+                       method=body.method, amount=diff, created_by=user.id))
+        summary = f"更正实收 ¥{cur}→¥{target}（补收 ¥{diff} · {METHOD_LABEL[body.method]}）"
+    else:
+        # 冲减：从最新一笔起删除，最后一笔按差额部分冲减
+        remain = cur - target
+        for p in reversed(pays):
+            if remain <= 0:
+                break
+            if p.amount <= remain:
+                remain -= p.amount
+                db.delete(p)
+            else:
+                p.amount -= remain
+                remain = 0
+        summary = f"更正实收 ¥{cur}→¥{target}（冲减 ¥{cur - target}，无退款凭证）"
+
+    log_op(db, r.hotel_id, user, "payment_adjust", "payment", r.id, summary)
     db.commit()
     return res_out(db, r)
 
@@ -484,6 +595,9 @@ def check_out(res_id: int, body: CheckOutBody, user: User = Depends(get_current_
         raise HTTPException(404, "预订不存在")
     if r.status != "checked_in":
         raise HTTPException(400, "仅「在住」预订可办理退房")
+    # 未来入住的预订不能退房（与入住同一门槛：入住日当天及之后才可操作）
+    if r.check_in > date.today():
+        raise HTTPException(400, f"入住日期为 {r.check_in:%m/%d}，尚未到店，不可办理退房")
 
     # 本次随退房一并收取的款项先计入，再按「收款后余额」判断是否需要强制退房
     paid_now = sum(p.amount for p in body.payments if p.amount > 0)
@@ -500,7 +614,7 @@ def check_out(res_id: int, body: CheckOutBody, user: User = Depends(get_current_
         db.add(Payment(hotel_id=r.hotel_id, reservation_id=r.id,
                        method=p.method, amount=p.amount, created_by=user.id))
         log_op(db, r.hotel_id, user, "payment", "payment", r.id,
-               f"收款 ¥{p.amount} · {dict(cash='现金', wechat='微信', alipay='支付宝', card='刷卡')[p.method]}")
+               f"收款 ¥{p.amount} · {METHOD_LABEL[p.method]}")
 
     r.status = "checked_out"
     room = db.get(Room, r.room_id) if r.room_id else None
@@ -671,6 +785,6 @@ def add_payment(res_id: int, body: PaymentBody,
     db.add(pay)
     db.flush()
     log_op(db, r.hotel_id, user, "payment", "payment", r.id,
-           f"收款 ¥{body.amount} · {dict(cash='现金', wechat='微信', alipay='支付宝', card='刷卡')[body.method]}")
+           f"收款 ¥{body.amount} · {METHOD_LABEL[body.method]}")
     db.commit()
     return {"ok": True, "balance_due": balance_of(db, res_id)}

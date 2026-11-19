@@ -238,19 +238,32 @@ def test_hourly_booking_flow():
     from datetime import date, timedelta
     tok = _login("zhouqi", hotel_id=1)["token"]
     h = _headers(tok)
+    types = {t["name"]: t for t in client.get("/api/room-types", headers=h).json()}
     rooms = client.get("/api/rooms", headers=h).json()
-    # 选观景大床房（钟点需手动传价），避开前面测试用掉的大床房空净房
-    room = next(x for x in rooms if x["room_type_name"] == "观景大床房" and x["status"] == "vacant_clean")
-    cin = (date.today() + timedelta(days=30)).isoformat()
+    # 入住要过「入住日当天」门槛：钟点房用今天，从可售接口挑空房（放宽到脏房/前客未退）
+    cin = date.today().isoformat()
+    cout = (date.today() + timedelta(days=1)).isoformat()
+
+    def pick(type_name):
+        t = types[type_name]
+        av = client.get(
+            f"/api/rooms/available?room_type_id={t['id']}&check_in={cin}&check_out={cout}"
+            f"&include_dirty=1&allow_prev_guest=1", headers=h).json()
+        # 优先空房（在住占用房在 create 时会撞 checked_in 冲突）
+        idle = [x for x in av if x["status"] in ("vacant_clean", "vacant_dirty")]
+        assert idle, f"{type_name} 无可用空房"
+        return idle[0]
+
+    room = pick("观景大床房")  # 钟点需手动传价，避开前面测试用掉的大床房空净房
     # 时长越界
     r = client.post("/api/reservations", headers=h, json={
-        "guest_name": "钟点客", "check_in": cin, "check_out": (date.today() + timedelta(days=31)).isoformat(),
+        "guest_name": "钟点客", "check_in": cin, "check_out": cout,
         "room_id": room["id"], "stay_type": "hourly", "hours": 20,
     })
     assert r.status_code == 400
     # 正常创建：手动传钟点价 45
     r = client.post("/api/reservations", headers=h, json={
-        "guest_name": "钟点客", "check_in": cin, "check_out": (date.today() + timedelta(days=31)).isoformat(),
+        "guest_name": "钟点客", "check_in": cin, "check_out": cout,
         "room_id": room["id"], "stay_type": "hourly", "hours": 4, "status": "confirmed", "rate": 45,
     })
     assert r.status_code == 200, r.text
@@ -260,14 +273,14 @@ def test_hourly_booking_flow():
     assert res["nights"] == 1
     # 同房同时段再订 → 冲突（钟点占整日）
     r = client.post("/api/reservations", headers=h, json={
-        "guest_name": "钟点客2", "check_in": cin, "check_out": (date.today() + timedelta(days=31)).isoformat(),
+        "guest_name": "钟点客2", "check_in": cin, "check_out": cout,
         "room_id": room["id"],
     })
     assert r.status_code == 409
     # 钟点房不可拖动改期
     r = client.patch(f"/api/reservations/{res['id']}", headers=h,
-                     json={"check_in": (date.today() + timedelta(days=31)).isoformat(),
-                           "check_out": (date.today() + timedelta(days=32)).isoformat()})
+                     json={"check_in": (date.today() + timedelta(days=1)).isoformat(),
+                           "check_out": (date.today() + timedelta(days=2)).isoformat()})
     assert r.status_code == 400
     # 账目：钟点房费 4 × 45 = 180
     folio = client.get(f"/api/reservations/{res['id']}/folio", headers=h).json()
@@ -282,17 +295,17 @@ def test_hourly_booking_flow():
     assert r.status_code == 200, r.text
     assert r.json()["balance_due"] == 0
     # 未配钟点价的房型（房型未传价）→ 400（亲子房无钟点价）
-    room2 = next(x for x in rooms if x["room_type_name"] == "亲子房" and x["status"] == "vacant_clean")
+    room2 = pick("亲子房")
     r = client.post("/api/reservations", headers=h, json={
-        "guest_name": "钟点客3", "check_in": cin, "check_out": (date.today() + timedelta(days=31)).isoformat(),
+        "guest_name": "钟点客3", "check_in": cin, "check_out": cout,
         "room_id": room2["id"], "stay_type": "hourly", "hours": 3,
     })
     assert r.status_code == 400
-    # 大床房空净房按房型自动取钟点价 45（前面直接预订测试后应有空净房可用）
-    big_clean = next(x for x in rooms if x["room_type_name"] == "大床房" and x["status"] == "vacant_clean")
+    # 大床房空净房按房型自动取钟点价 45
+    big = pick("大床房")
     r = client.post("/api/reservations", headers=h, json={
-        "guest_name": "钟点客4", "check_in": cin, "check_out": (date.today() + timedelta(days=31)).isoformat(),
-        "room_id": big_clean["id"], "stay_type": "hourly", "hours": 3,
+        "guest_name": "钟点客4", "check_in": cin, "check_out": cout,
+        "room_id": big["id"], "stay_type": "hourly", "hours": 3,
     })
     assert r.status_code == 200, r.text
     assert r.json()["rate"] == 45
@@ -351,11 +364,18 @@ def test_extend_reservation():
     assert "reservation_extend" in actions
     assert "reservation_create" in actions and "check_in" in actions
     assert all(o["operator"] for o in logs)
-    # 钟点房按小时延住
-    hroom = next(x for x in rooms if x["room_type_name"] == "双床房" and x["status"] == "vacant_clean")
-    hcin = (date.today() + timedelta(days=40)).isoformat()
+    # 钟点房按小时延住（入住要过「入住日当天」门槛，用今天）
+    hcin = date.today().isoformat()
+    hcout = (date.today() + timedelta(days=1)).isoformat()
+    ht = {t["name"]: t for t in client.get("/api/room-types", headers=h).json()}["双床房"]
+    hav = client.get(
+        f"/api/rooms/available?room_type_id={ht['id']}&check_in={hcin}&check_out={hcout}"
+        f"&include_dirty=1&allow_prev_guest=1", headers=h).json()
+    idle_h = [x for x in hav if x["status"] in ("vacant_clean", "vacant_dirty")]
+    assert idle_h, "双床房无可用空房"
+    hroom = idle_h[0]
     r = client.post("/api/reservations", headers=h, json={
-        "guest_name": "钟点延客", "check_in": hcin, "check_out": (date.today() + timedelta(days=41)).isoformat(),
+        "guest_name": "钟点延客", "check_in": hcin, "check_out": hcout,
         "room_id": hroom["id"], "stay_type": "hourly", "hours": 2, "status": "confirmed",
     })
     assert r.status_code == 200, r.text
@@ -412,26 +432,49 @@ def test_reservation_logs_endpoint():
 
 
 def test_edit_registration_and_undo_check_in():
-    """在住登记信息更正 + 撤销入住（反方向房态流转）"""
+    """在住登记信息更正（含改天数）+ 撤销入住（保留收款）+ 取消预订（清除收款）"""
     from app.routers.auth import _login_attempts
     _login_attempts.clear()
     from datetime import date, timedelta
     tok = _login("zhouqi", hotel_id=1)["token"]
     h = _headers(tok)
-    rooms = client.get("/api/rooms", headers=h).json()
-    room = next(x for x in rooms if x["status"] == "vacant_clean")
+    cin = date.today().isoformat()
+    cout = (date.today() + timedelta(days=2)).isoformat()
+    # 用「当前可售且本身无在住客人」的房：撤销入住后房态才能干净地回到空脏
+    all_rooms = client.get("/api/rooms", headers=h).json()
+    idle_ids = {x["id"] for x in all_rooms if x["status"] in ("vacant_clean", "vacant_dirty")}
+    avail = client.get(
+        f"/api/rooms/available?room_type_id=1&check_in={cin}&check_out={cout}&include_dirty=1",
+        headers=h).json()
+    room = next(x for x in avail if x["id"] in idle_ids)
     ch = client.get("/api/channels", headers=h).json()[0]
-    cin = (date.today() + timedelta(days=60)).isoformat()
-    cout = (date.today() + timedelta(days=62)).isoformat()
     r = client.post("/api/reservations", headers=h, json={
         "guest_name": "登记原名", "guest_phone": "13900001111",
-        "check_in": cin, "check_out": cout, "room_id": room["id"],
+        "check_in": cin, "check_out": cout, "room_id": room["id"], "room_type_id": room.get("room_type_id", 1),
     })
     assert r.status_code == 200, r.text
     res = r.json()
     rid = res["id"]
     fee_before = res["balance_due"]
     assert fee_before == 2 * res["rate"]  # 2 晚房费
+
+    # 未来入住日的预订：只能保持预订，不可办理入住 / 退房
+    r = client.post("/api/reservations", headers=h, json={
+        "guest_name": "未来客", "check_in": (date.today() + timedelta(days=60)).isoformat(),
+        "check_out": (date.today() + timedelta(days=62)).isoformat(),
+        "room_id": room["id"],
+    })
+    assert r.status_code in (200, 409), r.text
+    if r.status_code == 200:
+        future = r.json()
+        r = client.post(f"/api/reservations/{future['id']}/check-in", headers=h,
+                        json={"room_id": room["id"]})
+        assert r.status_code == 400
+        assert "只能预订" in r.json()["detail"]
+        r = client.post(f"/api/reservations/{future['id']}/check-out", headers=h, json={"force": True})
+        assert r.status_code == 400
+        r = client.post(f"/api/reservations/{future['id']}/cancel", headers=h)
+        assert r.status_code == 200
 
     # 未入住 → 不可编辑登记 / 不可撤销
     r = client.patch(f"/api/reservations/{rid}/registration", headers=h, json={"guest_name": "改名"})
@@ -467,25 +510,54 @@ def test_edit_registration_and_undo_check_in():
     assert folio["total_charge"] == 2 * new_rate
     assert folio["balance_due"] == 2 * new_rate - paid
 
+    # ---- 编辑登记：改入住天数 → 离店日与首条房费同步重算 ----
+    r = client.patch(f"/api/reservations/{rid}/registration", headers=h, json={"nights": 3})
+    assert r.status_code == 200, r.text
+    out = r.json()
+    assert out["nights"] == 3
+    assert out["check_out"] == (date.today() + timedelta(days=3)).isoformat()
+    folio = client.get(f"/api/reservations/{rid}/folio", headers=h).json()
+    room_rows = [x for x in folio["items"] if x["category"] == "room_charge"]
+    assert len(room_rows) == 1
+    assert room_rows[0]["amount"] == 3 * new_rate
+    assert folio["total_charge"] == 3 * new_rate
+    # 天数非法
+    r = client.patch(f"/api/reservations/{rid}/registration", headers=h, json={"nights": 0})
+    assert r.status_code == 400
+
     # 姓名为空 → 400；房价为负 → 400
     r = client.patch(f"/api/reservations/{rid}/registration", headers=h, json={"guest_name": "  "})
     assert r.status_code == 400
     r = client.patch(f"/api/reservations/{rid}/registration", headers=h, json={"rate": -1})
     assert r.status_code == 400
 
-    # ---- 撤销入住 ----
+    # ---- 更正实收：调整到 500（补收），再冲减到 200 ----
+    r = client.patch(f"/api/reservations/{rid}/paid-total", headers=h,
+                     json={"amount": 500, "method": "wechat"})
+    assert r.status_code == 200, r.text
+    folio = client.get(f"/api/reservations/{rid}/folio", headers=h).json()
+    assert folio["total_paid"] == 500
+    assert sum(p["amount"] for p in folio["payments"]) == 500
+    r = client.patch(f"/api/reservations/{rid}/paid-total", headers=h, json={"amount": 200})
+    assert r.status_code == 200, r.text
+    folio = client.get(f"/api/reservations/{rid}/folio", headers=h).json()
+    assert folio["total_paid"] == 200
+    assert sum(p["amount"] for p in folio["payments"]) == 200
+    assert folio["balance_due"] == 3 * new_rate - 200
+    # 实收为负 → 400
+    r = client.patch(f"/api/reservations/{rid}/paid-total", headers=h, json={"amount": -5})
+    assert r.status_code == 400
+
+    # ---- 撤销入住：退回已确认，收款保留 ----
     room_before = next(x for x in client.get("/api/rooms", headers=h).json() if x["id"] == room["id"])
-    assert room_before["status"] == "occupied"
     r = client.post(f"/api/reservations/{rid}/undo-check-in", headers=h)
     assert r.status_code == 200, r.text
     out = r.json()
     assert out["status"] == "confirmed"
     assert out["room_id"] == room["id"]  # 原锁定房号保留
-    # 收款被删除（无退款凭证），账单回到全额应收
     folio = client.get(f"/api/reservations/{rid}/folio", headers=h).json()
-    assert folio["payments"] == []
-    assert folio["total_paid"] == 0
-    assert folio["balance_due"] == 2 * new_rate
+    assert folio["total_paid"] == 200  # 撤销入住不再清除收款
+    assert folio["balance_due"] == 3 * new_rate - 200
     # 房态退回空脏
     room_after = next(x for x in client.get("/api/rooms", headers=h).json() if x["id"] == room["id"])
     assert room_after["status"] == "vacant_dirty"
@@ -496,8 +568,43 @@ def test_edit_registration_and_undo_check_in():
                     json={"room_id": room["id"], "amount_received": 0})
     assert r.status_code == 200, r.text
     assert r.json()["status"] == "checked_in"
-    # 操作日志留痕：编辑 / 撤销 / 删收款
+    # 操作日志留痕：编辑 / 撤销
     logs = client.get(f"/api/reservations/{rid}/logs", headers=h).json()
     actions = [o["action"] for o in logs]
     assert "reservation_edit" in actions
     assert "check_in_undo" in actions
+    assert "payment_adjust" in actions
+
+    # ---- 已退房 → 撤销退房回到在住；收款保留；退房→撤销链完整 ----
+    r = client.post(f"/api/reservations/{rid}/check-out", headers=h,
+                    json={"force": True, "payments": []})
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] == "checked_out"
+    paid_before_undo = client.get(f"/api/reservations/{rid}/folio", headers=h).json()["total_paid"]
+    r = client.post(f"/api/reservations/{rid}/undo-check-out", headers=h)
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] == "checked_in"
+    assert r.json()["check_out"] != cin  # 日期不变（3 晚）
+    folio = client.get(f"/api/reservations/{rid}/folio", headers=h).json()
+    assert folio["total_paid"] == paid_before_undo  # 撤销退房不退款
+    room_now = next(x for x in client.get("/api/rooms", headers=h).json() if x["id"] == room["id"])
+    assert room_now["status"] == "occupied"
+    assert "check_out_undo" in [o["action"] for o in client.get(f"/api/reservations/{rid}/logs", headers=h).json()]
+    # 已退房状态才可撤销退房
+    r = client.post(f"/api/reservations/{rid}/undo-check-out", headers=h)
+    assert r.status_code == 400
+
+    # ---- 取消预订：唯一清除已收款的环节 ----
+    r = client.post(f"/api/reservations/{rid}/undo-check-in", headers=h)
+    assert r.status_code == 200, r.text
+    assert client.get(f"/api/reservations/{rid}/folio", headers=h).json()["total_paid"] == paid_before_undo
+    r = client.post(f"/api/reservations/{rid}/cancel", headers=h)
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] == "cancelled"
+    folio = client.get(f"/api/reservations/{rid}/folio", headers=h).json()
+    assert folio["payments"] == []
+    assert folio["total_paid"] == 0
+    assert folio["balance_due"] == 3 * new_rate
+    logs = client.get(f"/api/reservations/{rid}/logs", headers=h).json()
+    assert "reservation_cancel" in [o["action"] for o in logs]
+    assert any("清除已收款" in o["summary"] for o in logs)

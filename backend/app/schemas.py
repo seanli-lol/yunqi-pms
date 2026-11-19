@@ -147,21 +147,32 @@ class ReservationBody(BaseModel):
 
 
 class ReservationPatch(BaseModel):
-    """拖动换房 / 改期"""
+    """拖动换房 / 改期 / 调整预订（日期、房价）"""
     room_id: int | None = None
     check_in: date | None = None
     check_out: date | None = None
+    rate: int | None = None           # 房价单价（前端按整单总额折算）
 
 
 class RegistrationBody(BaseModel):
-    """在住登记信息更正（姓名 / 手机号 / 房价 / 来源 / 备注）。
+    """在住登记信息更正（姓名 / 手机号 / 天数 / 房价 / 来源 / 备注）。
 
-    字段为 None 表示不修改；房价改动会按新价重算首条房费账目。"""
+    字段为 None 表示不修改；房价或天数改动会按新口径重算首条房费账目。"""
     guest_name: str | None = None
     guest_phone: str | None = None
+    nights: int | None = None         # 普通房：改入住天数（离店日 = 入住日 + 天数）
     rate: int | None = None
     channel_id: int | None = None
     notes: str | None = None
+
+
+class PaidTotalBody(BaseModel):
+    """更正实收：把该预订的已收款合计调整到目标整单总额。
+
+    amount > 当前已收 → 补一笔收款（使用 method）；amount < 当前已收 → 从最新一笔起冲减。
+    """
+    amount: int
+    method: Literal["cash", "wechat", "alipay", "card"] = "cash"
 
 
 class ExtendBody(BaseModel):
