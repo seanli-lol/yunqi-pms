@@ -22,3 +22,6 @@ npm-debug.log*
 
 # 日志
 *.log
+
+# ZCode 会话计划文件（本地产物，不入库）
+.zcode/plans/
