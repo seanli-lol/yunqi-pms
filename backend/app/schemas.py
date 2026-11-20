@@ -10,12 +10,47 @@ class LoginBody(BaseModel):
     hotel_id: int | None = None
     username: str
     password: str
+    # 滑块验证码通过后的一次性票据（验证码关闭时可为空）
+    captcha_token: str | None = None
 
 
 class LoginResult(BaseModel):
     token: str
+    refresh_token: str
+    expires_in: int  # 访问令牌剩余秒数（前端据此提前静默续期）
     user: "UserInfo"
     hotel_name: str | None = None
+
+
+class RefreshBody(BaseModel):
+    refresh_token: str
+
+
+class RefreshResult(BaseModel):
+    token: str
+    refresh_token: str
+    expires_in: int
+
+
+class CaptchaResult(BaseModel):
+    enabled: bool
+    id: str | None = None
+    bg: str | None = None
+    piece: str | None = None
+    y: int | None = None
+    width: int | None = None
+    height: int | None = None
+    size: int | None = None
+
+
+class CaptchaVerifyBody(BaseModel):
+    id: str
+    x: int
+
+
+class CaptchaVerifyResult(BaseModel):
+    ok: bool
+    captcha_token: str
 
 
 class UserInfo(BaseModel):

@@ -3,6 +3,8 @@ import os
 import tempfile
 
 os.environ["YUNQI_DB"] = os.path.join(tempfile.mkdtemp(), "test-pms.db")
+# 冒烟测试默认不要求滑块验证码（验证码专项用例里用 captcha.set_enabled 单独开关）
+os.environ["YUNQI_CAPTCHA"] = "off"
 
 from fastapi.testclient import TestClient  # noqa: E402
 
@@ -719,3 +721,97 @@ def test_early_checkout_resale():
     assert blk["truncated"] is False
     assert blk["nights"] == 3                 # 恢复原订 3 晚
     assert "stub_nights" not in blk and "resale_nights" not in blk
+
+
+def test_captcha_login_flow():
+    """滑块验证码：出题 → 错误偏移 400 → 正确偏移换票据 → 登录必须带票据（一次性）"""
+    import app.captcha as captcha
+    from app.routers.auth import _captcha_hits, _login_attempts
+    _login_attempts.clear()
+    _captcha_hits.clear()
+    captcha.set_enabled(True)
+    try:
+        r = client.get("/api/auth/captcha")
+        assert r.status_code == 200, r.text
+        q = r.json()
+        assert q["enabled"] is True and q["bg"].startswith("data:image/svg+xml;base64,")
+        answer = captcha._challenges[q["id"]]["x"]
+
+        # 错误偏移：400，且题目作废（重取才能再试）
+        r = client.post("/api/auth/captcha/verify", json={"id": q["id"], "x": answer + 40})
+        assert r.status_code == 400, r.text
+        assert q["id"] not in captcha._challenges
+
+        # 正确偏移：拿到一次性票据
+        q = client.get("/api/auth/captcha").json()
+        answer = captcha._challenges[q["id"]]["x"]
+        r = client.post("/api/auth/captcha/verify", json={"id": q["id"], "x": answer + 4})
+        assert r.status_code == 200, r.text
+        ticket = r.json()["captcha_token"]
+
+        # 不带票据登录 → 400「请先完成滑块验证」
+        r = client.post("/api/auth/login", json={"username": "zhouqi", "password": "123456", "hotel_id": 1})
+        assert r.status_code == 400, r.text
+        assert "滑块验证" in r.json()["detail"]
+
+        # 带票据登录 → 200，且返回 refresh_token / expires_in
+        r = client.post("/api/auth/login", json={
+            "username": "zhouqi", "password": "123456", "hotel_id": 1, "captcha_token": ticket,
+        })
+        assert r.status_code == 200, r.text
+        assert r.json()["refresh_token"]
+        assert r.json()["expires_in"] > 0
+
+        # 票据一次性：再用一次就失效
+        r = client.post("/api/auth/login", json={
+            "username": "zhouqi", "password": "123456", "hotel_id": 1, "captcha_token": ticket,
+        })
+        assert r.status_code == 400, r.text
+    finally:
+        captcha.set_enabled(False)
+        _login_attempts.clear()
+        _captcha_hits.clear()
+
+
+def test_refresh_rotation_and_logout():
+    """刷新令牌：轮换 → 新访问令牌可用 → 旧令牌宽限期后复用判定泄露 → 登出后 401"""
+    from datetime import datetime, timedelta
+    from app.models import RefreshToken
+    from app.routers.auth import _login_attempts
+    from app.security import hash_token
+    _login_attempts.clear()
+
+    login = _login("zhouqi", hotel_id=1)
+    rt1 = login["refresh_token"]
+
+    # 轮换：拿到新访问令牌与新刷新令牌
+    r = client.post("/api/auth/refresh", json={"refresh_token": rt1})
+    assert r.status_code == 200, r.text
+    rt2 = r.json()["refresh_token"]
+    assert rt2 and rt2 != rt1
+    r = client.get("/api/auth/me", headers=_headers(r.json()["token"]))
+    assert r.status_code == 200 and r.json()["username"] == "zhouqi"
+
+    # 宽限期内：旧令牌仍可续一次（多标签页并发）
+    r = client.post("/api/auth/refresh", json={"refresh_token": rt1})
+    assert r.status_code == 200, r.text
+    rt3 = r.json()["refresh_token"]
+
+    # 超宽限（把旧记录的 revoked_at 拨回 2 分钟前）再复用 → 401 并吊销该用户全部令牌
+    db = SessionLocal()
+    rec = db.query(RefreshToken).filter(RefreshToken.token_hash == hash_token(rt1)).first()
+    rec.revoked_at = datetime.now() - timedelta(minutes=2)
+    db.commit(); db.close()
+    r = client.post("/api/auth/refresh", json={"refresh_token": rt1})
+    assert r.status_code == 401, r.text
+    r = client.post("/api/auth/refresh", json={"refresh_token": rt3})
+    assert r.status_code == 401, r.text  # 全量吊销生效
+
+    # 登出：吊销后 refresh 401；重复登出仍 200（不探测令牌是否存在）
+    fresh = _login("zhouqi", hotel_id=1)["refresh_token"]
+    r = client.post("/api/auth/logout", json={"refresh_token": fresh})
+    assert r.status_code == 200 and r.json()["ok"] is True
+    assert client.post("/api/auth/refresh", json={"refresh_token": fresh}).status_code == 401
+    assert client.post("/api/auth/logout", json={"refresh_token": fresh}).status_code == 200
+
+    _login_attempts.clear()

@@ -1,7 +1,8 @@
-"""安全：密码哈希（PBKDF2，无外部依赖）与 JWT 签发/校验"""
+"""安全：密码哈希（PBKDF2，无外部依赖）、JWT 签发/校验、刷新令牌"""
 import hashlib
 import hmac
 import os
+import secrets
 from datetime import datetime, timedelta, timezone
 
 import jwt
@@ -40,3 +41,12 @@ def create_token(user_id: int, hotel_id: int | None, role: str, name: str) -> st
 def decode_token(token: str) -> dict:
     payload = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
     return payload
+
+
+def new_refresh_token() -> str:
+    """不透明随机串（非 JWT）：DB 只存哈希，泄露库不等于泄露令牌"""
+    return secrets.token_urlsafe(32)
+
+
+def hash_token(raw: str) -> str:
+    return hashlib.sha256(raw.encode()).hexdigest()

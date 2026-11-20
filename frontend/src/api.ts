@@ -10,6 +10,9 @@ export interface LoginUser {
 }
 
 let token: string | null = localStorage.getItem('pms_token')
+let refreshToken: string | null = localStorage.getItem('pms_refresh')
+// 访问令牌到期时间（毫秒时间戳）；0 表示未知（老会话），此时靠 401 兜底续期
+let tokenExp = Number(localStorage.getItem('pms_token_exp') || 0)
 let hotelResolver: () => number | null = () => null
 
 export function setAuthToken(t: string | null) {
@@ -18,8 +21,34 @@ export function setAuthToken(t: string | null) {
   else localStorage.removeItem('pms_token')
 }
 
+export function setRefreshToken(t: string | null) {
+  refreshToken = t
+  if (t) localStorage.setItem('pms_refresh', t)
+  else localStorage.removeItem('pms_refresh')
+}
+
+/** 记录访问令牌到期时间（毫秒时间戳）；提前 60s 主动续期 */
+export function setTokenExpiry(expMs: number | null) {
+  tokenExp = expMs ?? 0
+  if (expMs) localStorage.setItem('pms_token_exp', String(expMs))
+  else localStorage.removeItem('pms_token_exp')
+}
+
 export function getAuthToken() {
   return token
+}
+
+export function getRefreshToken() {
+  return refreshToken
+}
+
+/** 清除本地登录态（token / 刷新令牌 / 用户 / 酒店上下文） */
+export function clearAuthStorage() {
+  setAuthToken(null)
+  setRefreshToken(null)
+  setTokenExpiry(null)
+  localStorage.removeItem('pms_user')
+  localStorage.removeItem('pms_active_hotel')
 }
 
 /** 平台管理员登录后注册当前操作酒店（业务接口自动带 hotel_id） */
@@ -37,44 +66,84 @@ export class ApiError extends Error {
   }
 }
 
-async function request<T = any>(method: string, path: string, body?: any, opts?: { skipHotel?: boolean }): Promise<T> {
-  const headers: Record<string, string> = {}
-  if (token) headers.Authorization = `Bearer ${token}`
-  let url = path
-  let payload: string | undefined
+// 静默续期单飞：并发请求共享同一个 refresh，避免轮换令牌被并发消费
+let refreshing: Promise<boolean> | null = null
 
-  if (body !== undefined) {
-    headers['Content-Type'] = 'application/json'
-    payload = JSON.stringify(body)
-  }
-  // 平台管理员的业务请求自动注入当前酒店
-  if (!opts?.skipHotel && hotelResolver() !== null) {
-    if (method === 'GET') {
-      url += (path.includes('?') ? '&' : '?') + `hotel_id=${hotelResolver()}`
-    } else if (payload) {
-      try {
-        const obj = JSON.parse(payload)
-        if (obj.hotel_id === undefined) obj.hotel_id = hotelResolver()
-        payload = JSON.stringify(obj)
-      } catch { /* ignore */ }
-    } else {
-      url += (path.includes('?') ? '&' : '?') + `hotel_id=${hotelResolver()}`
+async function refreshSession(): Promise<boolean> {
+  if (!refreshToken) return false
+  if (refreshing) return refreshing
+  refreshing = (async () => {
+    try {
+      const res = await fetch('/api/auth/refresh', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refresh_token: refreshToken }),
+      })
+      if (!res.ok) {
+        clearAuthStorage()
+        return false
+      }
+      const d = await res.json()
+      setAuthToken(d.token)
+      setRefreshToken(d.refresh_token)
+      setTokenExpiry(Date.now() + d.expires_in * 1000)
+      return true
+    } catch {
+      clearAuthStorage()
+      return false
+    } finally {
+      refreshing = null
     }
+  })()
+  return refreshing
+}
+
+async function request<T = any>(method: string, path: string, body?: any, opts?: { skipHotel?: boolean }): Promise<T> {
+  // 访问令牌临近过期（<60s）先主动续期，省一次 401 往返
+  if (token && refreshToken && tokenExp && tokenExp - Date.now() < 60_000 && !path.startsWith('/api/auth/')) {
+    await refreshSession()
   }
 
-  const res = await fetch(url, { method, headers, body: payload })
-  const text = await res.text()
-  const data = text ? JSON.parse(text) : null
-  if (!res.ok) {
-    // 登录态失效：清理本地状态并回到登录页（登录接口本身除外）
-    if (res.status === 401 && !path.startsWith('/api/auth/')) {
-      localStorage.removeItem('pms_token')
-      localStorage.removeItem('pms_user')
-      localStorage.removeItem('pms_active_hotel')
+  const send = async () => {
+    const headers: Record<string, string> = {}
+    if (token) headers.Authorization = `Bearer ${token}`
+    let url = path
+    let payload: string | undefined
+
+    if (body !== undefined) {
+      headers['Content-Type'] = 'application/json'
+      payload = JSON.stringify(body)
+    }
+    // 平台管理员的业务请求自动注入当前酒店
+    if (!opts?.skipHotel && hotelResolver() !== null) {
+      if (method === 'GET') {
+        url += (path.includes('?') ? '&' : '?') + `hotel_id=${hotelResolver()}`
+      } else if (payload) {
+        try {
+          const obj = JSON.parse(payload)
+          if (obj.hotel_id === undefined) obj.hotel_id = hotelResolver()
+          payload = JSON.stringify(obj)
+        } catch { /* ignore */ }
+      } else {
+        url += (path.includes('?') ? '&' : '?') + `hotel_id=${hotelResolver()}`
+      }
+    }
+    return fetch(url, { method, headers, body: payload })
+  }
+
+  let res = await send()
+  // 登录态失效：先用刷新令牌静默续期并重试一次（鉴权依赖在 handler 前抛 401，重试无副作用）
+  if (res.status === 401 && !path.startsWith('/api/auth/')) {
+    const ok = await refreshSession()
+    if (ok) res = await send()
+    if (!ok || res.status === 401) {
+      clearAuthStorage()
       window.location.href = '/login'
     }
-    throw new ApiError(res.status, data)
   }
+  const text = await res.text()
+  const data = text ? JSON.parse(text) : null
+  if (!res.ok) throw new ApiError(res.status, data)
   return data as T
 }
 

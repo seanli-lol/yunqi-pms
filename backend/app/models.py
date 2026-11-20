@@ -33,6 +33,18 @@ class User(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
 
 
+class RefreshToken(Base):
+    """刷新令牌：DB 只存 SHA-256 哈希；轮换时旧记录置 revoked_at（留痕 60s 宽限）"""
+    __tablename__ = "refresh_tokens"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
 class Channel(Base):
     """预订来源渠道：颜色与展示顺序可配置"""
     __tablename__ = "channels"

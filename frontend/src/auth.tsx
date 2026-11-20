@@ -1,12 +1,15 @@
 import { createContext, useCallback, useContext, useEffect, useState } from 'react'
-import { api, setAuthToken, setHotelResolver, type LoginUser } from './api'
+import {
+  api, clearAuthStorage, getRefreshToken, setAuthToken, setHotelResolver,
+  setRefreshToken, setTokenExpiry, type LoginUser,
+} from './api'
 
 interface AuthState {
   user: LoginUser | null
   /** 平台管理员当前操作的酒店；员工为固定本店 */
   activeHotelId: number | null
   activeHotelName: string | null
-  login: (hotelId: number | null, username: string, password: string) => Promise<void>
+  login: (hotelId: number | null, username: string, password: string, captchaToken?: string | null) => Promise<void>
   logout: () => void
   setActiveHotel: (id: number, name: string) => void
 }
@@ -34,11 +37,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     else localStorage.removeItem('pms_user')
   }, [])
 
-  const login = useCallback(async (hotelId: number | null, username: string, password: string) => {
+  const login = useCallback(async (hotelId: number | null, username: string, password: string, captchaToken?: string | null) => {
     const body: any = { username, password }
     if (hotelId !== null) body.hotel_id = hotelId
+    if (captchaToken) body.captcha_token = captchaToken
     const r = await api.post('/api/auth/login', body, { skipHotel: true })
     setAuthToken(r.token)
+    setRefreshToken(r.refresh_token)
+    setTokenExpiry(Date.now() + r.expires_in * 1000)
     applyUser(r.user)
     const aid = r.user.hotel_id
     const aname = r.user.hotel_name
@@ -48,12 +54,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [applyUser])
 
   const logout = useCallback(() => {
-    setAuthToken(null)
+    // 顺手在服务端吊销刷新令牌（失败不影响本地退出）
+    const rt = getRefreshToken()
+    if (rt) {
+      api.post('/api/auth/logout', { refresh_token: rt }, { skipHotel: true }).catch(() => {})
+    }
+    clearAuthStorage()
     applyUser(null)
     setActive({ id: null, name: null })
     setHotelResolver(() => null)
     localStorage.removeItem('pms_active_hotel')
-  }, [])
+  }, [applyUser])
 
   const setActiveHotel = useCallback((id: number, name: string) => {
     setActive({ id, name })

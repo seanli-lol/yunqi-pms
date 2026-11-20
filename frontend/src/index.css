@@ -280,6 +280,67 @@ textarea.input { height: auto; padding: 12px 14px; resize: vertical; }
 .hint.warn { color: var(--warning-deep); }
 .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
 
+/* ========== 滑块验证码（登录页拼图对齐，与原型 components.css 1:1） ========== */
+.captcha { margin-bottom: 16px; }
+.captcha-bg {
+  position: relative; width: 100%; overflow: hidden;
+  border: 1px solid var(--hairline); border-radius: var(--radius-input);
+  background: var(--bg-secondary);
+}
+.captcha-bg img { display: block; width: 100%; height: 100%; user-select: none; -webkit-user-drag: none; }
+/* 拼图块必须按宽度等比缩放：`.captcha-bg img` 的 height:100% 特异性更高(0,1,1)，
+   普通 `.captcha-piece` 会被压成全图高，导致拼图块与缺口 Y 轴对不上 */
+.captcha-bg .captcha-piece {
+  position: absolute; left: 0; height: auto;
+  filter: drop-shadow(0 2px 6px rgba(0, 0, 0, .35));
+  transition: left .06s linear;
+}
+.captcha-badge {
+  position: absolute; right: 10px; bottom: 10px;
+  padding: 3px 10px; border-radius: var(--radius-pill);
+  background: var(--success-tint); color: var(--success-deep);
+  font-size: 12px; font-weight: 600;
+}
+.captcha-track {
+  position: relative; margin-top: 10px; height: 44px; overflow: hidden;
+  border: 1px solid var(--hairline); border-radius: var(--radius-input);
+  background: var(--bg-secondary);
+}
+.captcha-fill {
+  position: absolute; inset: 0 auto 0 0; width: 44px;
+  background: var(--accent-tint); transition: width .06s linear;
+}
+.captcha-tip {
+  position: absolute; inset: 0; display: grid; place-items: center;
+  padding-left: 44px; font-size: 13px; color: var(--text-tertiary);
+  pointer-events: none; transition: color var(--dur) var(--ease);
+}
+.captcha-handle {
+  position: absolute; left: 2px; top: 2px; width: 40px; height: 38px;
+  display: grid; place-items: center;
+  border: 1px solid var(--hairline); border-radius: 8px;
+  background: var(--bg); color: var(--accent);
+  font-size: 16px; font-weight: 600; cursor: grab; touch-action: none;
+  box-shadow: var(--shadow-seg);
+  transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
+}
+.captcha-handle:active { cursor: grabbing; }
+.captcha-handle:disabled { cursor: default; opacity: 1; }
+.captcha-ok .captcha-handle,
+.captcha-ok .captcha-track { border-color: var(--success); background: var(--success-tint); color: var(--success-deep); }
+.captcha-ok .captcha-tip { color: var(--success-deep); }
+.captcha-fail .captcha-track { border-color: var(--danger); animation: captcha-shake .32s var(--ease); }
+.captcha-fail .captcha-tip { color: var(--danger-deep); }
+@keyframes captcha-shake {
+  0%, 100% { transform: translateX(0); }
+  25% { transform: translateX(-4px); }
+  75% { transform: translateX(4px); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .captcha-fail .captcha-track { animation: none; }
+  .captcha-piece, .captcha-fill { transition: none; }
+}
+
 .search { position: relative; min-width: 220px; flex: 1; max-width: 320px; }
 .search .input { padding-left: 38px; height: 40px; }
 .search svg {

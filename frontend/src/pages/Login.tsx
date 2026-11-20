@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { api, type Hotel } from '../api'
 import { useAuth } from '../auth'
+import { SliderCaptcha } from '../captcha'
 import { Segmented, useToast } from '../ui'
 
 export default function Login() {
@@ -15,6 +16,10 @@ export default function Login() {
   const [password, setPassword] = useState('123456')
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState('')
+  // 滑块验证码：captchaEnabled 由组件回报（后端可关闭），captchaToken 通过后一次性票据
+  const [captchaEnabled, setCaptchaEnabled] = useState(true)
+  const [captchaToken, setCaptchaToken] = useState<string | null>(null)
+  const [captchaKey, setCaptchaKey] = useState(0)
 
   useEffect(() => {
     api.get('/api/hotels/public', { skipHotel: true }).then((hs: Hotel[]) => {
@@ -24,10 +29,14 @@ export default function Login() {
   }, [])
 
   const submit = async () => {
+    if (captchaEnabled && !captchaToken) {
+      setErr('请先完成滑块验证')
+      return
+    }
     setBusy(true)
     setErr('')
     try {
-      await login(mode === 'hotel' ? hotelId : null, username, password)
+      await login(mode === 'hotel' ? hotelId : null, username, password, captchaToken)
       toast('登录成功')
       // 平台管理员进入设置（酒店管理）；员工进入仪表盘
       const me = JSON.parse(localStorage.getItem('pms_user') || '{}')
@@ -35,6 +44,9 @@ export default function Login() {
     } catch (e: any) {
       setErr(e.message ?? '登录失败')
       setBusy(false)
+      // 票据一次性：失败后必须重新滑动
+      setCaptchaToken(null)
+      setCaptchaKey(k => k + 1)
     }
   }
 
@@ -79,9 +91,14 @@ export default function Login() {
             <label className="label">密码</label>
             <input className="input" type="password" value={password} onChange={e => setPassword(e.target.value)} autoComplete="current-password" />
           </div>
+          <SliderCaptcha
+            resetKey={captchaKey}
+            onVerified={setCaptchaToken}
+            onEnabled={setCaptchaEnabled}
+          />
           {err && <p className="hint warn" style={{ marginBottom: 12 }}>{err}</p>}
-          <button className="btn btn-primary btn-lg btn-block" type="submit" disabled={busy}>
-            {busy ? '登录中…' : '登录'}
+          <button className="btn btn-primary btn-lg btn-block" type="submit" disabled={busy || (captchaEnabled && !captchaToken)}>
+            {busy ? '登录中…' : captchaEnabled && !captchaToken ? '请先完成滑块验证' : '登录'}
           </button>
         </form>
 
