@@ -25,3 +25,6 @@ npm-debug.log*
 
 # ZCode 会话计划文件（本地产物，不入库）
 .zcode/plans/
+
+# 浏览器验证临时截图（正式验收截图在 screenshots/）
+gui-test-screenshots/
