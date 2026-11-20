@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { Fragment, useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { X } from 'lucide-react'
 import {
@@ -9,6 +9,7 @@ import {
 import { Badge, Drawer, Field, PageHead, Segmented, Spinner, useToast, RES_STATUS_BADGE } from '../ui'
 import { CheckInDialog, ExtendDialog } from '../dialogs'
 
+/** 日历房号列/日期列的设计基准宽度；宽屏下列宽被 CSS 1fr 拉伸，仅作兜底（见 calGeom） */
 const CELL = 88
 const LAB_W = 150
 const DAYS = 14
@@ -101,8 +102,27 @@ export default function Rooms() {
   /** 表单类抽屉（入住/延住/编辑登记/撤销/更正实收/调整）打开中：日历点击一律忽略，防误触丢表单 */
   const formDrawerOpen = () => !!(checkinRes || extendRes || editRes || undoRes || undoOutRes || paidRes || adjustRes)
 
+  /** 日历实际几何：宽屏下日期列被 1fr 拉伸（房态盘去留白后铺满主区），
+      列号换算必须实测 .cal-lab/.cal-h 宽度——写死 88/150 会错列。每次实时取 rect，滚动后不能缓存。 */
+  const calGeom = () => {
+    const cal = calRef.current
+    if (!cal) return null
+    const lab = cal.querySelector('.cal-lab') as HTMLElement | null
+    const head = cal.querySelector('.cal-h') as HTMLElement | null
+    return {
+      left: cal.getBoundingClientRect().left,
+      labW: lab?.offsetWidth || LAB_W,
+      cellW: head?.getBoundingClientRect().width || CELL,
+    }
+  }
+
   const onBlockPointerDown = (e: React.PointerEvent, block: CalBlock, room: BoardRoom) => {
     if (e.button !== 0) return
+    // 已离店灰块（含截断存根）禁止拖动：日历即真实占房视图，改「原订区间」无意义
+    if (block.status === 'checked_out') {
+      e.stopPropagation()
+      return
+    }
     // 预订/表单抽屉打开时方块不可拖（点击交给 onClick 提示或切换详情）
     if (booking !== null || formDrawerOpen()) {
       e.stopPropagation()
@@ -157,9 +177,10 @@ export default function Rooms() {
       dragRef.current = null
       if (!calRef.current) return
 
-      const calRect = calRef.current.getBoundingClientRect()
-      let col = Math.floor((ev.clientX - calRect.left - LAB_W - 1) / CELL)
-      col = Math.max(0, Math.min(13 - (block.nights - 1), col))
+      const g = calGeom()
+      if (!g) return
+      let col = Math.floor((ev.clientX - g.left - g.labW) / g.cellW)
+      col = Math.max(0, Math.min(DAYS - block.nights, col))
       const tRow = document.elementFromPoint(ev.clientX, ev.clientY)?.closest('.cal-room') as HTMLElement | null
 
       // 目标行按 data-room-id 数值匹配（不能用 .cal-lab 的 textContent：脏房标签带「设净」按钮，
@@ -227,11 +248,11 @@ export default function Rooms() {
     addBookingLine(toRoom(room), date, 1)
   }
 
-  /** 指针 X 坐标 → 日历列号（0..13）。每次实时取 rect：日历在滚动容器内，缓存会错列。 */
+  /** 指针 X 坐标 → 日历列号（0..13）。按实测几何换算（见 calGeom），滚动中每次重取。 */
   const colAt = (clientX: number) => {
-    if (!calRef.current) return 0
-    const calRect = calRef.current.getBoundingClientRect()
-    const col = Math.floor((clientX - calRect.left - LAB_W - 1) / CELL)
+    const g = calGeom()
+    if (!g) return 0
+    const col = Math.floor((clientX - g.left - g.labW) / g.cellW)
     return Math.max(0, Math.min(DAYS - 1, col))
   }
 
@@ -299,6 +320,26 @@ export default function Rooms() {
     } else {
       setBooking({ lines: [{ room: lineRoom, checkIn, nights, totalText: String(nights * lineRoom.base_price), unitRef: null }] })
     }
+  }
+
+  /* ---------- 已加入订单的日历高亮 ---------- */
+  /** 预订抽屉未提交的行 → 该房在当前 14 天窗口内的高亮区间（列号+跨度；窗外部分裁剪，完全窗外不渲染） */
+  const bookingHighlights = (roomId: number): { idx: number; col: number; span: number }[] => {
+    const days = board.data?.day_list
+    if (!booking || !days?.length) return []
+    const wEnd = addDaysIso(days[0].date, DAYS)   // 半开区间：wEnd 当天已在窗外
+    return booking.lines.flatMap((l, idx) => {
+      if (l.room.id !== roomId) return []
+      const out = addDaysIso(l.checkIn, l.nights)
+      if (out <= days[0].date || l.checkIn >= wEnd) return []
+      // 起点：入住日在窗口内取其列号；更早（「前一天」移走窗口）则从第 0 列起
+      const col = days.findIndex(d => d.date === l.checkIn)
+      const startCol = col >= 0 ? col : 0
+      // 终点列（不含）：离店日与窗口末取小者
+      const endCol = out >= wEnd ? DAYS : days.findIndex(d => d.date === out)
+      const span = endCol - startCol
+      return span > 0 ? [{ idx, col: startCol, span }] : []
+    })
   }
 
   /* ---------- 直接预订（多房：逐行 POST，任一行失败即中止，已成功的不回滚） ---------- */
@@ -570,6 +611,10 @@ export default function Rooms() {
                       >设脏</button>
                     )}
                   </div>
+                  {/* 已加入预订抽屉（未提交）的房间+日期区间：实线蓝框高亮，随抽屉内增删行/改天数实时联动 */}
+                  {bookingHighlights(room.id).map(({ idx, col, span }) => (
+                    <div key={idx} className="cal-added" style={{ gridColumn: `${col + 2} / span ${span}` }} />
+                  ))}
                   {room.status === 'maintenance' || room.notes.includes('维修') ? (
                     <div className="cal-maint">维修{room.notes ? ` · ${room.notes}` : ''}</div>
                   ) : (
@@ -578,24 +623,33 @@ export default function Rooms() {
                         : b.status === 'checked_out' ? 'past' : 'future'
                       const hourly = b.stay_type === 'hourly'
                       return (
-                        <div
-                          key={b.id}
-                          className={`cal-block ${cls}${hourly ? ' hourly' : ''}`}
-                          data-res-id={b.id}
-                          style={{ gridColumn: `${b.col_start + 2} / span ${b.nights}`, ['--src' as any]: b.channel_color }}
-                          onPointerDown={(e) => onBlockPointerDown(e, b, room)}
-                          onClick={() => {
-                            if (justDraggedRef.current) return
-                            // 预订抽屉开着：点方块提示先完成开单；表单抽屉开着：忽略，防止详情被偷偷切走
-                            if (booking !== null) { toast('正在开单，请先提交或关闭右侧预订抽屉'); return }
-                            if (formDrawerOpen()) return
-                            setDetailRes({ id: b.id } as Reservation)
-                          }}
-                        >
-                          <span className="g">{b.guest_name}{hourly ? ' · 钟点' : ''}</span>
-                          <span className="s">{hourly ? `${b.hours ?? 0} 小时` : b.channel_name}</span>
-                          {(b.status === 'checked_in' || b.status === 'checked_out') && b.balance_due > 0 && <span className="owe">欠</span>}
-                        </div>
+                        <Fragment key={b.id}>
+                          <div
+                            className={`cal-block ${cls}${hourly ? ' hourly' : ''}${b.truncated && b.stub_cut ? ' truncated' : ''}`}
+                            data-res-id={b.id}
+                            style={{ gridColumn: `${b.col_start + 2} / span ${b.stub_nights ?? b.nights}`, ['--src' as any]: b.channel_color }}
+                            title={b.truncated ? `${b.guest_name} · 已离店（${b.check_in.slice(5).replace('-', '/')} 入住，原订至 ${b.check_out.slice(5).replace('-', '/')}，实际已提前退房）` : undefined}
+                            onPointerDown={(e) => onBlockPointerDown(e, b, room)}
+                            onClick={() => {
+                              if (justDraggedRef.current) return
+                              // 预订抽屉开着：点方块提示先完成开单；表单抽屉开着：忽略，防止详情被偷偷切走
+                              if (booking !== null) { toast('正在开单，请先提交或关闭右侧预订抽屉'); return }
+                              if (formDrawerOpen()) return
+                              setDetailRes({ id: b.id } as Reservation)
+                            }}
+                          >
+                            <span className="g">{b.guest_name}{hourly ? ' · 钟点' : ''}</span>
+                            <span className="s">{hourly ? `${b.hours ?? 0} 小时` : b.channel_name}</span>
+                            {(b.status === 'checked_in' || b.status === 'checked_out') && b.balance_due > 0 && <span className="owe">欠</span>}
+                          </div>
+                          {/* 提前退房腾空的尾段：绿色虚纹「可售」，点击穿透到行 = 点空白格开单 */}
+                          {b.truncated && !!b.resale_nights && (
+                            <div
+                              className={`cal-resale${b.resale_mid ? ' mid' : ''}`}
+                              style={{ gridColumn: `${(b.resale_start ?? 0) + 2} / span ${b.resale_nights}` }}
+                            >可售</div>
+                          )}
+                        </Fragment>
                       )
                     })
                   )}
@@ -613,9 +667,9 @@ export default function Rooms() {
           ))}
         </div>
       </div>
-          <p className="hint mt-16">
-            图例：<Badge color="blue">在住</Badge> <Badge color="orange">未来抵店</Badge> <Badge color="red">欠</Badge> 在住/已离店未结清 ·
-            方块最前端竖条颜色 = 预订来源（可在「设置 → 来源渠道」配置）。<b>拖动方块换房/改期（冲突自动回弹）· 点击空白格直接开单 · 房号旁「设净/设脏」一键切换房态</b>。
+          <p className="hint mt-16 cal-legend">
+            图例：<Badge color="blue">在住</Badge> <Badge color="orange">未来抵店</Badge> <Badge color="red">欠</Badge> 在住/已离店未结清 · 灰块 = 已离店（离店日格子只压左 1/3，当天下午起腾空，尾部<b style={{ color: 'var(--success-deep, #1E7B3C)' }}>虚纹「可售」</b>含当日钟点房）·
+            方块最前端竖条颜色 = 预订来源（可在「设置 → 来源渠道」配置）。<b>拖动方块换房/改期（冲突自动回弹）· 点击空白格/可售虚纹直接开单 · 房号旁「设净/设脏」一键切换房态</b>。
           </p>
         </div>
       ) : (
@@ -829,6 +883,10 @@ export default function Rooms() {
               <span>住期</span>
               <span>{md(resQuery.data.check_in)} – {md(resQuery.data.check_out)} · {resQuery.data.stay_type === 'hourly' ? `钟点 ${resQuery.data.hours} 小时` : `共 ${resQuery.data.nights} 晚`}</span>
             </div>
+            {/* 提前退房：补一行「实住」，与日历灰块截断口径一致 */}
+            {resQuery.data.status === 'checked_out' && resQuery.data.actual_check_out && resQuery.data.actual_check_out !== resQuery.data.check_out && (
+              <div className="info-row"><span>实住</span><span>{md(resQuery.data.check_in)} – {md(resQuery.data.actual_check_out)}（提前退房，尾段已放出续售）</span></div>
+            )}
             <div className="info-row"><span>房价</span><span>{fmtMoney(resQuery.data.rate)}{resQuery.data.stay_type === 'hourly' ? ' / 小时' : ' / 晚'}</span></div>
             <div className="info-row">
               <span>预订来源</span>

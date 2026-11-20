@@ -96,6 +96,9 @@ export interface CalBlock {
   check_in: string; check_out: string; status: string; rate: number
   stay_type?: string; hours?: number
   balance_due: number; col_start: number; nights: number
+  // 提前退房截断：灰块存根止于实际离店日（stub_cut=末日压左1/3），尾段放出「可售」虚纹
+  truncated?: boolean; stub_nights?: number; stub_cut?: boolean
+  resale_start?: number; resale_nights?: number; resale_mid?: boolean
 }
 export interface BoardRoom {
   id: number; number: string; floor: number; status: string; notes: string
@@ -116,6 +119,7 @@ export interface Reservation {
   room_id: number | null; room_number: string | null
   room_status?: string | null
   check_in: string; check_out: string; nights: number; status: string
+  actual_check_out?: string | null
   channel_id: number | null; channel_name: string | null; channel_color: string | null
   rate: number; stay_type: string; hours: number
   notes: string; balance_due: number

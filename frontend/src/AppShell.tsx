@@ -119,7 +119,8 @@ export default function AppShell() {
         </div>
       </aside>
 
-      <main className="main">
+      {/* 房态盘整页去左右留白（日历横贯主区），其余页面保持居中留白 */}
+      <main className={loc.pathname === '/rooms' ? 'main main-bleed' : 'main'}>
         <Outlet />
       </main>
 
