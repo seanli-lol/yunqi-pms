@@ -150,7 +150,7 @@ export default function Rooms() {
         grabDY = startY - rect.top
         el.style.opacity = '.35'
         ghost = el.cloneNode(true) as HTMLDivElement
-        ghost.style.cssText += `position:fixed;z-index:99;pointer-events:none;margin:0;width:${el.offsetWidth}px;height:${rect.height}px;box-shadow:0 10px 30px rgba(0,0,0,.25);opacity:.92;`
+        ghost.style.cssText += `position:fixed;z-index:99;pointer-events:none;margin:0;width:${el.offsetWidth}px;height:${rect.height}px;box-shadow:var(--shadow-drag);opacity:.92;`
         document.body.appendChild(ghost)
       }
       // 跟随指针：不用 transform（偏移大时 CSS transition 的 transform 会导致明显延迟）

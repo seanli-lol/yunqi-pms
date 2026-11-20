@@ -1,11 +1,12 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import {
   BedDouble, BellRing, CalendarDays, ChevronRight, ChevronsLeft, Ellipsis, LayoutDashboard,
-  ReceiptText, SlidersHorizontal, Users, ChartColumn,
+  LogOut, Monitor, Moon, ReceiptText, SlidersHorizontal, Sun, Users, ChartColumn,
 } from 'lucide-react'
 import { Overlay } from './ui'
 import { useAuth } from './auth'
+import { useTheme, type ThemeMode } from './theme'
 
 const NAV = [
   { group: '运营', items: [
@@ -19,9 +20,7 @@ const NAV = [
     { to: '/guests', label: '客户', icon: Users, tab: 'more' },
     { to: '/reports', label: '经营报表', icon: ChartColumn, tab: 'more' },
   ]},
-  { group: '系统', items: [
-    { to: '/settings', label: '设置', icon: SlidersHorizontal, tab: 'more' },
-  ]},
+  // 设置不在这里：桌面端已移到顶栏右上角（图标），移动端在「更多」面板
 ]
 
 const TABS = [
@@ -30,7 +29,76 @@ const TABS = [
   { to: '/front-desk', label: '前台', icon: BellRing, tab: 'desk' },
 ]
 
-function MoreSheet({ open, onClose }: { open: boolean; onClose: () => void }) {
+/* ---- 主题：三态定义与图标（与 prototype/theme.js 的 LABEL/ICON 一致） ---- */
+const THEME_OPTIONS: { key: ThemeMode; label: string; icon: typeof Sun }[] = [
+  { key: 'light', label: '浅色', icon: Sun },
+  { key: 'dark', label: '深色', icon: Moon },
+  { key: 'system', label: '跟随系统', icon: Monitor },
+]
+const THEME_LABEL: Record<ThemeMode, string> = { light: '浅色', dark: '深色', system: '跟随系统' }
+
+/** 顶栏「外观」图标按钮 + 向下弹出的三态菜单（不带文字，靠 title/aria-label 说明） */
+function ThemePicker() {
+  const { mode, setMode } = useTheme()
+  const [open, setOpen] = useState(false)
+  const wrap = useRef<HTMLDivElement>(null)
+  const Icon = THEME_OPTIONS.find(o => o.key === mode)!.icon
+  const label = `外观 · ${THEME_LABEL[mode]}`
+
+  // 点外部 / Esc 关闭
+  useEffect(() => {
+    if (!open) return
+    const onDown = (e: MouseEvent) => {
+      if (!wrap.current?.contains(e.target as Node)) setOpen(false)
+    }
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false) }
+    document.addEventListener('mousedown', onDown)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDown)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [open])
+
+  return (
+    <div className="theme-wrap" ref={wrap}>
+      <button
+        type="button"
+        className="topbar-icon"
+        title={label}
+        aria-label={label}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={() => setOpen(o => !o)}
+      >
+        <Icon />
+      </button>
+      {open && (
+        <div className="pop-menu theme-menu" role="menu">
+          {THEME_OPTIONS.map(o => (
+            <button
+              key={o.key}
+              type="button"
+              role="menuitemradio"
+              aria-checked={mode === o.key}
+              className={mode === o.key ? 'active' : ''}
+              onClick={() => { setMode(o.key); setOpen(false) }}
+            >
+              <o.icon />
+              <span>{o.label}</span>
+              <span className="tick">✓</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function MoreSheet({ open, onClose, roleLine }: { open: boolean; onClose: () => void; roleLine: string }) {
+  const { mode, setMode } = useTheme()
+  const { user, logout } = useAuth()
+  const nav = useNavigate()
   const extras = [
     { to: '/reservations', label: '预订管理', icon: CalendarDays },
     { to: '/billing', label: '账务', icon: ReceiptText },
@@ -42,6 +110,14 @@ function MoreSheet({ open, onClose }: { open: boolean; onClose: () => void }) {
     <Overlay open={open} onClose={onClose} >
       <div className="sheet-panel">
         <div className="sheet-handle" />
+        {/* 账户区：窄屏顶栏隐藏，身份信息落在这里 */}
+        <div className="sheet-account">
+          <span className="avatar">{user?.name?.charAt(0)}</span>
+          <div>
+            <div className="sheet-account-name">{user?.name}</div>
+            <div className="sheet-account-role">{roleLine}</div>
+          </div>
+        </div>
         {extras.map(x => (
           <NavLink key={x.to} to={x.to} className="sheet-link" onClick={onClose}>
             <x.icon />
@@ -49,6 +125,33 @@ function MoreSheet({ open, onClose }: { open: boolean; onClose: () => void }) {
             <ChevronRight className="chev" />
           </NavLink>
         ))}
+        {/* 移动端外观切换：与桌面端三态一致 */}
+        <div className="theme-sheet">
+          <span className="theme-sheet-label">外观</span>
+          <div className="segmented" role="tablist">
+            {THEME_OPTIONS.map(o => (
+              <button
+                key={o.key}
+                type="button"
+                role="tab"
+                aria-selected={mode === o.key}
+                className={mode === o.key ? 'active' : ''}
+                onClick={() => setMode(o.key)}
+              >
+                {o.label}
+              </button>
+            ))}
+          </div>
+        </div>
+        {/* 退出：窄屏此前没有任何退出入口（侧栏被隐藏），这里补上 */}
+        <button
+          type="button"
+          className="sheet-link sheet-danger"
+          onClick={() => { onClose(); logout(); nav('/login') }}
+        >
+          <LogOut />
+          退出登录
+        </button>
       </div>
     </Overlay>
   )
@@ -63,6 +166,12 @@ export default function AppShell() {
   const loc = useLocation()
   const nav = useNavigate()
   const { user, activeHotelName, activeHotelId, setActiveHotel, logout } = useAuth()
+  // 角色 + 去掉「云栖酒店 · 」前缀的门店名（顶栏 title 与更多面板共用同一口径）
+  const roleLine = `${user?.role_label ?? ''}${
+    activeHotelName && user?.role !== 'platform_admin'
+      ? ` · ${activeHotelName.replace('云栖酒店 · ', '')}`
+      : ''
+  }`
 
   useEffect(() => {
     try { localStorage.setItem('pms_rail', rail ? '1' : '0') } catch { /* 忽略 */ }
@@ -114,20 +223,6 @@ export default function AppShell() {
             </div>
           ))}
         </nav>
-        <div className="sidebar-user">
-          <span className="avatar" data-tip={user?.name}>{user?.name?.charAt(0)}</span>
-          <div className="user-name">
-            {user?.name}
-            <br />
-            <span className="user-role">{user?.role_label}{activeHotelName && user?.role !== 'platform_admin' ? ` · ${activeHotelName.replace('云栖酒店 · ', '')}` : ''}</span>
-          </div>
-          <button
-            className="btn btn-quiet btn-sm" style={{ marginLeft: 'auto' }}
-            onClick={() => { logout(); nav('/login') }}
-          >
-            退出
-          </button>
-        </div>
         <button
           type="button"
           className="sidebar-collapse"
@@ -141,10 +236,39 @@ export default function AppShell() {
         </button>
       </aside>
 
-      {/* 房态盘整页去左右留白（日历横贯主区），其余页面保持居中留白 */}
-      <main className={loc.pathname === '/rooms' ? 'main main-bleed' : 'main'}>
-        <Outlet />
-      </main>
+      {/* 内容列：顶栏 + main。作为 .app 两列 grid 的第二个 item，
+          不引入 grid-template-rows，避免 main 被 auto-placement 挤进侧栏列 */}
+      <div className="app-content">
+        <header className="topbar">
+          <span className="topbar-user" title={`${user?.name} · ${roleLine}`}>
+            <span className="avatar">{user?.name?.charAt(0)}</span>
+            <span className="name">{user?.name}</span>
+          </span>
+          <NavLink
+            to="/settings"
+            className={({ isActive }) => `topbar-icon${isActive ? ' active' : ''}`}
+            title="系统设置"
+            aria-label="系统设置"
+          >
+            <SlidersHorizontal />
+          </NavLink>
+          <ThemePicker />
+          <button
+            type="button"
+            className="topbar-icon danger"
+            title="退出登录"
+            aria-label="退出登录"
+            onClick={() => { logout(); nav('/login') }}
+          >
+            <LogOut />
+          </button>
+        </header>
+
+        {/* 房态盘整页去左右留白（日历横贯主区），其余页面保持居中留白 */}
+        <main className={loc.pathname === '/rooms' ? 'main main-bleed' : 'main'}>
+          <Outlet />
+        </main>
+      </div>
 
       <nav className="tabbar" aria-label="移动端主导航">
         {TABS.map(t => (
@@ -158,7 +282,7 @@ export default function AppShell() {
           更多
         </button>
       </nav>
-      <MoreSheet open={moreOpen} onClose={() => setMoreOpen(false)} />
+      <MoreSheet open={moreOpen} onClose={() => setMoreOpen(false)} roleLine={roleLine} />
     </div>
   )
 }

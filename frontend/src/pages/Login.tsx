@@ -1,9 +1,15 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { Monitor, Moon, Sun } from 'lucide-react'
 import { api, type Hotel } from '../api'
 import { useAuth } from '../auth'
 import { SliderCaptcha } from '../captcha'
+import { useTheme, type ThemeMode } from '../theme'
 import { Segmented, useToast } from '../ui'
+
+const THEME_ORDER: ThemeMode[] = ['light', 'dark', 'system']
+const THEME_LABEL: Record<ThemeMode, string> = { light: '浅色', dark: '深色', system: '跟随系统' }
+const THEME_ICON = { light: Sun, dark: Moon, system: Monitor }
 
 export default function Login() {
   const nav = useNavigate()
@@ -20,6 +26,12 @@ export default function Login() {
   const [captchaEnabled, setCaptchaEnabled] = useState(true)
   const [captchaToken, setCaptchaToken] = useState<string | null>(null)
   const [captchaKey, setCaptchaKey] = useState(0)
+  // 主题：登录页无侧栏，用右上角浮动圆钮三态循环（与设计稿 login.html 一致）
+  const { mode: themeMode, setMode: setThemeMode } = useTheme()
+  const ThemeIcon = THEME_ICON[themeMode]
+  const cycleTheme = () => {
+    setThemeMode(THEME_ORDER[(THEME_ORDER.indexOf(themeMode) + 1) % THEME_ORDER.length])
+  }
 
   useEffect(() => {
     api.get('/api/hotels/public', { skipHotel: true }).then((hs: Hotel[]) => {
@@ -52,6 +64,15 @@ export default function Login() {
 
   return (
     <div className="auth-body" style={{ minHeight: '100vh', display: 'grid', placeItems: 'center', background: 'var(--bg-secondary)', padding: 24 }}>
+      <button
+        type="button"
+        className="theme-fab"
+        title={`外观 · ${THEME_LABEL[themeMode]}`}
+        aria-label={`外观 · ${THEME_LABEL[themeMode]}（点击切换）`}
+        onClick={cycleTheme}
+      >
+        <ThemeIcon />
+      </button>
       <main className="card" style={{ width: 'min(420px, 100%)', padding: '40px 36px 32px', textAlign: 'center', background: 'var(--bg)', borderRadius: 'var(--radius-card)', border: '1px solid var(--hairline-soft)' }}>
         <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 20 }}>
           <span className="brand-mark" style={{ width: 44, height: 44, borderRadius: 12, fontSize: 19 }}>云</span>

@@ -9,6 +9,21 @@ import { PageHead, Segmented, Spinner, useToast } from '../ui'
 
 type Preset = '7' | '30' | 'month' | 'custom'
 
+/* ---- 图表配色：一律走 CSS 变量，深浅主题自动跟随 ----
+   Recharts 的 tick/contentStyle 需要真实色值，但 var() 在 SVG 属性里可用，
+   在内联 style 里也由浏览器解析，因此不需要 useTheme 参与。 */
+const AXIS_TICK = { fontSize: 11, fill: 'var(--text-tertiary)' }
+const TOOLTIP_STYLE: React.CSSProperties = {
+  background: 'var(--bg)',
+  border: '1px solid var(--hairline-soft)',
+  borderRadius: 12,
+  boxShadow: 'var(--shadow-pop)',
+  fontSize: 12.5,
+  padding: '8px 12px',
+}
+const TOOLTIP_LABEL: React.CSSProperties = { color: 'var(--text-secondary)', marginBottom: 4 }
+const TOOLTIP_ITEM: React.CSSProperties = { color: 'var(--text-primary)' }
+
 function shiftDays(iso: string, n: number): string {
   const [y, m, d] = iso.split('-').map(Number)
   const dt = new Date(y, m - 1, d + n)
@@ -134,9 +149,12 @@ export default function Reports() {
           <ResponsiveContainer width="100%" height="100%">
             <LineChart data={chartData} margin={{ top: 8, right: 12, bottom: 0, left: -12 }}>
               <CartesianGrid strokeDasharray="4 5" stroke="var(--hairline-soft)" />
-              <XAxis dataKey="label" tick={{ fontSize: 11, fill: '#86868b' }} interval="preserveStartEnd" />
-              <YAxis tick={{ fontSize: 11, fill: '#86868b' }} domain={[0, 100]} />
-              <Tooltip formatter={(v: any) => `${v}%`} />
+              <XAxis dataKey="label" tick={AXIS_TICK} interval="preserveStartEnd" />
+              <YAxis tick={AXIS_TICK} domain={[0, 100]} />
+              <Tooltip
+                formatter={(v: any) => `${v}%`}
+                contentStyle={TOOLTIP_STYLE} labelStyle={TOOLTIP_LABEL} itemStyle={TOOLTIP_ITEM}
+              />
               <Line type="monotone" dataKey="occupancy" stroke="var(--accent)" strokeWidth={2.5} dot={false} />
             </LineChart>
           </ResponsiveContainer>
@@ -154,9 +172,12 @@ export default function Reports() {
           <ResponsiveContainer width="100%" height="100%">
             <BarChart data={chartData} margin={{ top: 8, right: 12, bottom: 0, left: -12 }}>
               <CartesianGrid strokeDasharray="4 5" stroke="var(--hairline-soft)" vertical={false} />
-              <XAxis dataKey="label" tick={{ fontSize: 11, fill: '#86868b' }} interval="preserveStartEnd" />
-              <YAxis tick={{ fontSize: 11, fill: '#86868b' }} />
-              <Tooltip formatter={(v: any, k: any) => [fmtMoney(Number(v)), k === 'revenue_room' ? '房费收入' : '其他收入']} />
+              <XAxis dataKey="label" tick={AXIS_TICK} interval="preserveStartEnd" />
+              <YAxis tick={AXIS_TICK} />
+              <Tooltip
+                formatter={(v: any, k: any) => [fmtMoney(Number(v)), k === 'revenue_room' ? '房费收入' : '其他收入']}
+                contentStyle={TOOLTIP_STYLE} labelStyle={TOOLTIP_LABEL} itemStyle={TOOLTIP_ITEM}
+              />
               <Bar dataKey="revenue_room" stackId="a" fill="var(--accent)" radius={[4, 4, 0, 0]} />
               <Bar dataKey="revenue_other" stackId="a" fill="var(--accent)" opacity={0.35} radius={[4, 4, 0, 0]} />
             </BarChart>

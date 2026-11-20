@@ -4,6 +4,21 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>云栖 PMS</title>
+    <!-- 地址栏/状态栏配色跟随主题（system 模式两条 media 都会生效） -->
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#f5f5f7" />
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#0e0e10" />
+    <script>
+      // 首屏防闪白：在任何绘制前按 localStorage.pms_theme 定下 data-theme。
+      // 契约与 src/theme.tsx 一致——这里只写具体值 light|dark，不写 system。
+      (function () {
+        var mode = 'system';
+        try { mode = localStorage.getItem('pms_theme') || 'system'; } catch (e) {}
+        if (mode !== 'light' && mode !== 'dark') {
+          mode = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+        }
+        document.documentElement.setAttribute('data-theme', mode);
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

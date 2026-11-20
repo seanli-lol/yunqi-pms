@@ -2,8 +2,17 @@
 
 /* ============================================================
    云栖 PMS · 设计令牌与组件（自阶段一原型 1:1 移植）
+   令牌与 design/prototype/tokens.css 保持逐字一致：
+   改视觉先在原型改，再同步到这里（或反过来），两处必须同值。
+
+   深浅主题契约：<html data-theme="light|dark"> 只写具体值；
+   偏好存 localStorage.pms_theme（light|dark|system，缺省 system），
+   由 src/theme.tsx 解析 system 后写入 data-theme。
    ============================================================ */
 :root {
+  color-scheme: light;
+
+  /* ---- 中性色 ---- */
   --bg: #ffffff;
   --bg-secondary: #f5f5f7;
   --text-primary: #1d1d1f;
@@ -12,30 +21,136 @@
   --hairline: #d2d2d7;
   --hairline-soft: #e8e8ed;
 
+  /* ---- 主色 ---- */
   --accent: #0071e3;
   --accent-hover: #0077ed;
   --accent-deep: #0058a8;
   --accent-tint: #e8f1fb;
 
+  /* ---- 语义色 ---- */
   --success: #34c759;  --success-deep: #1e7b3c;  --success-tint: #e8f8ec;
   --warning: #ff9500;  --warning-deep: #a35a00;  --warning-tint: #fff3e2;
   --danger:  #ff3b30;  --danger-deep:  #b3251c;  --danger-tint:  #fdecea;
   --purple:  #af52de;  --purple-deep:  #7a2ea0;  --purple-tint:  #f4ebfa;
 
+  /* ---- 语义色描边 ---- */
+  --accent-line:  #c5ddf5;
+  --success-line: #c7edd2;
+  --warning-line: #f5dfc0;
+  --danger-line:  #f5c9c5;
+
+  /* ---- 实色/反色对 ---- */
+  --on-accent: #ffffff;
+  --contrast-bg: #1d1d1f;
+  --contrast-text: #ffffff;
+
+  /* ---- 浮层与特殊表面 ---- */
+  --row-hover: #fafafc;
+  --glass-bg: rgba(255, 255, 255, .92);
+  --tooltip-bg: rgba(29, 29, 31, .92);
+  --tooltip-text: #ffffff;
+  --scrim: rgba(0, 0, 0, .4);
+  --past-bg: #ededf0;
+  --past-border: #dddde3;
+  --danger-tint-alt: #fbe3e0;
+
+  /* ---- 透明叠色（深浅共用） ---- */
+  --accent-soft: rgba(0, 113, 227, .10);
+  --success-soft: rgba(52, 199, 89, .14);
+  --success-soft-2: rgba(52, 199, 89, .26);
+  --success-dash: rgba(52, 199, 89, .5);
+  --success-wash-a: rgba(52, 199, 89, .08);
+  --success-wash-b: rgba(52, 199, 89, .03);
+  --warning-soft: rgba(255, 149, 0, .14);
+  --warning-soft-2: rgba(255, 149, 0, .26);
+  --segment-bg: rgba(120, 120, 128, .12);
+  --focus-ring: 0 0 0 3.5px rgba(0, 113, 227, .14);
+
+  /* ---- 下拉箭头（data-URI 内部无法解析 var()，整套存进变量） ---- */
+  --select-arrow: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%236e6e73' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+
+  /* ---- 字体 ---- */
   --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC",
                "Helvetica Neue", "Microsoft YaHei", sans-serif;
 
+  /* ---- 圆角 ---- */
   --radius-card: 18px;
   --radius-input: 10px;
   --radius-tile: 12px;
   --radius-pill: 100px;
 
+  /* ---- 阴影 ---- */
   --shadow-card: 0 1px 2px rgba(0, 0, 0, .03);
   --shadow-pop: 0 24px 70px rgba(0, 0, 0, .18), 0 4px 16px rgba(0, 0, 0, .08);
   --shadow-seg: 0 1px 4px rgba(0, 0, 0, .12);
+  --shadow-hover: 0 4px 14px rgba(0, 0, 0, .1);
+  --shadow-block: 0 3px 10px rgba(0, 0, 0, .12);
+  --shadow-drag: 0 10px 30px rgba(0, 0, 0, .25);
+  --shadow-piece: 0 2px 6px rgba(0, 0, 0, .35);
 
+  /* ---- 动效 ---- */
   --ease: cubic-bezier(.25, .1, .25, 1);
   --dur: .22s;
+}
+
+/* 深色主题：只覆盖「因底变而必须变」的令牌（与 tokens.css 同值） */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
+  --bg: #1c1c1e;
+  --bg-secondary: #0e0e10;
+  --text-primary: #f5f5f7;
+  --text-secondary: #a1a1a6;
+  --text-tertiary: #86868b;
+  --hairline: #48484a;
+  --hairline-soft: #2c2c2e;
+
+  --accent: #0a84ff;
+  --accent-hover: #409cff;
+  --accent-deep: #6cb6ff;
+  --accent-tint: #132a42;
+
+  --success: #30d158;  --success-deep: #4ade80;  --success-tint: #10281a;
+  --warning: #ff9f0a;  --warning-deep: #ffb95c;  --warning-tint: #2e2110;
+  --danger:  #ff453a;  --danger-deep:  #ff8a80;  --danger-tint:  #311513;
+  --purple:  #bf5af2;  --purple-deep:  #d7a6f7;  --purple-tint:  #26172e;
+
+  --accent-line:  #1f4a72;
+  --success-line: #1e4630;
+  --warning-line: #4a3418;
+  --danger-line:  #4d2422;
+
+  --contrast-bg: #f5f5f7;
+  --contrast-text: #1c1c1e;
+
+  --row-hover: #232326;
+  --glass-bg: rgba(28, 28, 30, .92);
+  --tooltip-bg: rgba(58, 58, 60, .96);
+  --scrim: rgba(0, 0, 0, .6);
+  --past-bg: #2a2a2d;
+  --past-border: #3a3a3d;
+  --danger-tint-alt: #3a1917;
+
+  --accent-soft: rgba(10, 132, 255, .22);
+  --success-soft: rgba(48, 209, 88, .18);
+  --success-soft-2: rgba(48, 209, 88, .3);
+  --success-dash: rgba(48, 209, 88, .55);
+  --success-wash-a: rgba(48, 209, 88, .14);
+  --success-wash-b: rgba(48, 209, 88, .05);
+  --warning-soft: rgba(255, 159, 10, .18);
+  --warning-soft-2: rgba(255, 159, 10, .3);
+  --segment-bg: rgba(120, 120, 128, .24);
+  --focus-ring: 0 0 0 3.5px rgba(10, 132, 255, .32);
+
+  --select-arrow: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23a1a1a6' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, .5);
+  --shadow-pop: 0 24px 70px rgba(0, 0, 0, .6), 0 4px 16px rgba(0, 0, 0, .4);
+  --shadow-seg: 0 1px 4px rgba(0, 0, 0, .5);
+  --shadow-hover: 0 4px 14px rgba(0, 0, 0, .5);
+  --shadow-block: 0 3px 10px rgba(0, 0, 0, .55);
+  --shadow-drag: 0 10px 30px rgba(0, 0, 0, .65);
+  --shadow-piece: 0 2px 6px rgba(0, 0, 0, .6);
 }
 
 body {
@@ -61,16 +176,55 @@ button { font-family: inherit; cursor: pointer; }
 
 /* ========== 外壳 ========== */
 .app { display: grid; grid-template-columns: 232px minmax(0, 1fr); min-height: 100vh; }
+/* 内容列：顶栏 + main 的竖向容器。
+   .app 仍是「侧栏 | 内容」两列，内容列作为单个 grid item 自动落在第 2 列 ——
+   这样不必给 .app 加 grid-template-rows（否则 main 会被 auto-placement 挤进 232px 侧栏列）。
+   min-width:0 是承重墙：否则房态盘 .cal-scroll 的横向滚动会把整列撑破。 */
+.app-content { display: flex; flex-direction: column; min-width: 0; min-height: 100vh; }
 .sidebar {
   position: sticky; top: 0; height: 100vh; overflow-y: auto;
   background: var(--bg); border-right: 1px solid var(--hairline-soft);
   display: flex; flex-direction: column; padding: 20px 12px 16px;
 }
+
+/* ---- 顶栏（身份 + 外观 + 退出） ----
+   z-index 35 必须夹在日历（.cal-head 3 / .cal-lab 2）与移动底栏（.tabbar 40）之间：
+   低于日历会被房态盘表头盖住，高于 40 会压住移动端底部导航。 */
+.topbar {
+  position: sticky; top: 0; z-index: 35; flex-shrink: 0;
+  height: 56px; padding: 0 20px;
+  display: flex; align-items: center; justify-content: flex-end; gap: 4px;
+  background: var(--bg); border-bottom: 1px solid var(--hairline-soft);
+}
+/* 图标按钮：44px 命中区（触屏最小目标），视觉留白由内边距吸收 */
+.topbar-icon {
+  width: 44px; height: 44px; border: 0; border-radius: 50%;
+  display: grid; place-items: center; background: none; color: var(--text-secondary);
+  transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
+}
+.topbar-icon:hover { background: var(--bg-secondary); color: var(--text-primary); }
+.topbar-icon svg { width: 18px; height: 18px; }
+/* 设置是导航目的地（NavLink 渲染成 <a>），需要激活态；
+   另两个是纯动作按钮，不参与导航高亮 */
+a.topbar-icon:hover { text-decoration: none; }
+.topbar-icon.active { background: var(--accent-tint); color: var(--accent-deep); }
+/* 退出是破坏性操作：仅换色，不加红底块，避免常驻红点喧哗 */
+.topbar-icon.danger { color: var(--danger-deep); }
+.topbar-icon.danger:hover { background: var(--danger-tint); color: var(--danger-deep); }
+.topbar-user {
+  display: flex; align-items: center; gap: 8px;
+  max-width: 190px; margin-right: 6px; padding: 4px 10px 4px 4px;
+  border: 0; border-radius: var(--radius-pill); background: none;
+  color: var(--text-primary); font-family: inherit; font-size: 13.5px; font-weight: 600;
+  cursor: default;
+}
+.topbar-user .avatar { width: 30px; height: 30px; font-size: 13px; }
+.topbar-user .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .brand { display: flex; align-items: center; gap: 10px; padding: 4px 10px 18px; color: var(--text-primary); }
 .brand-mark {
   width: 34px; height: 34px; border-radius: 9px; flex-shrink: 0;
-  background: linear-gradient(135deg, #0a84ff, #0064c8);
-  display: grid; place-items: center; color: #fff; font-size: 15px; font-weight: 600;
+  background: linear-gradient(135deg, var(--accent), var(--accent-deep));
+  display: grid; place-items: center; color: var(--on-accent); font-size: 15px; font-weight: 600;
 }
 .brand-text { display: flex; flex-direction: column; line-height: 1.25; }
 .brand-name { font-size: 15px; font-weight: 600; letter-spacing: -0.01em; }
@@ -98,26 +252,30 @@ button { font-family: inherit; cursor: pointer; }
 .user-name { font-size: 13.5px; font-weight: 600; line-height: 1.3; }
 .user-role { font-size: 12px; color: var(--text-tertiary); line-height: 1.3; }
 
-/* ---- 侧边栏收起（图标栏 + 悬停气泡，与原型 components.css 1:1） ---- */
+/* ---- 侧边栏收起（图标栏 + 悬停气泡，与原型 components.css 1:1） ----
+   ⚠️ 收起态的隐藏规则必须限定在 .sidebar 内：顶栏（.topbar）同样在 .app 下，
+   若写成 .app.rail .user-name 之类会连带把顶栏里的同名元素一起隐藏。 */
 .app { transition: grid-template-columns .25s var(--ease); }
 .app.rail { grid-template-columns: 68px minmax(0, 1fr); }
 .app.rail .sidebar { overflow: visible; }
-.app.rail .brand { justify-content: center; padding: 4px 0 14px; }
+.app.rail .sidebar .brand { justify-content: center; padding: 4px 0 14px; }
 .app.rail .brand-text,
-.app.rail .user-name,
-.app.rail .user-role,
+.app.rail .sidebar .user-name,
+.app.rail .sidebar .user-role,
 .app.rail .sidebar-user .btn { display: none; }
 .app.rail .sidebar-user { justify-content: center; padding: 6px; }
-.app.rail .nav-label {
+.app.rail .sidebar .nav-label {
   display: block; font-size: 0; height: 1px; padding: 0; margin: 10px 6px 4px;
   background: var(--hairline-soft);
 }
-.app.rail .nav a {
+.app.rail .sidebar .nav a {
   font-size: 0; gap: 0; justify-content: center; padding: 9px 0; position: relative;
 }
 .sidebar-collapse {
-  display: flex; align-items: center; gap: 10px; width: 100%; margin-top: 8px;
-  padding: 9px 10px; border: none; background: none; cursor: pointer; border-radius: 10px;
+  display: flex; align-items: center; gap: 10px; width: 100%;
+  /* 侧栏尾部的用户块已移到顶栏：由收起按钮自己顶到底部 */
+  margin-top: auto; padding: 9px 10px;
+  border: none; background: none; cursor: pointer; border-radius: 10px;
   color: var(--text-tertiary); font-size: 13.5px; font-weight: 500; text-align: left;
   transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
 }
@@ -131,7 +289,7 @@ button { font-family: inherit; cursor: pointer; }
   content: attr(data-tip);
   position: absolute; left: calc(100% + 12px); top: 50%;
   transform: translateY(-50%) translateX(-4px);
-  background: rgba(29, 29, 31, .92); color: #fff;
+  background: var(--tooltip-bg); color: var(--tooltip-text);
   font-size: 12px; line-height: 1; padding: 7px 10px; border-radius: 8px;
   white-space: nowrap; opacity: 0; pointer-events: none; z-index: 60;
   transition: opacity .18s var(--ease), transform .18s var(--ease);
@@ -195,7 +353,7 @@ button { font-family: inherit; cursor: pointer; }
   transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease), opacity var(--dur) var(--ease);
 }
 .btn svg { width: 15px; height: 15px; }
-.btn-primary { background: var(--accent); color: #fff; }
+.btn-primary { background: var(--accent); color: var(--on-accent); }
 .btn-primary:hover { background: var(--accent-hover); }
 .btn-ghost { background: var(--bg); color: var(--text-primary); border: 1px solid var(--hairline); }
 .btn-ghost:hover { border-color: var(--text-tertiary); }
@@ -247,7 +405,7 @@ button { font-family: inherit; cursor: pointer; }
 .table td { padding: 14px 20px; border-bottom: 1px solid var(--hairline-soft); vertical-align: middle; }
 .table tbody tr:last-child td { border-bottom: 0; }
 .table tbody tr { transition: background var(--dur) var(--ease); }
-.table tbody tr:hover { background: #fafafc; }
+.table tbody tr:hover { background: var(--row-hover); }
 .table .num { font-variant-numeric: tabular-nums; text-align: right; }
 .table th.num { text-align: right; }
 .table .strong { font-weight: 600; }
@@ -268,11 +426,11 @@ button { font-family: inherit; cursor: pointer; }
 .input::placeholder { color: var(--text-tertiary); }
 .input:focus, .select:focus {
   outline: none; border-color: var(--accent);
-  box-shadow: 0 0 0 3.5px rgba(0, 113, 227, .14);
+  box-shadow: var(--focus-ring);
 }
 .select {
   padding-right: 34px;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%236e6e73' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-image: var(--select-arrow);
   background-repeat: no-repeat; background-position: right 12px center;
 }
 textarea.input { height: auto; padding: 12px 14px; resize: vertical; }
@@ -292,7 +450,7 @@ textarea.input { height: auto; padding: 12px 14px; resize: vertical; }
    普通 `.captcha-piece` 会被压成全图高，导致拼图块与缺口 Y 轴对不上 */
 .captcha-bg .captcha-piece {
   position: absolute; left: 0; height: auto;
-  filter: drop-shadow(0 2px 6px rgba(0, 0, 0, .35));
+  filter: drop-shadow(var(--shadow-piece));
   transition: left .06s linear;
 }
 .captcha-badge {
@@ -356,12 +514,12 @@ textarea.input { height: auto; padding: 12px 14px; resize: vertical; }
   transition: all var(--dur) var(--ease);
 }
 .chip:hover { border-color: var(--text-tertiary); color: var(--text-primary); }
-.chip.active { background: var(--text-primary); border-color: var(--text-primary); color: #fff; }
+.chip.active { background: var(--contrast-bg); border-color: var(--contrast-bg); color: var(--contrast-text); }
 .chip .n { margin-left: 4px; opacity: .65; }
 
 .segmented {
   display: inline-flex; gap: 2px; padding: 3px;
-  background: rgba(120, 120, 128, .12); border-radius: 10px;
+  background: var(--segment-bg); border-radius: 10px;
 }
 .segmented button {
   height: 32px; padding: 0 18px; border: 0; border-radius: 8px; background: transparent;
@@ -385,7 +543,7 @@ textarea.input { height: auto; padding: 12px 14px; resize: vertical; }
 
 /* ========== 弹层 ========== */
 .overlay {
-  position: fixed; inset: 0; z-index: 50; background: rgba(0, 0, 0, .4);
+  position: fixed; inset: 0; z-index: 50; background: var(--scrim);
   display: grid; place-items: center; padding: 20px;
 }
 .overlay[hidden] { display: none !important; }
@@ -413,7 +571,7 @@ textarea.input { height: auto; padding: 12px 14px; resize: vertical; }
 /* 后果说明块：浅红底逐条列出不可逆影响 */
 .danger-note {
   margin-top: 16px; padding: 13px 15px;
-  background: var(--danger-tint); border: 1px solid #f5c9c5;
+  background: var(--danger-tint); border: 1px solid var(--danger-line);
   border-radius: 12px; font-size: 13px; line-height: 1.55; color: var(--danger-deep);
 }
 .danger-note b { font-weight: 600; }
@@ -440,10 +598,10 @@ textarea.input { height: auto; padding: 12px 14px; resize: vertical; }
 .pop-menu button {
   display: block; width: 100%; text-align: left;
   padding: 8px 12px; border-radius: 8px; font-size: 13.5px; font-weight: 500;
-  color: var(--text); background: none; border: none; cursor: pointer;
+  color: var(--text-primary); background: none; border: none; cursor: pointer;
 }
-.pop-menu button:hover { background: #F5F5F7; }
-.pop-menu button:active { background: #E8E8ED; }
+.pop-menu button:hover { background: var(--bg-secondary); }
+.pop-menu button:active { background: var(--hairline-soft); }
 .pop-menu button.danger { color: var(--danger); }
 /* 房态盘预订抽屉的房间行 */
 .book-lines { display: flex; flex-direction: column; gap: 10px; }
@@ -464,7 +622,7 @@ textarea.input { height: auto; padding: 12px 14px; resize: vertical; }
 /* ========== 底部标签栏（移动端） ========== */
 .tabbar {
   position: fixed; left: 0; right: 0; bottom: 0; z-index: 40; display: none;
-  background: rgba(255, 255, 255, .92); -webkit-backdrop-filter: blur(20px); backdrop-filter: blur(20px);
+  background: var(--glass-bg); -webkit-backdrop-filter: blur(20px); backdrop-filter: blur(20px);
   border-top: 1px solid var(--hairline-soft); padding: 5px 6px calc(5px + env(safe-area-inset-bottom));
 }
 .tabbar a {
@@ -477,6 +635,8 @@ textarea.input { height: auto; padding: 12px 14px; resize: vertical; }
 .overlay.sheet { padding: 0; display: block; }
 .sheet-panel {
   position: absolute; left: 0; right: 0; bottom: 0;
+  /* 账户 + 5 导航 + 外观 + 退出四段：小屏要能滚，否则底部会被裁掉 */
+  max-height: 88vh; overflow-y: auto;
   background: var(--bg); border-radius: 20px 20px 0 0;
   padding: 14px 16px calc(20px + env(safe-area-inset-bottom));
   box-shadow: var(--shadow-pop); animation: slide-up .3s var(--ease);
@@ -506,7 +666,7 @@ textarea.input { height: auto; padding: 12px 14px; resize: vertical; }
 .toast {
   position: fixed; left: 50%; bottom: 30px; z-index: 90;
   transform: translate(-50%, 14px);
-  background: var(--text-primary); color: #fff;
+  background: var(--contrast-bg); color: var(--contrast-text);
   padding: 11px 18px; border-radius: var(--radius-pill); font-size: 14px;
   opacity: 0; pointer-events: none; max-width: 86vw;
   transition: opacity .25s var(--ease), transform .25s var(--ease);
@@ -517,10 +677,10 @@ textarea.input { height: auto; padding: 12px 14px; resize: vertical; }
 .legend { display: flex; gap: 16px; flex-wrap: wrap; font-size: 13px; color: var(--text-secondary); }
 .legend span { display: inline-flex; align-items: center; gap: 6px; }
 .legend i { width: 11px; height: 11px; border-radius: 3.5px; border: 1px solid transparent; }
-.legend .lg-clean    { background: var(--success-tint); border-color: #c7edd2; }
-.legend .lg-dirty    { background: var(--warning-tint); border-color: #f5dfc0; }
-.legend .lg-occupied { background: var(--accent-tint);  border-color: #c5ddf5; }
-.legend .lg-maint    { background: var(--danger-tint);  border-color: #f5c9c5; }
+.legend .lg-clean    { background: var(--success-tint); border-color: var(--success-line); }
+.legend .lg-dirty    { background: var(--warning-tint); border-color: var(--warning-line); }
+.legend .lg-occupied { background: var(--accent-tint);  border-color: var(--accent-line); }
+.legend .lg-maint    { background: var(--danger-tint);  border-color: var(--danger-line); }
 
 .board { display: flex; flex-direction: column; gap: 24px; }
 .floor-row { display: grid; grid-template-columns: 56px minmax(0, 1fr); gap: 16px; align-items: start; }
@@ -534,13 +694,13 @@ textarea.input { height: auto; padding: 12px 14px; resize: vertical; }
   justify-content: space-between; gap: 3px; text-align: left; cursor: pointer;
   transition: transform var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
 }
-.room:hover { transform: translateY(-1px); box-shadow: 0 4px 14px rgba(0, 0, 0, .1); }
+.room:hover { transform: translateY(-1px); box-shadow: var(--shadow-hover); }
 .room-no { font-size: 15px; font-weight: 600; letter-spacing: .01em; }
 .room-meta { font-size: 11.5px; line-height: 1.3; opacity: .9; }
-.room-clean    { background: var(--success-tint); border-color: #c7edd2; color: var(--success-deep); }
-.room-dirty    { background: var(--warning-tint); border-color: #f5dfc0; color: var(--warning-deep); }
-.room-occupied { background: var(--accent-tint);  border-color: #c5ddf5; color: var(--accent-deep); }
-.room-maint    { background: var(--danger-tint);  border-color: #f5c9c5; color: var(--danger-deep); }
+.room-clean    { background: var(--success-tint); border-color: var(--success-line); color: var(--success-deep); }
+.room-dirty    { background: var(--warning-tint); border-color: var(--warning-line); color: var(--warning-deep); }
+.room-occupied { background: var(--accent-tint);  border-color: var(--accent-line); color: var(--accent-deep); }
+.room-maint    { background: var(--danger-tint);  border-color: var(--danger-line); color: var(--danger-deep); }
 
 .pick-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(88px, 1fr)); gap: 8px; }
 .pick-room {
@@ -577,7 +737,7 @@ textarea.input { height: auto; padding: 12px 14px; resize: vertical; }
 .cal-h.wknd .dt, .cal-h.wknd .wk { color: var(--warning-deep); }
 .cal-h.today { background: var(--accent-tint); }
 .cal-h.today .dt, .cal-h.today .wk { color: var(--accent-deep); }
-.cal-remain { border-bottom: 1px solid var(--hairline-soft); background: #fafafc; }
+.cal-remain { border-bottom: 1px solid var(--hairline-soft); background: var(--row-hover); }
 .cal-remain .rl { padding: 8px 14px; font-size: 12px; color: var(--text-tertiary); border-right: 1px solid var(--hairline-soft); display: flex; align-items: center; }
 .cal-remain .rc { text-align: center; font-size: 12px; color: var(--text-secondary); border-right: 1px solid var(--hairline-soft); display: flex; align-items: center; justify-content: center; }
 .cal-remain .rc:last-child { border-right: 0; }
@@ -614,21 +774,21 @@ textarea.input { height: auto; padding: 12px 14px; resize: vertical; }
 .cal-setclean {
   position: absolute; right: 7px; top: 50%; transform: translateY(-50%);
   border: 0; cursor: pointer; font-size: 10.5px; font-weight: 600;
-  color: var(--success-deep, #1E7B3C); background: rgba(52, 199, 89, .14);
+  color: var(--success-deep); background: var(--success-soft);
   border-radius: 100px; padding: 2px 7px; line-height: 1.4;
   transition: background var(--dur) var(--ease), transform var(--dur) var(--ease);
 }
-.cal-setclean:hover { background: rgba(52, 199, 89, .26); }
+.cal-setclean:hover { background: var(--success-soft-2); }
 .cal-setclean:active { transform: translateY(-50%) scale(.94); }
 /* 净房房号旁「设脏」小按钮：与「设净」对称，橙色系，定位到标签左侧 */
 .cal-setdirty {
   position: absolute; left: 7px; top: 50%; transform: translateY(-50%);
   border: 0; cursor: pointer; font-size: 10.5px; font-weight: 600;
-  color: var(--warning-deep, #B25E09); background: rgba(255, 149, 0, .14);
+  color: var(--warning-deep); background: var(--warning-soft);
   border-radius: 100px; padding: 2px 7px; line-height: 1.4;
   transition: background var(--dur) var(--ease), transform var(--dur) var(--ease);
 }
-.cal-setdirty:hover { background: rgba(255, 149, 0, .26); }
+.cal-setdirty:hover { background: var(--warning-soft-2); }
 .cal-setdirty:active { transform: translateY(-50%) scale(.94); }
 @media (prefers-reduced-motion: reduce) { .cal-setdirty:active { transform: translateY(-50%); } }
 .cal-block {
@@ -643,20 +803,20 @@ textarea.input { height: auto; padding: 12px 14px; resize: vertical; }
 }
 /* 位置偏移交给 grid（布局）而非 transform：拖动镜像用 left/top 也不吃 transition，
    避免 transform+transition 造成的跟随延迟与松手回弹动画 */
-.cal-block:not(:active):hover { box-shadow: 0 3px 10px rgba(0,0,0,.12); z-index: 2; }
+.cal-block:not(:active):hover { box-shadow: var(--shadow-block); z-index: 2; }
 .cal-block:active { cursor: grabbing; }
 .cal-block::before { content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 5px; background: var(--src, var(--text-tertiary)); }
 .cal-block .g { font-size: 12.5px; font-weight: 600; line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .cal-block .s { font-size: 10.5px; line-height: 1.2; opacity: .78; white-space: nowrap; }
-.cal-block.stay { background: #e8f1fb; border-color: #c5ddf5; color: var(--accent-deep); }
-.cal-block.future { background: #fff3e2; border-color: #f5dfc0; color: var(--warning-deep); }
-.cal-block.past { background: #ededf0; border-color: #dddde3; color: var(--text-secondary); }
+.cal-block.stay { background: var(--accent-tint); border-color: var(--accent-line); color: var(--accent-deep); }
+.cal-block.future { background: var(--warning-tint); border-color: var(--warning-line); color: var(--warning-deep); }
+.cal-block.past { background: var(--past-bg); border-color: var(--past-border); color: var(--text-secondary); }
 /* 按住空白格横向拖选多天：虚线选区（松手后按选中天数开单） */
 .cal-select {
   grid-row: 1; align-self: center; z-index: 1;
   height: 42px; margin: 0 3px; border-radius: 9px;
-  border: 1.5px dashed var(--accent, #0071E3); background: rgba(0, 113, 227, .10);
-  color: var(--accent-deep, #0066CC); font-size: 11.5px; font-weight: 600;
+  border: 1.5px dashed var(--accent); background: var(--accent-soft);
+  color: var(--accent-deep); font-size: 11.5px; font-weight: 600;
   display: flex; align-items: center; justify-content: center;
   pointer-events: none;
 }
@@ -665,8 +825,8 @@ textarea.input { height: auto; padding: 12px 14px; resize: vertical; }
 .cal-added {
   grid-row: 1; align-self: center;
   height: 42px; margin: 0 3px; border-radius: 9px;
-  border: 1.5px solid var(--accent, #0071E3);
-  background: rgba(0, 113, 227, .10);
+  border: 1.5px solid var(--accent);
+  background: var(--accent-soft);
   pointer-events: none;
 }
 /* 已退房提前腾空的尾段：浅绿虚纹「可售」层。pointer-events:none 点击穿透到行，
@@ -674,9 +834,9 @@ textarea.input { height: auto; padding: 12px 14px; resize: vertical; }
 .cal-resale {
   grid-row: 1; align-self: center;
   height: 42px; margin: 0 3px; border-radius: 9px;
-  border: 1.5px dashed rgba(52, 199, 89, .5);
-  background: repeating-linear-gradient(-45deg, rgba(52, 199, 89, .08) 0 8px, rgba(52, 199, 89, .03) 8px 16px);
-  color: var(--success-deep, #1E7B3C);
+  border: 1.5px dashed var(--success-dash);
+  background: repeating-linear-gradient(-45deg, var(--success-wash-a) 0 8px, var(--success-wash-b) 8px 16px);
+  color: var(--success-deep);
   font-size: 11px; font-weight: 600; letter-spacing: .02em;
   display: flex; align-items: center; justify-content: center;
   pointer-events: none;
@@ -689,14 +849,14 @@ textarea.input { height: auto; padding: 12px 14px; resize: vertical; }
 .cal-resale.mid { margin-left: calc(var(--cal-cell, 88px) / 3); }
 .owe {
   position: absolute; right: 4px; top: 4px;
-  background: var(--danger); color: #fff;
+  background: var(--danger); color: var(--on-accent);
   font-size: 10px; line-height: 1; padding: 2.5px 5px; border-radius: 5px; font-weight: 600;
 }
 .cal-maint {
   grid-row: 1; grid-column: 2 / -1; align-self: center; z-index: 1;
   height: 30px; margin: 0 3px; border-radius: 8px;
-  background: repeating-linear-gradient(-45deg, #fdecea 0 10px, #fbe3e0 10px 20px);
-  border: 1px solid #f5c9c5; color: var(--danger-deep);
+  background: repeating-linear-gradient(-45deg, var(--danger-tint) 0 10px, var(--danger-tint-alt) 10px 20px);
+  border: 1px solid var(--danger-line); color: var(--danger-deep);
   font-size: 11.5px; font-weight: 500; display: flex; align-items: center; padding-left: 12px;
 }
 
@@ -760,6 +920,9 @@ textarea.input { height: auto; padding: 12px 14px; resize: vertical; }
 @media (max-width: 767px) {
   .sidebar { display: none; }
   .app { display: block; }
+  /* 窄屏隐藏顶栏：与页面标题抢高度，身份/外观/退出统一走底部「更多」面板 */
+  .topbar { display: none; }
+  .app-content { min-height: 0; }
   .main { padding: 20px 16px 96px; }
   .page-title { font-size: 24px; }
   .tabbar { display: flex; }
@@ -804,3 +967,57 @@ textarea.input { height: auto; padding: 12px 14px; resize: vertical; }
   /* 日历贴边后卡片感会失效：去掉圆角/左右边框/阴影，只留上下发丝线当原生看板 */
   .main-bleed .cal-scroll { border-radius: 0; border-left: 0; border-right: 0; box-shadow: none; }
 }
+
+/* ============================================================
+   外观主题切换器（与 prototype/theme.js 注入的组件同款）
+   - 桌面：挂在顶栏右上角，按钮是 .topbar-icon，菜单向下弹出贴右缘
+   - 移动端：顶栏隐藏，改用底部「更多」面板里的 .theme-sheet
+   - 无侧栏页面（登录）：.theme-fab 浮动圆钮
+   ============================================================ */
+.theme-wrap { position: relative; }
+.theme-menu { min-width: 156px; }
+.theme-menu button { display: flex; align-items: center; gap: 9px; }
+.theme-menu button svg { width: 15px; height: 15px; flex-shrink: 0; color: var(--text-secondary); }
+.theme-menu button.active { color: var(--accent); font-weight: 600; }
+.theme-menu button.active svg { color: var(--accent); }
+.theme-menu .tick { margin-left: auto; opacity: 0; color: var(--accent); font-size: 12px; }
+.theme-menu button.active .tick { opacity: 1; }
+/* 菜单从顶栏按钮向下弹出、贴右缘（原先在侧栏底部时是向上弹） */
+.theme-wrap .theme-menu { top: calc(100% + 8px); right: 0; bottom: auto; left: auto; }
+
+/* 无侧栏页面（登录）的右上角浮动圆钮 */
+.theme-fab {
+  position: fixed; top: 18px; right: 18px; z-index: 70;
+  width: 44px; height: 44px; border-radius: 50%;
+  display: grid; place-items: center;
+  background: var(--bg); color: var(--text-secondary);
+  border: 1px solid var(--hairline-soft); box-shadow: var(--shadow-card);
+  transition: color var(--dur) var(--ease), border-color var(--dur) var(--ease), transform var(--dur) var(--ease);
+}
+.theme-fab:hover { color: var(--accent); border-color: var(--accent); transform: translateY(-1px); }
+.theme-fab svg { width: 19px; height: 19px; }
+
+/* 移动端「更多」面板：账户行 + 三态外观 + 退出登录 */
+.theme-sheet {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 13px 10px 3px; margin-top: 4px; border-top: 1px solid var(--hairline-soft);
+}
+.theme-sheet-label { font-size: 15px; font-weight: 500; color: var(--text-primary); }
+.theme-sheet .segmented { flex-shrink: 0; }
+
+.sheet-account {
+  display: flex; align-items: center; gap: 12px;
+  padding: 2px 10px 14px; margin-bottom: 6px;
+  border-bottom: 1px solid var(--hairline-soft);
+}
+.sheet-account .avatar { width: 40px; height: 40px; font-size: 16px; }
+.sheet-account-name { font-size: 15.5px; font-weight: 600; color: var(--text-primary); }
+.sheet-account-role { font-size: 12.5px; color: var(--text-tertiary); margin-top: 2px; }
+/* 退出登录：破坏性操作，独立分组 + 语义红色，与上方导航行拉开距离 */
+.sheet-danger {
+  width: 100%; margin-top: 6px; padding-top: 15px;
+  border-top: 1px solid var(--hairline-soft); background: none; border-left: 0; border-right: 0; border-bottom: 0;
+  color: var(--danger-deep); text-align: left;
+}
+.sheet-danger:hover { background: var(--danger-tint); }
+.sheet-danger svg { color: var(--danger-deep); }
