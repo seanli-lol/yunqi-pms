@@ -657,6 +657,28 @@ def test_early_checkout_resale():
     assert blk2["truncated"] is False
     assert "stub_nights" not in blk2 and "resale_nights" not in blk2
 
+    # 当天入住、当天退房（1 晚房）：不允许被「未来住期」门槛挡住——当天即可退，且当晚放出续售
+    room4 = next(x for x in client.get("/api/rooms", headers=h).json() if x["room_number"] == "506")
+    r = client.post("/api/reservations", headers=h, json={
+        "guest_name": "当天来当天走", "check_in": date.today().isoformat(),
+        "check_out": (date.today() + timedelta(days=1)).isoformat(), "room_id": room4["id"],
+    })
+    assert r.status_code == 200, r.text
+    rid4 = r.json()["id"]
+    r = client.post(f"/api/reservations/{rid4}/check-in", headers=h,
+                    json={"room_id": room4["id"], "amount_received": 0})
+    assert r.status_code == 200, r.text
+    r = client.post(f"/api/reservations/{rid4}/check-out", headers=h, json={"force": True, "payments": []})
+    assert r.status_code == 200, r.text
+    assert r.json()["actual_check_out"] == date.today().isoformat()
+    # 日历上按「提前退房」截断：当天白天占房（存根 1 格压左 1/3），当晚尾段放出「可售」
+    board = client.get("/api/rooms/board?days=14", headers=h).json()
+    blk4 = next(b for g in board["groups"] for rm in g["rooms"] if rm["id"] == room4["id"]
+                for b in rm["blocks"] if b["id"] == rid4)
+    assert blk4["truncated"] is True
+    assert blk4["stub_nights"] == 1 and blk4["stub_cut"] is True
+    assert blk4["resale_nights"] == 1 and blk4["resale_mid"] is True
+
     # 存根整段窗外（实际离店日早于窗口起点）：灰块 nights=0 不渲染，只留「可售」虚纹
     cin3 = (date.today() - timedelta(days=6)).isoformat()
     cout3 = (date.today() + timedelta(days=1)).isoformat()

@@ -197,6 +197,13 @@ function NewReservationDialog({ open, onClose, channels, types, onSubmit, onDone
     }
   }, [open])
 
+  // 来源下拉没有「未指定」项：默认选中第一个渠道并同步到状态，
+  // 否则界面显示美团、提交 channel_id=null（列表来源列空白、方块竖条落灰色默认值）
+  useEffect(() => {
+    if (!open) return
+    setChannelId(prev => (prev === null ? (channels[0]?.id ?? null) : prev))
+  }, [open, channels])
+
   // 房型 / 天数变化时按基准价带出总价（用户未手改前保持跟随）
   useEffect(() => {
     if (!totalTouched && type) {

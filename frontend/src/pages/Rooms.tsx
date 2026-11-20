@@ -90,12 +90,18 @@ export default function Rooms() {
     qc.invalidateQueries({ queryKey: ['board'] })
     qc.invalidateQueries({ queryKey: ['rooms'] })
     qc.invalidateQueries({ queryKey: ['dashboard'] })
+    // 详情与账目一并失效：入住/退房/延住后重新点开方块必须看到最新状态
+    // （曾只失效 board，入住后 15s 内再点方块仍显示「已确认 + 办理入住」，被当成「当天不能退房」）
+    qc.invalidateQueries({ queryKey: ['reservation'] })
+    qc.invalidateQueries({ queryKey: ['folio'] })
   }
 
   const resQuery = useQuery({
     queryKey: ['reservation', detailRes?.id],
     enabled: detailRes !== null,
     queryFn: () => api.get<Reservation>(`/api/reservations/${detailRes!.id}`),
+    // 每次打开抽屉都取最新状态：命中 15s 全局 staleTime 会让刚办的入住/退房不可见
+    staleTime: 0,
   })
 
   /* ---------- 拖动 ---------- */
@@ -1429,6 +1435,13 @@ function BookDrawer({ open, lines, channels, busy, onClose, onChangeLines, onSub
   useEffect(() => {
     if (open) { setName(''); setPhone(''); setChannelId(null); setStayType('normal'); setHours(4) }
   }, [open])
+
+  // 来源没有「未指定」选项：下拉框必显示第一项（设置里的第一个渠道，通常为美团），
+  // 状态必须同步选中它，否则会出现「显示美团、提交 null、方块竖条落成灰色默认值」的错位
+  useEffect(() => {
+    if (!open) return
+    setChannelId(prev => (prev === null ? (channels[0]?.id ?? null) : prev))
+  }, [open, channels])
 
   if (!open || lines.length === 0) return null
 
