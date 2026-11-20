@@ -219,6 +219,8 @@ class ReservationOut(BaseModel):
     room_status: str | None = None
     check_in: date
     check_out: date
+    # 实际离店日（提前退房时早于 check_out，供日历截断与「实住」展示）
+    actual_check_out: date | None = None
     nights: int
     status: str
     channel_id: int | None

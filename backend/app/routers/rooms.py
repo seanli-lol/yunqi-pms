@@ -227,8 +227,28 @@ def rooms_board(
             "balance_due": max(0, balance(res.id)),
             "col_start": col_start,
             "nights": span,
+            # 提前退房截断标记（False = 正常占满原订区间）
+            "truncated": False,
         }
         blocks_by_room.setdefault(res.room_id, []).append(block)
+        # 提前退房截断：灰块止于实际离店日（该日只压左 1/3，表示白天仍占房、下午腾空），
+        # 原订尾段（实际离店日午后 ~ 原离店日）放出「可售」虚纹，可直接开新单（含当日钟点房）
+        if res.status == "checked_out" and res.actual_check_out and res.actual_check_out < co:
+            actual = res.actual_check_out
+            block["truncated"] = True            # 灰块存根跨度：入住日 ~ 实际离店日（含，按窗口裁剪）；离店日在窗口之前则无存根
+            stub_end = min(days, (actual - start_d).days + 1)
+            stub_span = stub_end - col_start
+            if stub_span > 0:
+                block["stub_nights"] = stub_span
+                # 存根末日 = 实际离店日本身 → 灰块右侧收进 1/3（视觉上该日只压左侧）
+                block["stub_cut"] = (actual - start_d).days < days
+            # 可售区间：实际离店日 ~ 原订占房终点（半开区间，窗口裁剪同上）
+            resale_start = max(0, (actual - start_d).days)
+            if col_end > resale_start:
+                block["resale_start"] = resale_start
+                block["resale_nights"] = col_end - resale_start
+                # 虚纹起点与灰块存根同日 → 左侧留出 1/3 与灰块齐平
+                block["resale_mid"] = stub_span > 0 and stub_end - 1 == resale_start
         # 占用统计（在住/已确认才算占房）
         if res.status in ("confirmed", "checked_in"):
             for d in range(max(0, (ci - start_d).days), min(days, (co - start_d).days)):

@@ -38,6 +38,7 @@ def res_out(db: Session, r: Reservation) -> ReservationOut:
         room_number=room.room_number if room else None,
         room_status=room.status if room else None,
         check_in=r.check_in, check_out=r.check_out,
+        actual_check_out=r.actual_check_out,
         nights=nights,
         status=r.status,
         channel_id=r.channel_id,
@@ -525,6 +526,8 @@ def undo_check_out(res_id: int, user: User = Depends(get_current_user), db: Sess
     paid_total = sum(p.amount for p in db.query(Payment).filter(Payment.reservation_id == r.id).all())
 
     r.status = "checked_in"
+    # 撤销退房：清除实际离店日（回到在住，方块恢复原订跨度）
+    r.actual_check_out = None
     # 房间恢复在住；维修中的房不强行改状态（房态由前台决定），并在日志里注明
     room_kept_maint = False
     if room:
@@ -617,6 +620,8 @@ def check_out(res_id: int, body: CheckOutBody, user: User = Depends(get_current_
                f"收款 ¥{p.amount} · {METHOD_LABEL[p.method]}")
 
     r.status = "checked_out"
+    # 记录实际离店日（提前退房时早于 check_out，房态盘据此截断灰块并放出尾部「可售」）
+    r.actual_check_out = date.today()
     room = db.get(Room, r.room_id) if r.room_id else None
     # 功能放宽后同房可能有另一位在住客人：此时退房不动房态
     other_guests = []

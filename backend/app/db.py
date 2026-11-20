@@ -30,6 +30,7 @@ _MIGRATION_COLUMNS = [
     ("room_types", "hourly_price", "INTEGER NOT NULL DEFAULT 0"),
     ("reservations", "stay_type", "VARCHAR(10) NOT NULL DEFAULT 'normal'"),
     ("reservations", "hours", "INTEGER NOT NULL DEFAULT 0"),
+    ("reservations", "actual_check_out", "DATE NULL"),
 ]
 
 

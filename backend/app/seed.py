@@ -255,17 +255,26 @@ def ensure_seed(db: Session) -> None:
     add_type_res("刘洋", "双床房", 0, 3, "pending")
     add_type_res("徐丽", "亲子房", 1, 3, "pending")
 
-    # 已离店：高媛（昨日退房，今日收款）
-    r_gaoyuan = add_res("高媛", "208", -3, -1, "美团", status="checked_out", deposit=0)
+    # 已离店：高媛（原订今日离店，今日下午提前退房——灰块截断 + 尾段「可售」演示样例）
+    r_gaoyuan = add_res("高媛", "208", -3, 1, "美团", status="checked_out", deposit=0,
+                        created_days_ago=4)
+    r_gaoyuan.actual_check_out = _d(0)
+    # 提前退房按实住 2 晚结算：改写原房费行（add_res 的 folio 尚未 flush，先 flush 再查）
+    db.flush()
+    f_gaoyuan = db.query(FolioItem).filter(
+        FolioItem.reservation_id == r_gaoyuan.id, FolioItem.category == "room_charge").first()
+    f_gaoyuan.amount = 2 * 580
+    f_gaoyuan.description = "房费 · 2 晚 × ¥580（提前退房按实住结算）"
     db.add(Payment(hotel_id=hx.id, reservation_id=r_gaoyuan.id, method="wechat",
-                   amount=1205, created_by=u_qi.id, created_at=_dt(0, 11, 32)))
+                   amount=2 * 580, created_by=u_qi.id, created_at=_dt(0, 11, 32)))
 
     # ---------- 今日操作日志（单日明细演示） ----------
     logs = [
         (9, 5, u_qi, "check_in", "reservation", "办理入住 赵磊 · 209 大床房 · 押金 ¥1,000"),
         (9, 21, u_qi, "reservation_confirm", "reservation", "电话确认 刘洋 · 双床房 11/18 – 11/21"),
         (10, 47, u_lin, "reservation_create", "reservation", "创建预订 孙悦 · 410 观景大床房 · 11/19 – 11/22"),
-        (11, 32, u_qi, "payment", "payment", "收款 ¥1,205 · 高媛 · 微信 · 账单结清"),
+        (11, 32, u_qi, "payment", "payment", "收款 ¥1,160 · 高媛 · 微信 · 提前退房按实住 2 晚结清"),
+        (16, 0, u_qi, "check_out", "reservation", "退房结算 高媛 · 208 · 提前退房（原订至明日）· 结清 · 房态转空脏"),
         (12, 20, u_zhang, "room_status", "room", "客房 301 · 房态→空净"),
         (15, 2, u_zhang, "room_status", "room", "客房 407 · 房态→空净"),
         (16, 40, u_qi, "folio_add", "reservation", "加收杂费 迷你吧 ¥32 · 402 王芳"),

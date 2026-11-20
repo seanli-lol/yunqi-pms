@@ -95,6 +95,8 @@ class Reservation(Base):
     room_id: Mapped[int | None] = mapped_column(ForeignKey("rooms.id"), nullable=True)
     check_in: Mapped[date] = mapped_column(Date)
     check_out: Mapped[date] = mapped_column(Date)
+    # 实际离店日：提前退房时早于 check_out（当天腾房，尾段/尾夜可续售）；正常退房等于 check_out；撤销退房清 NULL
+    actual_check_out: Mapped[date | None] = mapped_column(Date, nullable=True)
     # pending / confirmed / checked_in / checked_out / cancelled / no_show
     status: Mapped[str] = mapped_column(String(20), default="confirmed")
     channel_id: Mapped[int | None] = mapped_column(ForeignKey("channels.id"), nullable=True)
