@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { ChevronDown, X } from 'lucide-react'
 import {
   api, addDaysIso, fmtMoney, md, todayIso, ROOM_STATUS_LABEL, OP_ACTION_LABEL, OP_ACTION_COLOR,
   type Board, type BoardRoom, type CalBlock, type Channel, type Folio, type OpLog,
   type PaidTotalBody, type RegistrationBody, type Reservation, type Room,
 } from '../api'
-import { Badge, Dialog, Field, PageHead, Segmented, Spinner, useToast, RES_STATUS_BADGE } from '../ui'
+import { Badge, Drawer, Field, PageHead, Segmented, Spinner, useToast, RES_STATUS_BADGE } from '../ui'
 import { CheckInDialog, ExtendDialog } from '../dialogs'
 
 const CELL = 88
@@ -33,6 +34,17 @@ interface CalSelection {
   to: number
 }
 
+/** 多房预订中的一行：一间房 × 一段住期（总额口径，单价折算提交） */
+interface BookingLine {
+  room: Room
+  checkIn: string
+  nights: number
+  /** 行整单总额文本；默认 nights × base_price，可手改 */
+  totalText: string
+  /** 手改总额时折算出的单价（改天数时按它重算总额），null = 未手改 */
+  unitRef: number | null
+}
+
 export default function Rooms() {
   const toast = useToast()
   const qc = useQueryClient()
@@ -45,17 +57,20 @@ export default function Rooms() {
   const [start, setStart] = useState(addDaysIso(todayIso(), -2))
   const [detailRes, setDetailRes] = useState<Reservation | null>(null)
   const [vacantRoom, setVacantRoom] = useState<Room | null>(null)
-  const [bookRoom, setBookRoom] = useState<{ room: Room; checkIn: string; nights: number } | null>(null)
+  /** 多房预订：null = 关闭；lines 可累积多间（点空白格/拖选追加） */
+  const [booking, setBooking] = useState<{ lines: BookingLine[] } | null>(null)
+  /** 在住详情抽屉「编辑 ▾」气泡菜单开关 */
+  const [editMenuOpen, setEditMenuOpen] = useState(false)
   const [checkinRes, setCheckinRes] = useState<Reservation | null>(null)
-  /** 延住目标预订（详情弹层内「延住」按钮打开） */
+  /** 延住目标预订（详情抽屉内「延住」菜单项打开） */
   const [extendRes, setExtendRes] = useState<Reservation | null>(null)
-  /** 编辑登记信息 / 撤销入住 / 撤销退房 / 更正实收 / 调整预订 目标预订（详情弹层内打开） */
+  /** 编辑登记信息 / 撤销入住 / 撤销退房 / 更正实收 / 调整预订 目标预订（详情抽屉内打开） */
   const [editRes, setEditRes] = useState<Reservation | null>(null)
   const [undoRes, setUndoRes] = useState<Reservation | null>(null)
   const [undoOutRes, setUndoOutRes] = useState<Reservation | null>(null)
   const [paidRes, setPaidRes] = useState<Reservation | null>(null)
   const [adjustRes, setAdjustRes] = useState<Reservation | null>(null)
-  /** 详情弹层内操作日志展开区 */
+  /** 详情抽屉内操作日志展开区 */
   const [showLogs, setShowLogs] = useState(false)
   /** 拖动中的房号 → 高亮目标行 */
   const [dragOverRoom, setDragOverRoom] = useState<number | null>(null)
@@ -85,8 +100,16 @@ export default function Rooms() {
   })
 
   /* ---------- 拖动 ---------- */
+  /** 表单类抽屉（入住/延住/编辑登记/撤销/更正实收/调整）打开中：日历点击一律忽略，防误触丢表单 */
+  const formDrawerOpen = () => !!(checkinRes || extendRes || editRes || undoRes || undoOutRes || paidRes || adjustRes)
+
   const onBlockPointerDown = (e: React.PointerEvent, block: CalBlock, room: BoardRoom) => {
     if (e.button !== 0) return
+    // 预订/表单抽屉打开时方块不可拖（点击交给 onClick 提示或切换详情）
+    if (booking !== null || formDrawerOpen()) {
+      e.stopPropagation()
+      return
+    }
     e.preventDefault()
     // 方块拖动与行级「拖选多天」互斥：不让事件冒泡到 .cal-room
     e.stopPropagation()
@@ -140,17 +163,18 @@ export default function Rooms() {
       let col = Math.floor((ev.clientX - calRect.left - LAB_W - 1) / CELL)
       col = Math.max(0, Math.min(13 - (block.nights - 1), col))
       const tRow = document.elementFromPoint(ev.clientX, ev.clientY)?.closest('.cal-room') as HTMLElement | null
-      const lab = tRow?.querySelector('.cal-lab')?.textContent?.trim()
 
-      // 找目标 room 对象
+      // 目标行按 data-room-id 数值匹配（不能用 .cal-lab 的 textContent：脏房标签带「设净」按钮，
+      // textContent = 房号+设净，永远匹配不上 → 脏房拖放静默失败的 bug）
+      const hitId = tRow?.dataset.roomId
       let targetRoom: BoardRoom | null = null
-      if (lab) {
+      if (hitId) {
         for (const g of board.data?.groups ?? []) {
-          const hit = g.rooms.find(r => r.number === lab)
+          const hit = g.rooms.find(r => r.id === Number(hitId))
           if (hit) { targetRoom = hit; break }
         }
       }
-      if (!targetRoom) return
+      if (!targetRoom) { toast('未识别到目标房间'); return }
       if (targetRoom.status === 'maintenance' || targetRoom.notes.includes('维修')) {
         toast('维修中的客房不可调入')
         return
@@ -185,7 +209,11 @@ export default function Rooms() {
   /* ---------- 点击空白格 → 直接预订 ---------- */
   const onCalClick = (e: React.MouseEvent, room: BoardRoom) => {
     if (justDraggedRef.current) return
-    if ((e.target as HTMLElement).closest('.cal-block')) return
+    if ((e.target as HTMLElement).closest('.cal-block')) {
+      // 预订抽屉开着：点方块提示先完成开单；表单抽屉开着：忽略，防误触
+      if (booking !== null) toast('正在开单，请先提交或关闭右侧预订抽屉')
+      return
+    }
     // 房号标签区只显示房号 / 设净，不触发开单（曾因冒泡被夹到最左列误开单）
     if ((e.target as HTMLElement).closest('.cal-lab')) return
     if (room.status === 'maintenance' || room.notes.includes('维修')) {
@@ -195,9 +223,10 @@ export default function Rooms() {
     if (!calRef.current) return
     const date = board.data?.day_list[colAt(e.clientX)]?.date
     if (!date) return
+    if (formDrawerOpen()) return
     setVacantRoom(null)
     setDetailRes(null)
-    setBookRoom({ room: { ...toRoom(room) }, checkIn: date, nights: 1 })
+    addBookingLine(toRoom(room), date, 1)
   }
 
   /** 指针 X 坐标 → 日历列号（0..13）。每次实时取 rect：日历在滚动容器内，缓存会错列。 */
@@ -213,7 +242,9 @@ export default function Rooms() {
     // 只支持鼠标（触屏/触控板保持单击开单，避免与滚动打架）
     if (e.button !== 0 || e.pointerType !== 'mouse') return
     const target = e.target as HTMLElement
-    if (target.closest('.cal-block') || target.closest('.cal-lab') || target.closest('.cal-setclean')) return
+    if (target.closest('.cal-block') || target.closest('.cal-lab') || target.closest('.cal-setclean') || target.closest('.cal-setdirty')) return
+    // 表单抽屉打开时不启动拖选（防误触）；预订抽屉打开时允许——拖选 = 追加一行
+    if (formDrawerOpen()) return
     if (room.status === 'maintenance' || room.notes.includes('维修')) return
 
     const startCol = colAt(e.clientX)
@@ -245,30 +276,64 @@ export default function Rooms() {
       if (!date) return
       setVacantRoom(null)
       setDetailRes(null)
-      setBookRoom({ room: { ...toRoom(room) }, checkIn: date, nights })
+      addBookingLine(toRoom(room), date, nights)
     }
     document.addEventListener('pointermove', onMove)
     document.addEventListener('pointerup', onUp)
   }
 
-  /* ---------- 直接预订 ---------- */
+  /* ---------- 多房预订行管理 ---------- */
+  /** 追加一行预订（房 + 入住日 + 天数）；已开预订抽屉则累积，同房重叠时段拒绝 */
+  const addBookingLine = (lineRoom: Room, checkIn: string, nights: number) => {
+    if (booking) {
+      // 同一房间且日期区间重叠 → 拒绝（半开区间：checkIn < existOut && existIn < checkOut）
+      const newOut = addDaysIso(checkIn, nights)
+      const dup = booking.lines.some(l => {
+        if (l.room.id !== lineRoom.id) return false
+        const lOut = addDaysIso(l.checkIn, l.nights)
+        return checkIn < lOut && l.checkIn < newOut
+      })
+      if (dup) {
+        toast(`${lineRoom.room_number} 在 ${md(checkIn)} 起的时段已在本单里，请换房间或调整日期`)
+        return
+      }
+      setBooking({ lines: [...booking.lines, { room: lineRoom, checkIn, nights, totalText: String(nights * lineRoom.base_price), unitRef: null }] })
+    } else {
+      setBooking({ lines: [{ room: lineRoom, checkIn, nights, totalText: String(nights * lineRoom.base_price), unitRef: null }] })
+    }
+  }
+
+  /* ---------- 直接预订（多房：逐行 POST，任一行失败即中止，已成功的不回滚） ---------- */
   const bookMut = useMutation({
-    mutationFn: (p: { guest_name: string; guest_phone: string; channel_id: number | null; notes: string; stay_type: 'normal' | 'hourly'; hours: number; rate: number | null; nights: number }) =>
-      api.post<Reservation>('/api/reservations', {
-        guest_name: p.guest_name, guest_phone: p.guest_phone,
-        room_id: bookRoom!.room.id,
-        check_in: bookRoom!.checkIn,
-        check_out: addDaysIso(bookRoom!.checkIn, p.nights),
-        channel_id: p.channel_id, notes: p.notes,
-        stay_type: p.stay_type, hours: p.hours,
-        rate: p.rate,
-      }),
-    onSuccess: (r) => {
-      toast(`预订已创建：${r.code} · ${r.room_number}（${md(r.check_in)}–${md(r.check_out)}${r.stay_type === 'hourly' ? ` · 钟点 ${r.hours} 小时` : ''}）`)
-      setBookRoom(null)
+    mutationFn: async (p: {
+      guest_name: string; guest_phone: string; channel_id: number | null; notes: string
+      /** 每行独立提交体：房号/日期/单价/天数已在 BookDrawer 内折算 */
+      lines: { room_id: number; check_in: string; check_out: string; rate: number; nights: number; stay_type: 'normal' | 'hourly'; hours: number }[]
+    }) => {
+      const created: Reservation[] = []
+      for (let i = 0; i < p.lines.length; i++) {
+        const l = p.lines[i]
+        try {
+          const r = await api.post<Reservation>('/api/reservations', {
+            guest_name: p.guest_name, guest_phone: p.guest_phone,
+            room_id: l.room_id, check_in: l.check_in, check_out: l.check_out,
+            channel_id: p.channel_id, notes: p.notes,
+            stay_type: l.stay_type, hours: l.hours, rate: l.rate,
+          })
+          created.push(r)
+        } catch (e: any) {
+          const roomNo = booking?.lines[i]?.room.room_number ?? `第 ${i + 1} 间`
+          throw Object.assign(e ?? new Error('创建失败'), { friendly: `第 ${i + 1} 间（${roomNo}）失败：${e?.message ?? '创建失败'}；前面 ${created.length} 间已创建成功` })
+        }
+      }
+      return created
+    },
+    onSuccess: (rs) => {
+      toast(`已创建 ${rs.length} 间预订：${rs.map(r => `${r.room_number}(${md(r.check_in)}–${md(r.check_out)})`).join('、')}`)
+      setBooking(null)
       invalidate()
     },
-    onError: (e: any) => toast(e.message ?? '创建失败'),
+    onError: (e: any) => toast(e.friendly ?? e.message ?? '创建失败'),
   })
 
   /* ---------- 房态操作 ---------- */
@@ -419,21 +484,11 @@ export default function Rooms() {
   const bd = board.data
   const channelList = channels.data ?? []
 
-  const allRooms: Room[] = bd.groups.flatMap(g => g.rooms.map(r => toRoom(r)))
-  const gridGroups: Record<number, BoardRoom[]> = {}
-  for (const g of bd.groups) gridGroups[g.room_type_id] = g.rooms
-
   return (
     <>
       <PageHead
         title="房态盘"
-        desc="日历视图默认展示 · 拖动方块换房/改期 · 点击空白格直接开单"
-        actions={
-          <>
-            <button className="btn btn-ghost" onClick={() => window.location.assign('/settings')}>来源渠道</button>
-            <button className="btn btn-primary" onClick={() => setBookRoom({ room: allRooms[0], checkIn: todayIso(), nights: 1 })}>新建预订</button>
-          </>
-        }
+        desc="点击空白格/拖选多天开单（可累积多间）· 拖动方块换房/改期"
       />
 
       <div className="filter-bar">
@@ -444,7 +499,6 @@ export default function Rooms() {
         />
         <div className="cal-src-legend">
           {channelList.map(c => <span key={c.id}><i style={{ background: c.color }} />{c.name}</span>)}
-          <a className="card-link" style={{ fontSize: 12.5, cursor: 'pointer' }} onClick={() => window.location.assign('/settings')}>配置颜色与顺序</a>
         </div>
         <div className="page-actions" style={{ marginLeft: 'auto' }}>
           <button className="btn btn-ghost btn-sm" onClick={() => setStart(addDaysIso(start, -1))}>‹ 前一天</button>
@@ -487,6 +541,7 @@ export default function Rooms() {
                 >
                   <div className={`cal-lab${room.status === 'vacant_dirty' ? ' dirty' : room.status === 'maintenance' ? ' maint' : ''}`}>
                     {room.number}
+                    {/* 脏/维修房 → 「设净」；净房 → 「设脏」（房号右侧/左侧小按钮，均不触发行开单） */}
                     {(room.status === 'vacant_dirty' || room.status === 'maintenance') && (
                       <button
                         className="cal-setclean"
@@ -499,6 +554,19 @@ export default function Rooms() {
                           })
                         }}
                       >设净</button>
+                    )}
+                    {room.status === 'vacant_clean' && (
+                      <button
+                        className="cal-setdirty"
+                        title="干净房被弄脏时标记为空脏（待清洁）"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          statusMut.mutate({
+                            room_id: room.id, status: 'vacant_dirty',
+                            label: `${room.number} 已设为脏房（待清洁）`,
+                          })
+                        }}
+                      >设脏</button>
                     )}
                   </div>
                   {room.status === 'maintenance' || room.notes.includes('维修') ? (
@@ -517,6 +585,9 @@ export default function Rooms() {
                           onPointerDown={(e) => onBlockPointerDown(e, b, room)}
                           onClick={() => {
                             if (justDraggedRef.current) return
+                            // 预订抽屉开着：点方块提示先完成开单；表单抽屉开着：忽略，防止详情被偷偷切走
+                            if (booking !== null) { toast('正在开单，请先提交或关闭右侧预订抽屉'); return }
+                            if (formDrawerOpen()) return
                             setDetailRes({ id: b.id } as Reservation)
                           }}
                         >
@@ -543,7 +614,7 @@ export default function Rooms() {
       </div>
           <p className="hint mt-16">
             图例：<Badge color="blue">在住</Badge> <Badge color="orange">未来抵店</Badge> <Badge color="red">欠</Badge> 在住/已离店未结清 ·
-            方块最前端竖条颜色 = 预订来源（可在「设置 → 来源渠道」配置）。<b>拖动方块换房/改期（冲突自动回弹）· 点击空白格直接开单</b>。
+            方块最前端竖条颜色 = 预订来源（可在「设置 → 来源渠道」配置）。<b>拖动方块换房/改期（冲突自动回弹）· 点击空白格直接开单 · 房号旁「设净/设脏」一键切换房态</b>。
           </p>
         </div>
       ) : (
@@ -554,7 +625,6 @@ export default function Rooms() {
               <span><i className="lg-clean" />空净 · 可售</span>
               <span><i className="lg-dirty" />空脏 · 待清洁</span>
               <span><i className="lg-occupied" />在住</span>
-              <span><i className="lg-maint" />维修</span>
             </div>
           </div>
           <div className="board">
@@ -607,21 +677,21 @@ export default function Rooms() {
         </div>
       )}
 
-      {/* ---------- 直接预订弹层 ---------- */}
-      <BookDialog
-        open={bookRoom !== null}
-        room={bookRoom?.room}
-        checkIn={bookRoom?.checkIn}
-        nights={bookRoom?.nights ?? 1}
+      {/* ---------- 直接预订抽屉（多房累积） ---------- */}
+      <BookDrawer
+        open={booking !== null}
+        lines={booking?.lines ?? []}
         channels={channelList}
         busy={bookMut.isPending}
-        onClose={() => setBookRoom(null)}
+        onClose={() => setBooking(null)}
+        onChangeLines={(lines) => setBooking({ lines })}
         onSubmit={(p) => bookMut.mutate(p)}
       />
 
-      {/* ---------- 空房操作弹层 ---------- */}
-      <Dialog
+      {/* ---------- 空房操作抽屉 ---------- */}
+      <Drawer
         open={vacantRoom !== null}
+        passthrough
         onClose={() => setVacantRoom(null)}
         title={vacantRoom ? `${vacantRoom.room_number} · ${vacantRoom.room_type_name}` : ''}
         sub={vacantRoom ? `${vacantRoom.floor}楼 · ${ROOM_STATUS_LABEL[vacantRoom.status]}` : ''}
@@ -635,10 +705,6 @@ export default function Rooms() {
               >完成维修</button>
             ) : (
               <>
-                <button
-                  className="btn btn-ghost"
-                  onClick={() => { statusMut.mutate({ room_id: vacantRoom!.id, status: 'maintenance', label: `${vacantRoom!.room_number} 已报维修` }); setVacantRoom(null) }}
-                >报维修</button>
                 {vacantRoom?.status === 'vacant_clean' && (
                   <button
                     className="btn btn-ghost"
@@ -653,7 +719,11 @@ export default function Rooms() {
                 )}
                 <button
                   className="btn btn-primary"
-                  onClick={() => { setBookRoom({ room: vacantRoom!, checkIn: todayIso(), nights: 1 }); setVacantRoom(null) }}
+                  onClick={() => {
+                    const r = vacantRoom!
+                    setVacantRoom(null)
+                    addBookingLine(r, todayIso(), 1)
+                  }}
                 >预订此房</button>
               </>
             )}
@@ -670,80 +740,93 @@ export default function Rooms() {
             </div>
           </>
         )}
-      </Dialog>
+      </Drawer>
 
-      {/* ---------- 预订详情弹层 ---------- */}
-      <Dialog
-        open={detailRes !== null}
-        onClose={() => setDetailRes(null)}
-        title={resQuery.data ? `${resQuery.data.room_number ?? '未分配'} · ${resQuery.data.room_type_name}` : '预订详情'}
-        sub={resQuery.data ? `${RES_STATUS_BADGE[resQuery.data.status]?.label ?? resQuery.data.status} · ${resQuery.data.code}` : ''}
-        foot={
-          resQuery.data ? (
-            <>
-              <span className="hint" style={{ marginRight: 'auto' }}>操作人：{resQuery.data.operator_name ?? '—'}</span>
-              {(resQuery.data.status === 'pending' || resQuery.data.status === 'confirmed') && (
-                <button className="btn btn-danger-ghost" onClick={() => { if (window.confirm('确定取消该预订吗？\n\n取消会清除该预订已收取的款项（不生成退款凭证），且不可恢复。')) resMut.mutate({ path: `${resQuery.data!.id}/cancel`, label: '预订已取消' }) }}>取消预订</button>
-              )}
-              {resQuery.data.status === 'pending' && (
-                <button className="btn btn-ghost" onClick={() => resMut.mutate({ path: `${resQuery.data!.id}/confirm`, label: '预订已确认' })}>确认预订</button>
-              )}
-              {(resQuery.data.status === 'pending' || resQuery.data.status === 'confirmed') && (
-                <>
-                  <button
-                    className="btn btn-ghost"
-                    onClick={() => { setAdjustRes(resQuery.data!); setDetailRes(null) }}
-                  >调整预订</button>
-                  {resQuery.data.check_in <= todayIso() ? (
-                    <button className="btn btn-primary" onClick={() => setCheckinRes(resQuery.data)}>办理入住</button>
-                  ) : null}
-                </>
-              )}
-              {resQuery.data.status === 'checked_out' && resQuery.data.room_id && resQuery.data.room_status === 'vacant_dirty' && (
-                <button
-                  className="btn btn-primary"
-                  onClick={() => {
-                    statusMut.mutate({
-                      room_id: resQuery.data!.room_id!, status: 'vacant_clean',
-                      label: `${resQuery.data!.room_number} 已转为净房`,
-                    })
-                    setDetailRes(null)
-                  }}
-                >转为净房</button>
-              )}
-              {resQuery.data.status === 'checked_in' && (
-                <>
-                  <button
-                    className="btn btn-ghost"
-                    onClick={() => { setEditRes(resQuery.data!); setDetailRes(null) }}
-                  >编辑登记</button>
-                  <button
-                    className="btn btn-ghost"
-                    onClick={() => setExtendRes(resQuery.data)}
-                  >延住</button>
+      {/* ---------- 预订详情抽屉 ---------- */}
+      <Drawer
+          open={detailRes !== null}
+          passthrough
+          onClose={() => { setDetailRes(null); setEditMenuOpen(false) }}
+          title={resQuery.data ? `${resQuery.data.room_number ?? '未分配'} · ${resQuery.data.room_type_name}` : '预订详情'}
+          sub={resQuery.data ? `${RES_STATUS_BADGE[resQuery.data.status]?.label ?? resQuery.data.status} · ${resQuery.data.code}` : ''}
+          foot={
+            resQuery.data ? (
+              <>
+                <span className="hint" style={{ marginRight: 'auto' }}>操作人：{resQuery.data.operator_name ?? '—'}</span>
+                {(resQuery.data.status === 'pending' || resQuery.data.status === 'confirmed') && (
+                  <button className="btn btn-danger-ghost" onClick={() => { if (window.confirm('确定取消该预订吗？\n\n取消会清除该预订已收取的款项（不生成退款凭证），且不可恢复。')) resMut.mutate({ path: `${resQuery.data!.id}/cancel`, label: '预订已取消' }) }}>取消预订</button>
+                )}
+                {resQuery.data.status === 'pending' && (
+                  <button className="btn btn-ghost" onClick={() => resMut.mutate({ path: `${resQuery.data!.id}/confirm`, label: '预订已确认' })}>确认预订</button>
+                )}
+                {(resQuery.data.status === 'pending' || resQuery.data.status === 'confirmed') && (
+                  <>
+                    <button
+                      className="btn btn-ghost"
+                      onClick={() => { setAdjustRes(resQuery.data!); setDetailRes(null) }}
+                    >调整预订</button>
+                    {resQuery.data.check_in <= todayIso() ? (
+                      <button className="btn btn-primary" onClick={() => setCheckinRes(resQuery.data)}>办理入住</button>
+                    ) : null}
+                  </>
+                )}
+                {resQuery.data.status === 'checked_out' && resQuery.data.room_id && resQuery.data.room_status === 'vacant_dirty' && (
                   <button
                     className="btn btn-primary"
                     onClick={() => {
-                      const r = resQuery.data!
-                      api.post(`/api/reservations/${r.id}/check-out`, { force: false, payments: [] })
-                        .then((x: any) => { toast('退房完成，房态转空脏'); setDetailRes(null); invalidate() })
-                        .catch((e: any) => {
-                          if (e.status === 409) {
-                            const bal = e.data?.detail?.balance_due ?? 0
-                            if (window.confirm(`存在未结清账款 ${fmtMoney(bal)}，确定强制退房吗？`)) {
-                              api.post(`/api/reservations/${r.id}/check-out`, { force: true })
-                                .then(() => { toast('已强制退房（未结清转挂账）'); setDetailRes(null); invalidate() })
-                            }
-                          } else toast(e.message)
-                        })
+                      statusMut.mutate({
+                        room_id: resQuery.data!.room_id!, status: 'vacant_clean',
+                        label: `${resQuery.data!.room_number} 已转为净房`,
+                      })
+                      setDetailRes(null)
                     }}
-                  >办理退房</button>
-                </>
-              )}
-            </>
-          ) : null
-        }
-      >
+                  >转为净房</button>
+                )}
+                {resQuery.data.status === 'checked_in' && (
+                  <>
+                    {/* 登记/实收两类编辑收纳为「编辑 ▾」气泡菜单；延住/撤销入住/退房为同级主按钮 */}
+                    <div style={{ position: 'relative' }}>
+                      <button className={`btn btn-ghost${editMenuOpen ? ' active' : ''}`} onClick={() => setEditMenuOpen(v => !v)}>
+                        编辑 <ChevronDown size={14} style={{ verticalAlign: -2 }} />
+                      </button>
+                      {editMenuOpen && (
+                        <div className="pop-menu" style={{ position: 'absolute', bottom: 'calc(100% + 8px)', left: 0 }}>
+                          <button onClick={() => { setEditMenuOpen(false); setEditRes(resQuery.data!); setDetailRes(null) }}>编辑登记</button>
+                          <button onClick={() => { setEditMenuOpen(false); setPaidRes(resQuery.data!); setDetailRes(null) }}>编辑实收</button>
+                        </div>
+                      )}
+                    </div>
+                    <button
+                      className="btn btn-ghost"
+                      onClick={() => setExtendRes(resQuery.data)}
+                    >延住</button>
+                    <button
+                      className="btn btn-danger-ghost"
+                      onClick={() => { setUndoRes(resQuery.data!); setDetailRes(null) }}
+                    >撤销入住</button>
+                    <button
+                      className="btn btn-primary"
+                      onClick={() => {
+                        const r = resQuery.data!
+                        api.post(`/api/reservations/${r.id}/check-out`, { force: false, payments: [] })
+                          .then((x: any) => { toast('退房完成，房态转空脏'); setDetailRes(null); invalidate() })
+                          .catch((e: any) => {
+                            if (e.status === 409) {
+                              const bal = e.data?.detail?.balance_due ?? 0
+                              if (window.confirm(`存在未结清账款 ${fmtMoney(bal)}，确定强制退房吗？`)) {
+                                api.post(`/api/reservations/${r.id}/check-out`, { force: true })
+                                  .then(() => { toast('已强制退房（未结清转挂账）'); setDetailRes(null); invalidate() })
+                              }
+                            } else toast(e.message)
+                          })
+                      }}
+                    >办理退房</button>
+                  </>
+                )}
+              </>
+            ) : null
+          }
+        >
         {resQuery.data && (
           <>
             <div className="info-row"><span>当前住客</span><span>{resQuery.data.guest_name} {resQuery.data.vip_level && <Badge color="purple">{resQuery.data.vip_level}</Badge>}</span></div>
@@ -794,24 +877,20 @@ export default function Rooms() {
                 </span>
               </div>
             )}
-
-            {/* 低频/危险操作区：与主流程按钮分开放，避免误触（版式同原型 .sub-ops） */}
-            {(resQuery.data.status === 'checked_in' || resQuery.data.status === 'checked_out') && (
+            {resQuery.data.status === 'checked_in' && (
+              <p className="hint" style={{ marginTop: 14 }}>
+                登记信息与收款金额可经底栏「编辑 ▾」更正（登记/实收）；延住按天/小时追加账单，撤销入住会把房态退回空脏（已收款保留），办理退房见右侧主按钮。
+              </p>
+            )}
+            {resQuery.data.status === 'checked_out' && (
               <div className="sub-ops">
                 <span className="hint">
-                  {resQuery.data.status === 'checked_in'
-                    ? '登记信息填错可「编辑登记」更正；「编辑实收」可按整单总额更正已收款；撤销入住会把房态退回空脏，已收款保留（取消预订时才清除）。'
-                    : '退房登记有误可「更正实收」；「撤销退房」回到在住状态，已收款保留。'}
+                  退房登记有误可「更正实收」；「撤销退房」回到在住状态，已收款保留。
                 </span>
                 <button className="btn btn-ghost btn-sm" onClick={() => { setPaidRes(resQuery.data!); setDetailRes(null) }}>
-                  {resQuery.data.status === 'checked_in' ? '编辑实收' : '更正实收'}
+                  更正实收
                 </button>
-                {resQuery.data.status === 'checked_in' && (
-                  <button className="btn btn-danger-ghost btn-sm" onClick={() => { setUndoRes(resQuery.data!); setDetailRes(null) }}>撤销入住</button>
-                )}
-                {resQuery.data.status === 'checked_out' && (
-                  <button className="btn btn-danger-ghost btn-sm" onClick={() => { setUndoOutRes(resQuery.data!); setDetailRes(null) }}>撤销退房</button>
-                )}
+                <button className="btn btn-danger-ghost btn-sm" onClick={() => { setUndoOutRes(resQuery.data!); setDetailRes(null) }}>撤销退房</button>
               </div>
             )}
 
@@ -836,21 +915,21 @@ export default function Rooms() {
             )}
           </>
         )}
-      </Dialog>
+      </Drawer>
 
       {/* ---------- 入住向导（预订详情内办理入住） ---------- */}
       {checkinRes && (
         <CheckInDialog
-          res={checkinRes} busy={checkinMut.isPending}
+          res={checkinRes} busy={checkinMut.isPending} drawer
           onClose={() => setCheckinRes(null)}
           onConfirm={(body, label) => checkinMut.mutate({ body, label })}
         />
       )}
 
-      {/* ---------- 延住弹窗（预订详情内） ---------- */}
+      {/* ---------- 延住抽屉（预订详情内） ---------- */}
       {extendRes && (
         <ExtendDialog
-          res={extendRes} busy={extendMut.isPending}
+          res={extendRes} busy={extendMut.isPending} drawer
           onClose={() => setExtendRes(null)}
           onConfirm={(body) => extendMut.mutate({ id: extendRes.id, body })}
         />
@@ -945,13 +1024,12 @@ function EditRegistrationDialog({ res, channels, busy, onClose, onConfirm }: {
   }
 
   return (
-    <Dialog
-      open onClose={onClose}
+    <Drawer
+      open passthrough onClose={onClose}
       title="编辑登记信息"
       sub={`${res.room_number ?? '未分配'} · ${res.guest_name} · 已入住 ${md(res.check_in)} – ${md(res.check_out)}`}
       foot={
         <>
-          <span className="hint" style={{ marginRight: 'auto' }}>操作人：当前登录账号</span>
           <button className="btn btn-ghost" onClick={onClose}>取消</button>
           <button
             className="btn btn-primary" disabled={busy || !name.trim()}
@@ -1003,7 +1081,7 @@ function EditRegistrationDialog({ res, channels, busy, onClose, onConfirm }: {
         </Field>
       </div>
       <p className="hint">保存后同步更新客户档案，并在预订日志留痕（操作人、修改前后内容）。</p>
-    </Dialog>
+    </Drawer>
   )
 }
 
@@ -1018,13 +1096,12 @@ function UndoCheckInDialog({ res, paid, busy, onClose, onConfirm }: {
 }) {
   const received = paid ?? 0
   return (
-    <Dialog
-      open onClose={onClose}
+    <Drawer
+      open passthrough onClose={onClose}
       title="撤销入住"
       sub={`${res.room_number ?? '未分配'} · ${res.guest_name} · ${res.code}`}
       foot={
         <>
-          <span className="hint" style={{ marginRight: 'auto' }}>操作人：当前登录账号</span>
           <button className="btn btn-ghost" onClick={onClose}>保留在住</button>
           <button className="btn btn-danger-ghost" disabled={busy || paid === undefined} onClick={onConfirm}>确认撤销入住</button>
         </>
@@ -1050,7 +1127,7 @@ function UndoCheckInDialog({ res, paid, busy, onClose, onConfirm }: {
           <li>全程写入操作日志，可在预订详情「操作日志」中追溯。</li>
         </ul>
       </div>
-    </Dialog>
+    </Drawer>
   )
 }
 
@@ -1063,13 +1140,12 @@ function UndoCheckOutDialog({ res, paid, busy, onClose, onConfirm }: {
   onConfirm: () => void
 }) {
   return (
-    <Dialog
-      open onClose={onClose}
+    <Drawer
+      open passthrough onClose={onClose}
       title="撤销退房"
       sub={`${res.room_number ?? '未分配'} · ${res.guest_name} · ${res.code}`}
       foot={
         <>
-          <span className="hint" style={{ marginRight: 'auto' }}>操作人：当前登录账号</span>
           <button className="btn btn-ghost" onClick={onClose}>保持离店</button>
           <button className="btn btn-danger-ghost" disabled={busy || paid === undefined} onClick={onConfirm}>确认撤销退房</button>
         </>
@@ -1090,7 +1166,7 @@ function UndoCheckOutDialog({ res, paid, busy, onClose, onConfirm }: {
           <li>全程写入操作日志，可在预订详情「操作日志」中追溯。</li>
         </ul>
       </div>
-    </Dialog>
+    </Drawer>
   )
 }
 
@@ -1112,13 +1188,12 @@ function EditPaidDialog({ res, folio, busy, onClose, onConfirm }: {
   const diff = amount - cur
 
   return (
-    <Dialog
-      open onClose={onClose}
+    <Drawer
+      open passthrough onClose={onClose}
       title="更正实收"
       sub={`${res.room_number ?? '未分配'} · ${res.guest_name} · ${res.code}`}
       foot={
         <>
-          <span className="hint" style={{ marginRight: 'auto' }}>操作人：当前登录账号</span>
           <button className="btn btn-ghost" onClick={onClose}>取消</button>
           <button
             className="btn btn-primary" disabled={busy || !folio}
@@ -1147,7 +1222,7 @@ function EditPaidDialog({ res, folio, busy, onClose, onConfirm }: {
         </select>
       </Field>
       <p className="hint warn">减少已收会冲减收款记录（从最新一笔起），不生成退款凭证；全过程写入预订日志。</p>
-    </Dialog>
+    </Drawer>
   )
 }
 
@@ -1182,13 +1257,12 @@ function EditReservationDialog({ res, busy, onClose, onConfirm }: {
   }
 
   return (
-    <Dialog
-      open onClose={onClose}
+    <Drawer
+      open passthrough onClose={onClose}
       title="调整预订"
       sub={`${res.room_number ?? res.room_type_name} · ${res.guest_name} · ${res.code}`}
       foot={
         <>
-          <span className="hint" style={{ marginRight: 'auto' }}>操作人：当前登录账号</span>
           <button className="btn btn-ghost" onClick={onClose}>取消</button>
           <button
             className="btn btn-primary" disabled={busy}
@@ -1224,7 +1298,7 @@ function EditReservationDialog({ res, busy, onClose, onConfirm }: {
         />
       </Field>
       <p className="hint">钟点房占整日固定，只能调整总价；改日期请重新开单或延住。</p>
-    </Dialog>
+    </Drawer>
   )
 }
 
@@ -1237,99 +1311,98 @@ function toRoom(r: BoardRoom): Room {
   }
 }
 
-/* ---------- 直接预订对话框（天数 + 整单总额；单价由总额折算） ---------- */
-function BookDialog({ open, room, checkIn, nights: defaultNights, channels, busy, onClose, onSubmit }: {
+/* ---------- 直接预订抽屉（多房累积：每行一间房，公共客人信息，逐行提交） ---------- */
+function BookDrawer({ open, lines, channels, busy, onClose, onChangeLines, onSubmit }: {
   open: boolean
-  room?: Room
-  checkIn?: string
-  /** 默认入住天数：拖选多天时为选区长度，单击/按钮入口为 1 */
-  nights: number
+  lines: BookingLine[]
   channels: Channel[]
   busy: boolean
   onClose: () => void
-  onSubmit: (p: { guest_name: string; guest_phone: string; channel_id: number | null; notes: string; stay_type: 'normal' | 'hourly'; hours: number; rate: number | null; nights: number }) => void
+  onChangeLines: (lines: BookingLine[]) => void
+  onSubmit: (p: {
+    guest_name: string; guest_phone: string; channel_id: number | null; notes: string
+    lines: { room_id: number; check_in: string; check_out: string; rate: number; nights: number; stay_type: 'normal' | 'hourly'; hours: number }[]
+  }) => void
 }) {
   const [name, setName] = useState('')
   const [phone, setPhone] = useState('')
   const [channelId, setChannelId] = useState<number | null>(null)
-  /** 整晚 / 钟点：房型未配钟点价时隐藏钟点选项 */
+  /** 钟点仅在恰好 1 行时可用：多房按整晚处理，避免多房×钟点的组合复杂度 */
   const [stayType, setStayType] = useState<'normal' | 'hourly'>('normal')
   const [hours, setHours] = useState(4)
-  const [nightsText, setNightsText] = useState('1')
-  /** 房价总额（整单）；单价按天数 / 小时数折算后提交 */
-  const [totalText, setTotalText] = useState('')
-  /** 上次折算出的单价：改天数时按它重算总额（用户口径：总额根据天数计算） */
-  const [unitRef, setUnitRef] = useState<{ v: number }>({ v: room?.base_price ?? 0 })
 
   useEffect(() => {
-    if (open && room) {
-      setName(''); setPhone(''); setChannelId(null)
-      setStayType('normal'); setHours(4)
-      const n = Math.max(1, defaultNights)
-      setNightsText(String(n))
-      setTotalText(String(n * room.base_price))
-      // 每次打开都从系统基准价开始折算，避免沿用上次的总额
-      setUnitRef({ v: room.base_price })
-    }
-  }, [open, room, defaultNights])
+    if (open) { setName(''); setPhone(''); setChannelId(null); setStayType('normal'); setHours(4) }
+  }, [open])
 
-  if (!room || !checkIn) return null
-  const hourlyAvail = (room.hourly_price ?? 0) > 0
-  const isHourly = stayType === 'hourly'
-  const baseUnit = isHourly ? (room.hourly_price || 0) : room.base_price
-  const units = isHourly ? hours : Math.max(1, Math.round(Number(nightsText) || 1))
-  const unitLabel = isHourly ? '小时' : '晚'
-  const total = Math.max(0, Math.round(Number(totalText) || 0))
-  const unitPrice = units > 0 ? Math.round(total / units) : 0
-  const finalTotal = unitPrice * units
-  const checkOut = addDaysIso(checkIn, units)
+  if (!open || lines.length === 0) return null
 
-  /** 改天数 / 时长：按上次折算单价重算总额 */
-  const onUnitsChange = (next: number) => {
-    const u = unitRef.v || baseUnit
-    setTotalText(String(next * u))
+  const single = lines.length === 1
+  const firstRoom = lines[0].room
+  const hourlyAvail = single && (firstRoom.hourly_price ?? 0) > 0
+  const isHourly = single && stayType === 'hourly'
+  const grandTotal = lines.reduce((s, l) => {
+    const n = Math.max(1, Math.round(Number(l.totalText) || 0))
+    return s + n
+  }, 0)
+  const linesInvalid = lines.some(l => l.nights <= 0 || (Math.round(Number(l.totalText) || 0) <= 0))
+
+  /** 行内改天数：按行当前折合单价（手改过则用 unitRef，否则系统基准价）重算总额 */
+  const lineNightsChange = (idx: number, v: string) => {
+    const next = lines.map((l, i) => {
+      if (i !== idx) return l
+      const n = Math.max(1, Math.round(Number(v.replace(/[^\d]/g, '')) || 1))
+      const curTotal = Math.max(0, Math.round(Number(l.totalText) || 0))
+      const unit = l.unitRef ?? ((l.nights > 0 ? Math.round(curTotal / l.nights) : 0) || l.room.base_price)
+      return { ...l, nights: n, totalText: String(n * unit) }
+    })
+    onChangeLines(next)
   }
-  /** 手改总额：折算单价记入 unitRef */
-  const onTotalChange = (v: string) => {
+  /** 行内手改总额：折算单价记入 unitRef */
+  const lineTotalChange = (idx: number, v: string) => {
     const digits = v.replace(/[^\d]/g, '')
-    setTotalText(digits)
-    const t = Math.max(0, Math.round(Number(digits) || 0))
-    setUnitRef({ v: units > 0 ? Math.round(t / units) : baseUnit })
+    const next = lines.map((l, i) => {
+      if (i !== idx) return l
+      const t = Math.max(0, Math.round(Number(digits) || 0))
+      const unit = l.nights > 0 ? Math.round(t / l.nights) : 0
+      return { ...l, totalText: digits, unitRef: unit }
+    })
+    onChangeLines(next)
   }
-  /** 切换整晚 / 钟点：总额重挂号型基准价 */
-  const onStayTypeChange = (next: 'normal' | 'hourly') => {
-    setStayType(next)
-    const unit = next === 'hourly' ? (room.hourly_price || 0) : room.base_price
-    setUnitRef({ v: unit })
-    setTotalText(String((next === 'hourly' ? hours : Math.max(1, Math.round(Number(nightsText) || 1))) * unit))
+  const removeLine = (idx: number) => onChangeLines(lines.filter((_, i) => i !== idx))
+
+  const submit = () => {
+    onSubmit({
+      guest_name: name, guest_phone: phone, channel_id: channelId, notes: '',
+      lines: lines.map(l => {
+        const t = Math.max(0, Math.round(Number(l.totalText) || 0))
+        const n = Math.max(1, l.nights)
+        const rate = Math.round(t / n)
+        if (isHourly) {
+          // 钟点：仅第一行（单行模式），check_out 占整日 = check_in + 1 天，后端口径一致
+          return { room_id: l.room.id, check_in: l.checkIn, check_out: addDaysIso(l.checkIn, 1), rate, nights: 1, stay_type: 'hourly' as const, hours }
+        }
+        return { room_id: l.room.id, check_in: l.checkIn, check_out: addDaysIso(l.checkIn, n), rate, nights: n, stay_type: 'normal' as const, hours: 0 }
+      }),
+    })
   }
 
   return (
-    <Dialog
-      open={open} onClose={onClose}
-      title="直接预订"
-      sub="在房态盘选定房号，创建后该房间此时段即被锁定"
+    <Drawer
+      open={open} passthrough onClose={onClose}
+      title={`直接预订 · ${lines.length} 间`}
+      sub="点击/拖选日历空白格追加房间；同一单共用客人与来源"
       foot={
         <>
-          <span className="hint" style={{ marginRight: 'auto' }}>操作人：当前登录账号</span>
+          <span className="hint" style={{ marginRight: 'auto' }}>共 {lines.length} 间 · 合计 ¥{grandTotal.toLocaleString()}</span>
           <button className="btn btn-ghost" onClick={onClose}>取消</button>
           <button
-            className="btn btn-primary" disabled={busy || !name.trim() || units <= 0}
-            onClick={() => onSubmit({
-              guest_name: name, guest_phone: phone, channel_id: channelId, notes: '',
-              stay_type: stayType, hours: isHourly ? hours : 0,
-              rate: unitPrice,
-              nights: isHourly ? 1 : units,
-            })}
-          >确认预订</button>
+            className="btn btn-primary" disabled={busy || !name.trim() || linesInvalid || lines.length === 0}
+            onClick={submit}
+          >确认预订{lines.length > 1 ? `（${lines.length} 间）` : ''}</button>
         </>
       }
     >
-      <div className="book-room-summary">
-        {room.room_number} · {room.room_type_name || '客房'} · {md(checkIn)} 入住 · {isHourly
-          ? `钟点 ${hours} 小时 · 折合 ¥${unitPrice}/小时 · 应收 ¥${finalTotal.toLocaleString()}`
-          : `共 ${units} 晚（${md(checkOut)} 离店）· 折合 ¥${unitPrice}/晚 · 应收 ¥${finalTotal.toLocaleString()}`}
-      </div>
       <div className="form-row">
         <Field label="客人姓名" required>
           <input className="input" value={name} onChange={e => setName(e.target.value)} placeholder="请输入姓名" />
@@ -1341,51 +1414,71 @@ function BookDialog({ open, room, checkIn, nights: defaultNights, channels, busy
       {hourlyAvail && (
         <Field label="入住方式">
           <div className="segmented">
-            <button className={stayType === 'normal' ? 'active' : ''} onClick={() => onStayTypeChange('normal')}>整晚</button>
-            <button className={stayType === 'hourly' ? 'active' : ''} onClick={() => onStayTypeChange('hourly')}>钟点</button>
+            <button className={!isHourly ? 'active' : ''} onClick={() => { setStayType('normal'); onChangeLines([{ ...lines[0], totalText: String(lines[0].nights * firstRoom.base_price), unitRef: null }]) }}>整晚</button>
+            <button className={isHourly ? 'active' : ''} onClick={() => { setStayType('hourly'); onChangeLines([{ ...lines[0], totalText: String(hours * (firstRoom.hourly_price || 0)) }]) }}>钟点</button>
           </div>
-          <span className="hint">钟点价 ¥{room.hourly_price}/小时（设置 → 房型 中配置）；钟点房占用当日整天，创建后不可拖动改期。</span>
+          <span className="hint">钟点价 ¥{firstRoom.hourly_price}/小时（设置 → 房型 中配置）；钟点房占用当日整天，创建后不可拖动改期。多间房仅支持整晚。</span>
         </Field>
       )}
-      {isHourly ? (
+      {isHourly && (
         <Field label="入住时长">
           <div className="chips">
             {[2, 3, 4, 6, 8].map(x => (
               <button
                 key={x} className={`chip${hours === x ? ' active' : ''}`}
-                onClick={() => { setHours(x); onUnitsChange(x) }}
+                onClick={() => { setHours(x); onChangeLines([{ ...lines[0], totalText: String(x * (firstRoom.hourly_price || 0)) }]) }}
               >{x} 小时</button>
             ))}
           </div>
         </Field>
-      ) : (
-        <Field label="入住天数" hint="按住日历空白格横向拖动可直接选多天；也可在这里改天数。">
-          <input
-            className="input" inputMode="numeric" value={nightsText}
-            onChange={e => {
-              const digits = e.target.value.replace(/[^\d]/g, '')
-              setNightsText(digits)
-              onUnitsChange(Math.max(1, Math.round(Number(digits) || 1)))
-            }}
-          />
-        </Field>
       )}
-      <Field
-        label={`房价总额（整单，元）`}
-        hint={`折合 ¥${unitPrice}/${unitLabel}（${units} ${unitLabel}）· 最终应收 ¥${finalTotal.toLocaleString()}；改天数时按折合单价自动重算总额。`}
-      >
-        <input
-          className="input" inputMode="numeric" value={totalText}
-          onChange={e => onTotalChange(e.target.value)}
-          placeholder={String(units * baseUnit)}
-        />
-      </Field>
+
+      <div className="section-sub" style={{ margin: '6px 0 8px' }}>
+        房间（{lines.length} 间）· 在日历上继续点击或拖选可追加
+      </div>
+      <div className="book-lines">
+        {lines.map((l, i) => {
+          const t = Math.max(0, Math.round(Number(l.totalText) || 0))
+          const n = Math.max(1, l.nights)
+          const unit = Math.round(t / n)
+          return (
+            <div key={`${l.room.id}-${l.checkIn}-${i}`} className="book-line">
+              <div className="bl-room">
+                <div className="no">{l.room.room_number} · {l.room.room_type_name || '客房'}</div>
+                <div className="meta">
+                  {md(l.checkIn)} 入住 · {!isHourly && (
+                    <>
+                      天数
+                      <input
+                        className="bl-input" inputMode="numeric" value={String(l.nights)}
+                        onChange={e => lineNightsChange(i, e.target.value)}
+                        aria-label="入住天数"
+                      /> 晚（{md(addDaysIso(l.checkIn, n))} 离店）
+                    </>
+                  )}
+                  {isHourly && `钟点 ${hours} 小时`}
+                </div>
+              </div>
+              <input
+                className="bl-input amt" inputMode="numeric" value={l.totalText}
+                onChange={e => lineTotalChange(i, e.target.value)}
+                aria-label="行整单总额"
+                title="行整单总额（元）"
+              />
+              <span className="bl-amt" style={{ color: 'var(--text-secondary)', fontWeight: 400, fontSize: 12 }}>折合 ¥{unit}/{isHourly ? '小时' : '晚'}</span>
+              <button className="icon-btn" aria-label="移除该房间" onClick={() => removeLine(i)}><X size={14} /></button>
+            </div>
+          )
+        })}
+      </div>
+      <p className="hint" style={{ marginTop: 10 }}>
+        逐间提交，任一间失败（如时段冲突）即中止，已成功的保留；金额填每间整单总额，按天数折合单价入账。来源选项与顺序来自「设置 → 来源渠道」。
+      </p>
       <Field label="来源">
         <select className="select" value={channelId ?? ''} onChange={e => setChannelId(e.target.value ? Number(e.target.value) : null)}>
           {channels.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
         </select>
-        <span className="hint">选项与顺序来自「设置 → 来源渠道」配置。</span>
       </Field>
-    </Dialog>
+    </Drawer>
   )
 }

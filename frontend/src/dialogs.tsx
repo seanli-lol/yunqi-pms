@@ -2,7 +2,7 @@
 import { useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { api, addDaysIso, fmtMoney, md, type Reservation, type Room } from './api'
-import { Dialog, Field } from './ui'
+import { Dialog, Drawer, Field } from './ui'
 
 /** 入住选房：放宽后可用（脏房/前客未退）与不可用（维修）的标记 */
 const ROOM_PICK_TAG: Record<string, string> = {
@@ -10,9 +10,11 @@ const ROOM_PICK_TAG: Record<string, string> = {
   occupied: '前客未退',
 }
 
-export function CheckInDialog({ res, busy, onClose, onConfirm }: {
+/** 房态盘传 drawer=1 时弹层走右侧抽屉（穿透遮罩），前台工作台默认居中弹层不变 */
+export function CheckInDialog({ res, busy, drawer = false, onClose, onConfirm }: {
   res: Reservation
   busy: boolean
+  drawer?: boolean
   onClose: () => void
   onConfirm: (body: { room_id: number; amount_received: number; payment_method: string }, label: string) => void
 }) {
@@ -34,22 +36,8 @@ export function CheckInDialog({ res, busy, onClose, onConfirm }: {
 
   const lockedNotReady = res.room_id && avail.data && !avail.data.some(r => r.id === res.room_id)
 
-  return (
-    <Dialog
-      open onClose={onClose} wide
-      title={`办理入住 · ${res.guest_name}`}
-      sub={`${res.code} · ${res.room_type_name} · ${md(res.check_in)} – ${md(res.check_out)} · 共 ${res.nights} 晚 · ¥${res.rate}/晚`}
-      foot={
-        <>
-          <span className="hint" style={{ marginRight: 'auto' }}>操作人：当前登录账号 · 入住将记录到预订日志</span>
-          <button className="btn btn-ghost" onClick={onClose}>取消</button>
-          <button
-            className="btn btn-primary" disabled={busy || roomId === null}
-            onClick={() => onConfirm({ room_id: roomId!, amount_received: Math.max(0, Math.round(Number(amount) || 0)), payment_method: method }, '入住成功，房态转为在住')}
-          >确认入住</button>
-        </>
-      }
-    >
+  const body = (
+    <>
       <div className="section-sub" style={{ marginBottom: 10 }}>
         选择房间（{res.room_type_name} · 可选 {avail.data?.length ?? '…'} 间）
       </div>
@@ -87,14 +75,53 @@ export function CheckInDialog({ res, busy, onClose, onConfirm }: {
         应收 {fmtMoney(res.balance_due)}（{res.stay_type === 'hourly' ? `钟点房费 ${fmtMoney(res.rate * res.hours)}` : `房费 ${fmtMoney(res.rate * res.nights)}（整单总价）`}）· 实收填本次入住整单总额 · 实收 0 = 到店后结清 · 免押金入住
       </p>
       <p className="hint">手机号：{res.guest_phone || '未留（到店补录）'} · 预订来源 {res.channel_name ?? '—'}</p>
+    </>
+  )
+
+  if (drawer) {
+    return (
+      <Drawer open passthrough onClose={onClose} title={`办理入住 · ${res.guest_name}`}
+        sub={`${res.code} · ${res.room_type_name} · ${md(res.check_in)} – ${md(res.check_out)} · 共 ${res.nights} 晚 · ¥${res.rate}/晚`}
+        foot={
+          <>
+            <button className="btn btn-ghost" onClick={onClose}>取消</button>
+            <button
+              className="btn btn-primary" disabled={busy || roomId === null}
+              onClick={() => onConfirm({ room_id: roomId!, amount_received: Math.max(0, Math.round(Number(amount) || 0)), payment_method: method }, '入住成功，房态转为在住')}
+            >确认入住</button>
+          </>
+        }
+      >
+        {body}
+      </Drawer>
+    )
+  }
+  return (
+    <Dialog
+      open onClose={onClose} wide
+      title={`办理入住 · ${res.guest_name}`}
+      sub={`${res.code} · ${res.room_type_name} · ${md(res.check_in)} – ${md(res.check_out)} · 共 ${res.nights} 晚 · ¥${res.rate}/晚`}
+      foot={
+        <>
+          <span className="hint" style={{ marginRight: 'auto' }}>操作人：当前登录账号 · 入住将记录到预订日志</span>
+          <button className="btn btn-ghost" onClick={onClose}>取消</button>
+          <button
+            className="btn btn-primary" disabled={busy || roomId === null}
+            onClick={() => onConfirm({ room_id: roomId!, amount_received: Math.max(0, Math.round(Number(amount) || 0)), payment_method: method }, '入住成功，房态转为在住')}
+          >确认入住</button>
+        </>
+      }
+    >
+      {body}
     </Dialog>
   )
 }
 
 /* ---------- 延住弹窗（普通按晚 / 钟点按小时，自定义应收总额） ---------- */
-export function ExtendDialog({ res, busy, onClose, onConfirm }: {
+export function ExtendDialog({ res, busy, drawer = false, onClose, onConfirm }: {
   res: Reservation
   busy: boolean
+  drawer?: boolean
   onClose: () => void
   onConfirm: (body: { nights: number; hours: number; rate: number }, label: string) => void
 }) {
@@ -114,6 +141,8 @@ export function ExtendDialog({ res, busy, onClose, onConfirm }: {
   const body = hourly ? { nights: 0, hours: h, rate } : { nights: n, hours: 0, rate }
   const newOut = addDaysIso(res.check_out, n)
   const remain = 12 - res.hours
+  const disabled = busy || amount <= 0 || (!hourly && n <= 0) || (hourly && (h <= 0 || h > remain))
+  const okLabel = hourly ? `已延住 ${h} 小时` : `已延住 ${n} 晚，新离店 ${md(newOut)}`
 
   /** 改数量：按当前折合单价重算总价 */
   const onUnitsChange = (nextUnits: number) => {
@@ -121,25 +150,8 @@ export function ExtendDialog({ res, busy, onClose, onConfirm }: {
     setTotalText(String(Math.max(0, nextUnits) * u))
   }
 
-  return (
-    <Dialog
-      open onClose={onClose}
-      title={`延住 · ${res.guest_name}`}
-      sub={hourly
-        ? `${res.code} · 钟点 ${res.hours} 小时 · ¥${res.rate}/小时`
-        : `${res.code} · ${res.room_number ?? ''} · 现 ${md(res.check_in)} – ${md(res.check_out)} · ¥${res.rate}/晚`}
-      foot={
-        <>
-          <span className="hint" style={{ marginRight: 'auto' }}>应收将追加到账单，不改原房费</span>
-          <button className="btn btn-ghost" onClick={onClose}>取消</button>
-          <button
-            className="btn btn-primary"
-            disabled={busy || amount <= 0 || (!hourly && n <= 0) || (hourly && (h <= 0 || h > remain))}
-            onClick={() => onConfirm(body, hourly ? `已延住 ${h} 小时` : `已延住 ${n} 晚，新离店 ${md(newOut)}`)}
-          >确认延住</button>
-        </>
-      }
-    >
+  const fields = (
+    <>
       {hourly ? (
         <Field label="延住小时数" required hint={`当前 ${res.hours} 小时，累计不可超过 12 小时。`}>
           <input className="input" inputMode="numeric" value={hours}
@@ -170,6 +182,43 @@ export function ExtendDialog({ res, busy, onClose, onConfirm }: {
         本次应收：<b>¥{amount.toLocaleString()}</b>
         {hourly ? `（${h} 小时 × ¥${rate}，延住后共 ${res.hours + h} 小时）` : `（${n} 晚 × ¥${rate}，新离店 ${md(newOut)}）`}
       </p>
+    </>
+  )
+
+  if (drawer) {
+    return (
+      <Drawer open passthrough onClose={onClose}
+        title={`延住 · ${res.guest_name}`}
+        sub={hourly
+          ? `${res.code} · 钟点 ${res.hours} 小时 · ¥${res.rate}/小时`
+          : `${res.code} · ${res.room_number ?? ''} · 现 ${md(res.check_in)} – ${md(res.check_out)} · ¥${res.rate}/晚`}
+        foot={
+          <>
+            <button className="btn btn-ghost" onClick={onClose}>取消</button>
+            <button className="btn btn-primary" disabled={disabled} onClick={() => onConfirm(body, okLabel)}>确认延住</button>
+          </>
+        }
+      >
+        {fields}
+      </Drawer>
+    )
+  }
+  return (
+    <Dialog
+      open onClose={onClose}
+      title={`延住 · ${res.guest_name}`}
+      sub={hourly
+        ? `${res.code} · 钟点 ${res.hours} 小时 · ¥${res.rate}/小时`
+        : `${res.code} · ${res.room_number ?? ''} · 现 ${md(res.check_in)} – ${md(res.check_out)} · ¥${res.rate}/晚`}
+      foot={
+        <>
+          <span className="hint" style={{ marginRight: 'auto' }}>应收将追加到账单，不改原房费</span>
+          <button className="btn btn-ghost" onClick={onClose}>取消</button>
+          <button className="btn btn-primary" disabled={disabled} onClick={() => onConfirm(body, okLabel)}>确认延住</button>
+        </>
+      }
+    >
+      {fields}
     </Dialog>
   )
 }

@@ -102,18 +102,15 @@ def ensure_seed(db: Session) -> None:
     db.flush()
     room_by_no = {r.room_number: r for r in rooms_x}
 
-    # 房态：在住 / 空脏 / 维修
+    # 房态：在住 / 空脏（维修功能已下线，不再产生维修房）
     occupied_nos = {"201", "202", "203", "205", "206", "207", "209", "302", "304", "305",
                     "308", "309", "401", "402", "404", "406", "408", "502", "504", "506", "507"}
     dirty_nos = {"204", "208", "303", "403", "501"}
-    maint_nos = {"210", "503"}
     for r in rooms_x:
         if r.room_number in occupied_nos:
             r.status = "occupied"
         elif r.room_number in dirty_nos:
             r.status = "vacant_dirty"
-        elif r.room_number in maint_nos:
-            r.status = "maintenance"
         else:
             r.status = "vacant_clean"
 

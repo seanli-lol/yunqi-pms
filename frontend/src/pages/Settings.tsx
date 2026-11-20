@@ -447,7 +447,15 @@ function RoomsTab() {
                     </td>
                     <td data-label="备注">{r.notes || '—'}</td>
                     <td className="no-label">
-                      {r.status !== 'occupied' && (
+                      {r.status === 'occupied' && <span className="hint">在住中</span>}
+                      {r.status === 'maintenance' && (
+                        // 维修功能已下线：历史库残留的维修房给「完成维修」兜底入口
+                        <button
+                          className="btn btn-ghost btn-sm"
+                          onClick={() => statusMut.mutate({ id: r.id, status: 'vacant_clean', label: `${r.room_number} 维修完成，转为空净` })}
+                        >完成维修</button>
+                      )}
+                      {(r.status === 'vacant_clean' || r.status === 'vacant_dirty') && (
                         <select
                           className="select" style={{ height: 32, fontSize: 12.5, width: 110 }}
                           value={r.status}
@@ -455,10 +463,8 @@ function RoomsTab() {
                         >
                           <option value="vacant_clean">空净</option>
                           <option value="vacant_dirty">空脏</option>
-                          <option value="maintenance">维修</option>
                         </select>
                       )}
-                      {r.status === 'occupied' && <span className="hint">在住中</span>}
                     </td>
                   </tr>
                 ))}

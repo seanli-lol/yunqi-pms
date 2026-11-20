@@ -33,14 +33,16 @@ function unlockBodyScroll() {
   if (overlayOpenCount === 0) document.body.style.overflow = ''
 }
 
-export function Overlay({ open, onClose, children, drawer = false }: {
+export function Overlay({ open, onClose, children, drawer = false, passthrough = false }: {
   open: boolean
   onClose: () => void
   children: React.ReactNode
   drawer?: boolean
+  /** 透明遮罩 + 点击穿透到背景（房态盘抽屉开着仍可点日历）；此时不加 body 滚动锁 */
+  passthrough?: boolean
 }) {
   useEffect(() => {
-    if (!open) return
+    if (!open || passthrough) return
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
     document.addEventListener('keydown', onKey)
     lockBodyScroll()
@@ -48,11 +50,11 @@ export function Overlay({ open, onClose, children, drawer = false }: {
       document.removeEventListener('keydown', onKey)
       unlockBodyScroll()
     }
-  }, [open, onClose])
+  }, [open, onClose, passthrough])
   if (!open) return null
   return (
     <div
-      className={drawer ? 'overlay drawer-wrap open' : 'overlay'}
+      className={`overlay${drawer ? ' drawer-wrap open' : ''}${passthrough ? ' passthrough' : ''}`}
       onMouseDown={(e) => { if (e.target === e.currentTarget) onClose() }}
     >
       {children}
@@ -86,16 +88,18 @@ export function Dialog({ open, onClose, title, sub, children, foot, wide = false
   )
 }
 
-export function Drawer({ open, onClose, title, sub, children, foot }: {
+export function Drawer({ open, onClose, title, sub, children, foot, passthrough = false }: {
   open: boolean
   onClose: () => void
   title: React.ReactNode
   sub?: React.ReactNode
   children: React.ReactNode
   foot?: React.ReactNode
+  /** 透传给 Overlay：抽屉开着时点击穿透到日历（房态盘多房预订依赖） */
+  passthrough?: boolean
 }) {
   return (
-    <Overlay open={open} onClose={onClose} drawer>
+    <Overlay open={open} onClose={onClose} drawer passthrough={passthrough}>
       <aside className="drawer" role="dialog" aria-modal="true">
         <div className="dialog-head" style={{ paddingBottom: 16, borderBottom: '1px solid var(--hairline-soft)' }}>
           <div>
