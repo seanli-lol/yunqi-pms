@@ -525,6 +525,24 @@ def undo_check_out(res_id: int, user: User = Depends(get_current_user), db: Sess
     room = db.get(Room, r.room_id) if r.room_id else None
     paid_total = sum(p.amount for p in db.query(Payment).filter(Payment.reservation_id == r.id).all())
 
+    # 提前退房后尾段可能已售出新单：撤销回到在住会重新占满原订区间，重叠则拒绝
+    # （前台需先处理新单——改房/改期或取消，再撤销退房）
+    if room:
+        conflicts = (db.query(Reservation)
+                    .filter(Reservation.hotel_id == r.hotel_id,
+                            Reservation.room_id == room.id,
+                            Reservation.status.in_(["pending", "confirmed", "checked_in"]),
+                            Reservation.check_in < r.check_out,
+                            Reservation.check_out > r.check_in,
+                            Reservation.id != r.id)
+                    .all())
+        if conflicts:
+            detail = "、".join(f"{c.code} {c.check_in:%m/%d}–{c.check_out:%m/%d}" for c in conflicts)
+            raise HTTPException(409, detail={
+                "message": f"撤销退房后 {room.room_number} 在原住期内已有其他预订（{detail}），请先调整或取消新预订",
+                "conflicts": [c.id for c in conflicts],
+            })
+
     r.status = "checked_in"
     # 撤销退房：清除实际离店日（回到在住，方块恢复原订跨度）
     r.actual_check_out = None

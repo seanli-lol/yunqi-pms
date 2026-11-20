@@ -256,8 +256,7 @@ def ensure_seed(db: Session) -> None:
     add_type_res("徐丽", "亲子房", 1, 3, "pending")
 
     # 已离店：高媛（原订今日离店，今日下午提前退房——灰块截断 + 尾段「可售」演示样例）
-    r_gaoyuan = add_res("高媛", "208", -3, 1, "美团", status="checked_out", deposit=0,
-                        created_days_ago=4)
+    r_gaoyuan = add_res("高媛", "208", -3, 1, "美团", status="checked_out", deposit=0)
     r_gaoyuan.actual_check_out = _d(0)
     # 提前退房按实住 2 晚结算：改写原房费行（add_res 的 folio 尚未 flush，先 flush 再查）
     db.flush()

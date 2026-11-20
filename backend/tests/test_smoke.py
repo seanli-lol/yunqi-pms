@@ -634,6 +634,55 @@ def test_early_checkout_resale():
     assert r.json()["status"] == "checked_out"
     assert r.json()["actual_check_out"] == date.today().isoformat()
 
+    # 正常退房（actual == check_out）不截断：同房再造一笔住满退房的对照（505 房）
+    cin2 = (date.today() - timedelta(days=1)).isoformat()
+    cout2 = date.today().isoformat()
+    room2 = next(x for x in client.get("/api/rooms", headers=h).json() if x["room_number"] == "505")
+    r = client.post("/api/reservations", headers=h, json={
+        "guest_name": "正常退房客", "check_in": cin2, "check_out": cout2, "room_id": room2["id"],
+    })
+    assert r.status_code == 200, r.text
+    rid2 = r.json()["id"]
+    r = client.post(f"/api/reservations/{rid2}/check-in", headers=h,
+                    json={"room_id": room2["id"], "amount_received": 0})
+    assert r.status_code == 200, r.text
+    r = client.post(f"/api/reservations/{rid2}/check-out", headers=h, json={"force": True, "payments": []})
+    assert r.status_code == 200, r.text
+    assert r.json()["actual_check_out"] == cout2  # 按期退房 = 原订离店日
+    board = client.get("/api/rooms/board?days=14", headers=h).json()
+    blk2 = next(b for g in board["groups"] for rm in g["rooms"] if rm["id"] == room2["id"]
+                for b in rm["blocks"] if b["id"] == rid2)
+    assert blk2["truncated"] is False
+    assert "stub_nights" not in blk2 and "resale_nights" not in blk2
+
+    # 存根整段窗外（实际离店日早于窗口起点）：灰块 nights=0 不渲染，只留「可售」虚纹
+    cin3 = (date.today() - timedelta(days=6)).isoformat()
+    cout3 = (date.today() + timedelta(days=1)).isoformat()
+    room3 = next(x for x in client.get("/api/rooms", headers=h).json() if x["room_number"] == "508")
+    r = client.post("/api/reservations", headers=h, json={
+        "guest_name": "昨日已走客", "check_in": cin3, "check_out": cout3, "room_id": room3["id"],
+    })
+    assert r.status_code == 200, r.text
+    rid3 = r.json()["id"]
+    r = client.post(f"/api/reservations/{rid3}/check-in", headers=h,
+                    json={"room_id": room3["id"], "amount_received": 0})
+    assert r.status_code == 200, r.text
+    # 直接把实际离店日改到 4 天前（窗口 start=今天-2 之前），模拟「人早就走了但订单没收尾」
+    r = client.post(f"/api/reservations/{rid3}/check-out", headers=h, json={"force": True, "payments": []})
+    assert r.status_code == 200, r.text
+    from app.models import Reservation as _Res
+    db = SessionLocal()
+    _r = db.get(_Res, rid3)
+    _r.actual_check_out = date.today() - timedelta(days=4)
+    db.commit(); db.close()
+    board = client.get("/api/rooms/board?days=14", headers=h).json()
+    blk3 = next(b for g in board["groups"] for rm in g["rooms"] if rm["id"] == room3["id"]
+                for b in rm["blocks"] if b["id"] == rid3)
+    assert blk3["truncated"] is True
+    assert blk3["nights"] == 0                # 前端按此跳过灰块渲染
+    assert "stub_nights" not in blk3
+    assert blk3["resale_nights"] >= 1         # 尾段虚纹仍要放出
+
     # 房态盘：灰块截断——实际离店日存根 + 可售区间
     board = client.get("/api/rooms/board?days=14", headers=h).json()
     blocks = [b for g in board["groups"] for rm in g["rooms"] if rm["id"] == room["id"] for b in rm["blocks"]]
@@ -650,8 +699,16 @@ def test_early_checkout_resale():
         "room_id": room["id"],
     })
     assert r.status_code == 200, r.text
+    resold_id = r.json()["id"]
 
-    # 撤销退房：actual_check_out 清空，方块恢复原订跨度
+    # 尾段已售出时撤销退房 → 409（回到在住会与新订单双重占房）
+    r = client.post(f"/api/reservations/{rid}/undo-check-out", headers=h)
+    assert r.status_code == 409, r.text
+    assert "conflicts" in r.json()["detail"]
+
+    # 取消续售新单后再撤销退房：actual_check_out 清空，方块恢复原订跨度
+    r = client.post(f"/api/reservations/{resold_id}/cancel", headers=h)
+    assert r.status_code == 200, r.text
     r = client.post(f"/api/reservations/{rid}/undo-check-out", headers=h)
     assert r.status_code == 200, r.text
     assert r.json()["status"] == "checked_in"

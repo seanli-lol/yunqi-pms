@@ -622,12 +622,16 @@ export default function Rooms() {
                       const cls = b.status === 'checked_in' ? 'stay'
                         : b.status === 'checked_out' ? 'past' : 'future'
                       const hourly = b.stay_type === 'hourly'
+                      const stubSpan = b.stub_nights ?? b.nights
+                      // 提前退房且存根整段窗外（离店日早于窗口起点）：灰块无可见部分，只渲染「可售」虚纹
+                      if (b.truncated && stubSpan <= 0 && !b.resale_nights) return null
                       return (
                         <Fragment key={b.id}>
+                          {stubSpan > 0 && (
                           <div
                             className={`cal-block ${cls}${hourly ? ' hourly' : ''}${b.truncated && b.stub_cut ? ' truncated' : ''}`}
                             data-res-id={b.id}
-                            style={{ gridColumn: `${b.col_start + 2} / span ${b.stub_nights ?? b.nights}`, ['--src' as any]: b.channel_color }}
+                            style={{ gridColumn: `${b.col_start + 2} / span ${stubSpan}`, ['--src' as any]: b.channel_color }}
                             title={b.truncated ? `${b.guest_name} · 已离店（${b.check_in.slice(5).replace('-', '/')} 入住，原订至 ${b.check_out.slice(5).replace('-', '/')}，实际已提前退房）` : undefined}
                             onPointerDown={(e) => onBlockPointerDown(e, b, room)}
                             onClick={() => {
@@ -642,6 +646,7 @@ export default function Rooms() {
                             <span className="s">{hourly ? `${b.hours ?? 0} 小时` : b.channel_name}</span>
                             {(b.status === 'checked_in' || b.status === 'checked_out') && b.balance_due > 0 && <span className="owe">欠</span>}
                           </div>
+                          )}
                           {/* 提前退房腾空的尾段：绿色虚纹「可售」，点击穿透到行 = 点空白格开单 */}
                           {b.truncated && !!b.resale_nights && (
                             <div
@@ -884,7 +889,7 @@ export default function Rooms() {
               <span>{md(resQuery.data.check_in)} – {md(resQuery.data.check_out)} · {resQuery.data.stay_type === 'hourly' ? `钟点 ${resQuery.data.hours} 小时` : `共 ${resQuery.data.nights} 晚`}</span>
             </div>
             {/* 提前退房：补一行「实住」，与日历灰块截断口径一致 */}
-            {resQuery.data.status === 'checked_out' && resQuery.data.actual_check_out && resQuery.data.actual_check_out !== resQuery.data.check_out && (
+            {resQuery.data.status === 'checked_out' && resQuery.data.actual_check_out && resQuery.data.actual_check_out < resQuery.data.check_out && (
               <div className="info-row"><span>实住</span><span>{md(resQuery.data.check_in)} – {md(resQuery.data.actual_check_out)}（提前退房，尾段已放出续售）</span></div>
             )}
             <div className="info-row"><span>房价</span><span>{fmtMoney(resQuery.data.rate)}{resQuery.data.stay_type === 'hourly' ? ' / 小时' : ' / 晚'}</span></div>
