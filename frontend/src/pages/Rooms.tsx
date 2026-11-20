@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ChevronDown, X } from 'lucide-react'
+import { X } from 'lucide-react'
 import {
   api, addDaysIso, fmtMoney, md, todayIso, ROOM_STATUS_LABEL, OP_ACTION_LABEL, OP_ACTION_COLOR,
   type Board, type BoardRoom, type CalBlock, type Channel, type Folio, type OpLog,
@@ -59,8 +59,6 @@ export default function Rooms() {
   const [vacantRoom, setVacantRoom] = useState<Room | null>(null)
   /** 多房预订：null = 关闭；lines 可累积多间（点空白格/拖选追加） */
   const [booking, setBooking] = useState<{ lines: BookingLine[] } | null>(null)
-  /** 在住详情抽屉「编辑 ▾」气泡菜单开关 */
-  const [editMenuOpen, setEditMenuOpen] = useState(false)
   const [checkinRes, setCheckinRes] = useState<Reservation | null>(null)
   /** 延住目标预订（详情抽屉内「延住」菜单项打开） */
   const [extendRes, setExtendRes] = useState<Reservation | null>(null)
@@ -382,15 +380,18 @@ export default function Rooms() {
     onError: (e: any) => toast(e.message ?? '延住失败'),
   })
 
-  /* ---------- 编辑在住登记信息 ---------- */
+  /* ---------- 统一编辑（登记信息 + 实收总额，一次提交两个接口） ---------- */
   const editMut = useMutation({
-    mutationFn: (p: { id: number; body: RegistrationBody }) =>
-      api.patch<Reservation>(`/api/reservations/${p.id}/registration`, p.body),
-    onSuccess: (r) => {
-      toast('登记信息已更新，操作已留痕')
+    mutationFn: async (p: { id: number; reg: RegistrationBody; paid: PaidTotalBody }) => {
+      await api.patch<Reservation>(`/api/reservations/${p.id}/registration`, p.reg)
+      await api.patch<Reservation>(`/api/reservations/${p.id}/paid-total`, p.paid)
+    },
+    onSuccess: () => {
+      toast('登记信息与实收已更新，操作已留痕')
       setEditRes(null)
       setDetailRes(null)
       qc.invalidateQueries({ queryKey: ['reservation'] })
+      qc.invalidateQueries({ queryKey: ['folio'] })
       invalidate()
     },
     onError: (e: any) => toast(e.message ?? '保存失败'),
@@ -422,7 +423,7 @@ export default function Rooms() {
     onError: (e: any) => toast(e.message ?? '撤销退房失败'),
   })
 
-  /* ---------- 更正实收（整单已收总额） ---------- */
+  /* ---------- 更正实收（仅已退房：在住的实收已并入「编辑」抽屉） ---------- */
   const paidMut = useMutation({
     mutationFn: (p: { id: number; body: PaidTotalBody }) =>
       api.patch<Reservation>(`/api/reservations/${p.id}/paid-total`, p.body),
@@ -746,7 +747,7 @@ export default function Rooms() {
       <Drawer
           open={detailRes !== null}
           passthrough
-          onClose={() => { setDetailRes(null); setEditMenuOpen(false) }}
+          onClose={() => setDetailRes(null)}
           title={resQuery.data ? `${resQuery.data.room_number ?? '未分配'} · ${resQuery.data.room_type_name}` : '预订详情'}
           sub={resQuery.data ? `${RES_STATUS_BADGE[resQuery.data.status]?.label ?? resQuery.data.status} · ${resQuery.data.code}` : ''}
           foot={
@@ -784,18 +785,11 @@ export default function Rooms() {
                 )}
                 {resQuery.data.status === 'checked_in' && (
                   <>
-                    {/* 登记/实收两类编辑收纳为「编辑 ▾」气泡菜单；延住/撤销入住/退房为同级主按钮 */}
-                    <div style={{ position: 'relative' }}>
-                      <button className={`btn btn-ghost${editMenuOpen ? ' active' : ''}`} onClick={() => setEditMenuOpen(v => !v)}>
-                        编辑 <ChevronDown size={14} style={{ verticalAlign: -2 }} />
-                      </button>
-                      {editMenuOpen && (
-                        <div className="pop-menu" style={{ position: 'absolute', bottom: 'calc(100% + 8px)', left: 0 }}>
-                          <button onClick={() => { setEditMenuOpen(false); setEditRes(resQuery.data!); setDetailRes(null) }}>编辑登记</button>
-                          <button onClick={() => { setEditMenuOpen(false); setPaidRes(resQuery.data!); setDetailRes(null) }}>编辑实收</button>
-                        </div>
-                      )}
-                    </div>
+                    {/* 统一「编辑」抽屉：登记信息与实收同页编辑、一次保存 */}
+                    <button
+                      className="btn btn-ghost"
+                      onClick={() => { setEditRes(resQuery.data!); setDetailRes(null) }}
+                    >编辑</button>
                     <button
                       className="btn btn-ghost"
                       onClick={() => setExtendRes(resQuery.data)}
@@ -879,7 +873,7 @@ export default function Rooms() {
             )}
             {resQuery.data.status === 'checked_in' && (
               <p className="hint" style={{ marginTop: 14 }}>
-                登记信息与收款金额可经底栏「编辑 ▾」更正（登记/实收）；延住按天/小时追加账单，撤销入住会把房态退回空脏（已收款保留），办理退房见右侧主按钮。
+                「编辑」可在同一页面同时更正登记信息与实收总额（一次保存）；延住按天/小时追加账单，撤销入住会把房态退回空脏（已收款保留），办理退房见右侧主按钮。
               </p>
             )}
             {resQuery.data.status === 'checked_out' && (
@@ -935,12 +929,13 @@ export default function Rooms() {
         />
       )}
 
-      {/* ---------- 编辑登记信息（在住） ---------- */}
+      {/* ---------- 统一编辑抽屉（在住：登记 + 实收同页） ---------- */}
       {editRes && (
-        <EditRegistrationDialog
-          res={editRes} channels={channelList} busy={editMut.isPending}
+        <EditDrawer
+          res={editRes} channels={channelList}
+          busy={editMut.isPending}
           onClose={() => { setEditRes(null); setDetailRes(editRes) }}
-          onConfirm={(body) => editMut.mutate({ id: editRes.id, body })}
+          onConfirm={(reg, paid) => editMut.mutate({ id: editRes.id, reg, paid })}
         />
       )}
 
@@ -968,7 +963,7 @@ export default function Rooms() {
         />
       )}
 
-      {/* ---------- 更正实收（在住 / 已退房） ---------- */}
+      {/* ---------- 更正实收（仅已退房；在住的实收已并入「编辑」抽屉） ---------- */}
       {paidRes && (
         <EditPaidDialog
           res={paidRes} folio={paidFolio.data} busy={paidMut.isPending}
@@ -989,14 +984,21 @@ export default function Rooms() {
   )
 }
 
-/* ---------- 编辑在住登记信息（姓名 / 手机号 / 天数 / 房价总额 / 来源 / 备注） ---------- */
-function EditRegistrationDialog({ res, channels, busy, onClose, onConfirm }: {
+/* ---------- 统一编辑抽屉（在住：登记信息 + 实收总额同页，一次保存） ---------- */
+function EditDrawer({ res, channels, busy, onClose, onConfirm }: {
   res: Reservation
   channels: Channel[]
   busy: boolean
   onClose: () => void
-  onConfirm: (body: RegistrationBody) => void
+  onConfirm: (reg: RegistrationBody, paid: PaidTotalBody) => void
 }) {
+  /* 实收数据自带查询：详情抽屉已关闭时 detailFolio 不再可用，这里按编辑目标 id 单独取 */
+  const folioQuery = useQuery({
+    queryKey: ['folio', res.id],
+    queryFn: () => api.get<Folio>(`/api/reservations/${res.id}/folio`),
+  })
+  const folio = folioQuery.data
+  /* ---- 登记信息 ---- */
   const [name, setName] = useState(res.guest_name)
   const [phone, setPhone] = useState(res.guest_phone)
   const [nightsText, setNightsText] = useState(String(res.nights))
@@ -1023,25 +1025,34 @@ function EditRegistrationDialog({ res, channels, busy, onClose, onConfirm }: {
     setTotalText(String(n * prevUnit))
   }
 
+  /* ---- 实收信息 ---- */
+  const curPaid = folio?.total_paid ?? 0
+  const [paidText, setPaidText] = useState<string | null>(null)
+  const [method, setMethod] = useState<'cash' | 'wechat' | 'alipay' | 'card'>('wechat')
+  const paidValue = paidText ?? (folio ? String(curPaid) : '')
+  const paidAmount = Math.max(0, Math.round(Number(paidValue) || 0))
+  const paidDiff = paidAmount - curPaid
+
   return (
     <Drawer
       open passthrough onClose={onClose}
-      title="编辑登记信息"
-      sub={`${res.room_number ?? '未分配'} · ${res.guest_name} · 已入住 ${md(res.check_in)} – ${md(res.check_out)}`}
+      title="编辑"
+      sub={`${res.room_number ?? '未分配'} · ${res.guest_name} · ${res.code} · 登记与实收同页编辑`}
       foot={
         <>
           <button className="btn btn-ghost" onClick={onClose}>取消</button>
           <button
-            className="btn btn-primary" disabled={busy || !name.trim()}
+            className="btn btn-primary" disabled={busy || !name.trim() || !folio}
             onClick={() => onConfirm({
               guest_name: name, guest_phone: phone,
               ...(hourly ? {} : { nights }),
               rate: unitPrice, channel_id: channelId, notes,
-            })}
+            }, { amount: paidAmount, method })}
           >保存修改</button>
         </>
       }
     >
+      <div className="section-sub" style={{ margin: '0 0 10px' }}>登记信息</div>
       <div className="form-row">
         <Field label="客人姓名" required>
           <input className="input" value={name} onChange={e => setName(e.target.value)} placeholder="请输入姓名" />
@@ -1080,7 +1091,28 @@ function EditRegistrationDialog({ res, channels, busy, onClose, onConfirm }: {
           <input className="input" value={notes} onChange={e => setNotes(e.target.value)} placeholder="如：高楼层、无烟房" />
         </Field>
       </div>
-      <p className="hint">保存后同步更新客户档案，并在预订日志留痕（操作人、修改前后内容）。</p>
+
+      <div className="section-sub" style={{ margin: '18px 0 10px', paddingTop: 16, borderTop: '1px solid var(--hairline-soft)' }}>实收信息</div>
+      <div className="info-row"><span>应收（房费 + 杂费）</span><span>{folio ? fmtMoney(folio.total_charge) : '读取中…'}</span></div>
+      <div className="info-row"><span>当前已收</span><span>{folio ? fmtMoney(curPaid) : '读取中…'}</span></div>
+      <Field
+        label="已收总额（整单，元）"
+        hint={folio
+          ? `较当前 ${paidDiff >= 0 ? '+' : '−'}${fmtMoney(Math.abs(paidDiff))} · 保存后余额 = 应收 − 已收总额。`
+          : '读取中…'}
+      >
+        <input
+          className="input" inputMode="numeric" value={paidValue}
+          onChange={e => setPaidText(e.target.value.replace(/[^\d]/g, ''))}
+        />
+      </Field>
+      <Field label="补收方式（增加时使用）">
+        <select className="select" value={method} onChange={e => setMethod(e.target.value as any)}>
+          <option value="wechat">微信</option><option value="alipay">支付宝</option>
+          <option value="cash">现金</option><option value="card">刷卡</option>
+        </select>
+      </Field>
+      <p className="hint warn">减少已收会冲减收款记录（从最新一笔起），不生成退款凭证；保存后登记与实收均写入预订日志。</p>
     </Drawer>
   )
 }
