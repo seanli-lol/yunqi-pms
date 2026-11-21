@@ -184,13 +184,14 @@ def create_reservation(body: ReservationBody, hotel_id: int | None = None,
         room_type_id = rt.id
 
     if body.stay_type == "hourly":
-        if rate <= 0:
-            raise HTTPException(400, "请设置钟点房价")
+        # 铁律：房型未配置钟点价（hourly_price=0）不可按钟点房售卖——显式传价也不放行
+        hourly = rt.hourly_price if rt else 0
+        if not hourly:
+            raise HTTPException(400, f"房型「{rt.name if rt else ''}」未配置钟点价，不能按钟点房售卖，请先在设置 → 房型 中配置")
         if body.rate is None:
-            hourly = rt.hourly_price if rt else 0
-            if not hourly:
-                raise HTTPException(400, f"房型「{rt.name if rt else ''}」未配置钟点价，请先在设置中配置或手动输入价格")
             rate = hourly
+        elif rate <= 0:
+            raise HTTPException(400, "请设置钟点房价")
 
     if body.channel_id:
         ch = db.get(Channel, body.channel_id)

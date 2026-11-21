@@ -272,7 +272,13 @@ function NewReservationDialog({ open, onClose, channels, types, onSubmit, onDone
         </Field>
       </div>
       <Field label="房型" required>
-        <select className="select" value={typeId ?? ''} onChange={e => setTypeId(Number(e.target.value))}>
+        <select className="select" value={typeId ?? ''} onChange={e => {
+          const id = Number(e.target.value)
+          setTypeId(id)
+          // 新房型未配置钟点价时退出钟点模式：分段控件随之隐藏，避免 stayType 残留提交出钟点单
+          const t = types.find(x => x.id === id)
+          if (!t || !(t.hourly_price > 0)) setStayType('normal')
+        }}>
           <option value="">请选择房型</option>
           {types.map(t => <option key={t.id} value={t.id}>{t.name} · ¥{t.base_price}/晚 · {t.room_count} 间</option>)}
         </select>

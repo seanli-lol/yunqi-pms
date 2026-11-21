@@ -256,14 +256,14 @@ def test_hourly_booking_flow():
         assert idle, f"{type_name} 无可用空房"
         return idle[0]
 
-    room = pick("观景大床房")  # 钟点需手动传价，避开前面测试用掉的大床房空净房
+    room = pick("大床房")  # 大床房已配钟点价 45；未配钟点价的观景大床房/亲子房留到后面做拒绝断言
     # 时长越界
     r = client.post("/api/reservations", headers=h, json={
         "guest_name": "钟点客", "check_in": cin, "check_out": cout,
         "room_id": room["id"], "stay_type": "hourly", "hours": 20,
     })
     assert r.status_code == 400
-    # 正常创建：手动传钟点价 45
+    # 正常创建：房型已配钟点价，手动传价 45（协议价）放行
     r = client.post("/api/reservations", headers=h, json={
         "guest_name": "钟点客", "check_in": cin, "check_out": cout,
         "room_id": room["id"], "stay_type": "hourly", "hours": 4, "status": "confirmed", "rate": 45,
@@ -296,13 +296,15 @@ def test_hourly_booking_flow():
                     json={"force": False, "payments": []})
     assert r.status_code == 200, r.text
     assert r.json()["balance_due"] == 0
-    # 未配钟点价的房型（房型未传价）→ 400（亲子房无钟点价）
-    room2 = pick("亲子房")
-    r = client.post("/api/reservations", headers=h, json={
-        "guest_name": "钟点客3", "check_in": cin, "check_out": cout,
-        "room_id": room2["id"], "stay_type": "hourly", "hours": 3,
-    })
-    assert r.status_code == 400
+    # 未配钟点价的房型：不传价、显式传价都 → 400（观景大床房 / 亲子房 hourly_price=0）
+    for tname in ("观景大床房", "亲子房"):
+        room2 = pick(tname)
+        for extra in ({}, {"rate": 45}):
+            r = client.post("/api/reservations", headers=h, json={
+                "guest_name": "钟点客3", "check_in": cin, "check_out": cout,
+                "room_id": room2["id"], "stay_type": "hourly", "hours": 3, **extra,
+            })
+            assert r.status_code == 400, f"{tname} extra={extra}: {r.text}"
     # 大床房空净房按房型自动取钟点价 45
     big = pick("大床房")
     r = client.post("/api/reservations", headers=h, json={

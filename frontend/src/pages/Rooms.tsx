@@ -1443,11 +1443,22 @@ function BookDrawer({ open, lines, channels, busy, onClose, onChangeLines, onSub
     setChannelId(prev => (prev === null ? (channels[0]?.id ?? null) : prev))
   }, [open, channels])
 
+  // 钟点可用性必须在 early return 之前算好：下面这个 effect 的依赖数组会在此处求值
+  const single = lines.length === 1
+  const hourlyAvail = single && (lines[0].room.hourly_price ?? 0) > 0
+
+  // 点「钟点」后又在日历追加第二间房：钟点仅单行可用，自动退回整晚并按基准价恢复该行总额
+  // （点钟点时总额已被覆盖为 hours × 钟点价，多行模式下会按错误单价折算整晚费用）
+  useEffect(() => {
+    if (!hourlyAvail && stayType === 'hourly' && lines.length > 0) {
+      setStayType('normal')
+      onChangeLines(lines.map((l, i) => (i === 0 ? { ...l, totalText: String(l.nights * l.room.base_price), unitRef: null } : l)))
+    }
+  }, [hourlyAvail, stayType])
+
   if (!open || lines.length === 0) return null
 
-  const single = lines.length === 1
   const firstRoom = lines[0].room
-  const hourlyAvail = single && (firstRoom.hourly_price ?? 0) > 0
   const isHourly = single && stayType === 'hourly'
   const grandTotal = lines.reduce((s, l) => {
     const n = Math.max(1, Math.round(Number(l.totalText) || 0))
