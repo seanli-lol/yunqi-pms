@@ -988,8 +988,9 @@ textarea.input { height: auto; padding: 12px 14px; resize: vertical; }
 }
 .cal-block.lane-1 { align-self: start; margin-top: 5px; }
 .cal-block.lane-2 { align-self: end; margin-bottom: 5px; }
-/* 轨带 20px 高：「欠」徽章缩小适配 */
-.cal-block.lane-1 .owe, .cal-block.lane-2 .owe { top: 2px; right: 2px; padding: 1px 4px; font-size: 9px; }
+/* 轨带 20px 高：「欠/超」徽章缩小适配 */
+.cal-block.lane-1 .owe, .cal-block.lane-2 .owe,
+.cal-block.lane-1 .over, .cal-block.lane-2 .over { top: 2px; right: 2px; padding: 1px 4px; font-size: 9px; }
 /* 退房角标：格子左上角虚线框 + 「退房」图标；z 高于方块（同日有在住方块时钉在其左上角） */
 .cal-dep {
   grid-row: 1; align-self: start; justify-self: start;
@@ -1031,6 +1032,13 @@ textarea.input { height: auto; padding: 12px 14px; resize: vertical; }
 .owe {
   position: absolute; right: 4px; top: 4px;
   background: var(--danger); color: var(--on-accent);
+  font-size: 10px; line-height: 1; padding: 2.5px 5px; border-radius: 5px; font-weight: 600;
+}
+/* 「超」徽章：实付金额 > 订单应收（超付/多收待退），与红「欠」徽章同位同形态、欠/超成对；
+   紫色 = 信息提示（非错误），超付时欠款为 0，「欠」徽章天然不显，两者互斥 */
+.over {
+  position: absolute; right: 4px; top: 4px;
+  background: var(--purple); color: var(--on-accent);
   font-size: 10px; line-height: 1; padding: 2.5px 5px; border-radius: 5px; font-weight: 600;
 }
 .cal-maint {

@@ -830,6 +830,10 @@ export default function Rooms() {
                             <span className="g">{b.guest_name}{hourly ? ' · 钟点' : ''}</span>
                             <span className="s">{hourly ? `${b.hours ?? 0} 小时` : b.channel_name}</span>
                             {(b.status === 'checked_in' || b.status === 'checked_out') && b.balance_due > 0 && <span className="owe">欠</span>}
+                            {/* 超付（实付>应收，不限状态）——「欠」的互斥对位：超付时后端已把 balance_due 钳 0，欠徽章不会同显 */}
+                            {b.paid_total > b.items_total && (
+                              <span className="over" title={`实付 ¥${b.paid_total} · 超收 ¥${b.paid_total - b.items_total}`}>超</span>
+                            )}
                           </div>
                         )
                       })}
@@ -876,7 +880,7 @@ export default function Rooms() {
         </div>
       </div>
           <p className="hint mt-16 cal-legend">
-            图例：<Badge color="blue">在住</Badge> <Badge color="orange">未来抵店</Badge> <Badge color="red">欠</Badge> 在住/已离店未结清 · 灰块 = 已离店（离店日格子只压左 1/3，当天下午起腾空，空白即可售，含当日钟点房）· 格子左上角<b style={{ color: 'var(--text-primary)' }}>退房图标</b> = 当日有客人退房，悬停看明细、<b>点按展开详情并可编辑</b>（更正实收 / 撤销退房）·
+            图例：<Badge color="blue">在住</Badge> <Badge color="orange">未来抵店</Badge> <Badge color="red">欠</Badge> 在住/已离店未结清 · <Badge color="purple">超</Badge> 实付超过应收（多收待退）· 灰块 = 已离店（离店日格子只压左 1/3，当天下午起腾空，空白即可售，含当日钟点房）· 格子左上角<b style={{ color: 'var(--text-primary)' }}>退房图标</b> = 当日有客人退房，悬停看明细、<b>点按展开详情并可编辑</b>（更正实收 / 撤销退房）·
             方块最前端竖条颜色 = 预订来源（可在「设置 → 来源渠道」配置）。<b>拖动方块换房/改期（冲突自动回弹）· 点击空白格直接开单 · 房号旁「设净/设脏」一键切换房态</b>。
           </p>
         </div>
