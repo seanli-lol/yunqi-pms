@@ -252,6 +252,7 @@ class CheckOutBody(BaseModel):
 class PaymentBody(BaseModel):
     method: str  # 收款方式 code；写入时按本店 payment_methods 校验
     amount: int
+    remark: str = ""  # 收款备注（选填；＋收款弹层录入，超 120 字 400）
 
 
 class FolioItemBody(BaseModel):

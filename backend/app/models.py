@@ -162,6 +162,7 @@ class Payment(Base):
     reservation_id: Mapped[int] = mapped_column(ForeignKey("reservations.id"), index=True)
     method: Mapped[str] = mapped_column(String(20), default="cash")  # cash / wechat / alipay / card
     amount: Mapped[int] = mapped_column(Integer, default=0)
+    remark: Mapped[str] = mapped_column(String(120), default="")  # 收款备注（选填，＋收款弹层录入）
     created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
 

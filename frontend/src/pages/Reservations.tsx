@@ -5,7 +5,7 @@ import {
   api, addDaysIso, fmtMoney, maskPhone, md, todayIso, RES_STATUS_LABEL,
   type Channel, type Reservation, type RoomType,
 } from '../api'
-import { Dialog, Field, PageHead, Segmented, Spinner, useToast, RES_STATUS_BADGE } from '../ui'
+import { ConfirmDialog, Dialog, Field, PageHead, Segmented, Spinner, useToast, RES_STATUS_BADGE } from '../ui'
 import { GuestNameInput } from '../GuestNameInput'
 
 const STATUS_TABS = [
@@ -25,6 +25,8 @@ export default function Reservations() {
   const [q, setQ] = useState('')
   const [dateMode, setDateMode] = useState<'today' | 'all'>('all')
   const [newOpen, setNewOpen] = useState(false)
+  /** 取消预订确认弹层（应用内弹层替代 window.confirm） */
+  const [cancelRes, setCancelRes] = useState<Reservation | null>(null)
 
   useEffect(() => {
     const st = (loc.state as any)?.status
@@ -129,11 +131,11 @@ export default function Reservations() {
                       {r.status === 'pending' && (
                         <>
                           <button className="btn btn-quiet btn-sm" onClick={() => mut.mutate({ path: `/api/reservations/${r.id}/confirm`, label: '预订已确认' })}>确认</button>
-                          <button className="btn btn-danger-ghost btn-sm" onClick={() => { if (window.confirm('确定取消该预订吗？')) mut.mutate({ path: `/api/reservations/${r.id}/cancel`, label: '预订已取消' }) }}>取消</button>
+                          <button className="btn btn-danger-ghost btn-sm" onClick={() => setCancelRes(r)}>取消</button>
                         </>
                       )}
                       {r.status === 'confirmed' && (
-                        <button className="btn btn-quiet btn-sm" onClick={() => { if (window.confirm('确定取消该预订吗？')) mut.mutate({ path: `/api/reservations/${r.id}/cancel`, label: '预订已取消' }) }}>取消</button>
+                        <button className="btn btn-quiet btn-sm" onClick={() => setCancelRes(r)}>取消</button>
                       )}
                       {(r.status === 'checked_in' || r.status === 'checked_out') && r.balance_due > 0 && <span className="badge badge-red" style={{ marginRight: 6 }}>欠 {fmtMoney(r.balance_due)}</span>}
                     </td>
@@ -144,6 +146,16 @@ export default function Reservations() {
             </table>
           </div>
         </div>
+      )}
+
+      {/* 取消预订确认（应用内弹层替代 window.confirm） */}
+      {cancelRes && (
+        <ConfirmDialog open onClose={() => setCancelRes(null)} busy={mut.isPending}
+          title="取消预订" sub={`${cancelRes.guest_name} · ${cancelRes.code}`} confirmText="确认取消"
+          onConfirm={() => { setCancelRes(null); mut.mutate({ path: `/api/reservations/${cancelRes.id}/cancel`, label: '预订已取消' }) }}>
+          <p className="confirm-msg">确定取消该预订吗？</p>
+          <div className="danger-note">取消会清除该预订已收取的款项（不生成退款凭证），且不可恢复。</div>
+        </ConfirmDialog>
       )}
 
       <NewReservationDialog

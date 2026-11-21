@@ -9,7 +9,7 @@ import {
   type Board, type BoardRoom, type CalBlock, type Channel, type Folio, type OpLog,
   type PaidTotalBody, type RegistrationBody, type Reservation, type Room,
 } from '../api'
-import { Badge, Dialog, Drawer, Field, PageHead, Segmented, Spinner, useToast, RES_STATUS_BADGE } from '../ui'
+import { Badge, ConfirmDialog, Dialog, Drawer, Field, PageHead, Segmented, Spinner, useToast, RES_STATUS_BADGE } from '../ui'
 import { CheckInDialog, ExtendDialog } from '../dialogs'
 import { GuestNameInput } from '../GuestNameInput'
 
@@ -144,6 +144,10 @@ export default function Rooms() {
   const [payFoldOpen, setPayFoldOpen] = useState(true)
   const [otherFoldOpen, setOtherFoldOpen] = useState(false)
   const [payAdd, setPayAdd] = useState(false)
+  /** 应用内确认弹层（替代 window.confirm）：删除收款 / 取消预订 / 强制退房 */
+  const [delPay, setDelPay] = useState<{ rid: number; pay: Folio['payments'][number] } | null>(null)
+  const [cancelRes, setCancelRes] = useState<Reservation | null>(null)
+  const [forceOut, setForceOut] = useState<{ id: number; bal: number } | null>(null)
   /** 拖动中的房号 → 高亮目标行 */
   const [dragOverRoom, setDragOverRoom] = useState<number | null>(null)
   /** 日历拖选中的多日范围（松手后用于开单） */
@@ -614,8 +618,8 @@ export default function Rooms() {
 
   /* ---------- 收款 / 删除收款（订单详情折叠区；详情保持打开，金额三栏实时刷新） ---------- */
   const addPayMut = useMutation({
-    mutationFn: (p: { id: number; method: string; amount: number }) =>
-      api.post(`/api/reservations/${p.id}/payments`, { method: p.method, amount: p.amount }),
+    mutationFn: (p: { id: number; method: string; amount: number; remark: string }) =>
+      api.post(`/api/reservations/${p.id}/payments`, { method: p.method, amount: p.amount, remark: p.remark }),
     onSuccess: () => {
       toast('收款成功，已计入订单账目')
       setPayAdd(false)
@@ -629,16 +633,12 @@ export default function Rooms() {
       api.delete(`/api/reservations/${p.rid}/payments/${p.pid}`),
     onSuccess: () => {
       toast('已删除该笔收款，余额已重算')
+      setDelPay(null)
       invalidate()
       qc.invalidateQueries({ queryKey: ['reservation-logs'] })
     },
     onError: (e: any) => toast(e.message ?? '删除失败'),
   })
-  const confirmDelPay = (rid: number, p: { id: number; amount: number }) => {
-    if (window.confirm(`确定删除这笔收款 ¥${p.amount} 吗？\n\n删除后账单余额将增加，且不生成退款凭证（全程写入操作日志）。`)) {
-      delPayMut.mutate({ rid, pid: p.id })
-    }
-  }
 
   /* ---------- 调整预订（待确认 / 已确认：改日期、天数、总价） ---------- */
   const adjustMut = useMutation({
@@ -1028,7 +1028,7 @@ export default function Rooms() {
                 {/* 左：撤销 / 危险操作；右：主操作 */}
                 <div className="grp">
                   {(detailR.status === 'pending' || detailR.status === 'confirmed') && (
-                    <button className="btn btn-danger-ghost" onClick={() => { if (window.confirm('确定取消该预订吗？\n\n取消会清除该预订已收取的款项（不生成退款凭证），且不可恢复。')) resMut.mutate({ path: `${detailR.id}/cancel`, label: '预订已取消' }) }}>取消预订</button>
+                    <button className="btn btn-danger-ghost" onClick={() => setCancelRes(detailR)}>取消预订</button>
                   )}
                   {detailR.status === 'checked_in' && (
                     <button className="btn btn-danger-ghost" onClick={() => { setUndoRes(detailR); setDetailRes(null) }}>撤销入住</button>
@@ -1059,11 +1059,8 @@ export default function Rooms() {
                             .then(() => { toast('退房完成，房态转空脏'); setDetailRes(null); invalidate() })
                             .catch((e: any) => {
                               if (e.status === 409) {
-                                const bal = e.data?.detail?.balance_due ?? 0
-                                if (window.confirm(`存在未结清账款 ${fmtMoney(bal)}，确定强制退房吗？`)) {
-                                  api.post(`/api/reservations/${detailR.id}/check-out`, { force: true })
-                                    .then(() => { toast('已强制退房（未结清转挂账）'); setDetailRes(null); invalidate() })
-                                }
+                                // 未结清 → 应用内确认弹层（ConfirmDialog）再强制退房
+                                setForceOut({ id: detailR.id, bal: e.data?.detail?.balance_due ?? 0 })
                               } else toast(e.message)
                             })
                         }}
@@ -1163,13 +1160,13 @@ export default function Rooms() {
                       <thead><tr><th>项目</th><th>支付方式</th><th className="num">金额</th><th>日期</th><th>操作</th></tr></thead>
                       <tbody>
                         {detailFolioData.payments.map(p => (
-                          <tr key={p.id}>
-                            <td>订单收款</td>
-                            <td>{payMethodLabel(pms.data, p.method)}</td>
-                            <td className="num">{fmtMoney(p.amount)}</td>
-                            <td>{mdt(p.created_at)}</td>
-                            <td><button className="link-del" onClick={() => confirmDelPay(detailR.id, p)}>删除</button></td>
-                          </tr>
+                <tr key={p.id}>
+                  <td>订单收款{p.remark && <div className="pay-remark">{p.remark}</div>}</td>
+                  <td>{payMethodLabel(pms.data, p.method)}</td>
+                  <td className="num">{fmtMoney(p.amount)}</td>
+                  <td>{mdt(p.created_at)}</td>
+                  <td><button className="link-del" onClick={() => setDelPay({ rid: detailR.id, pay: p })}>删除</button></td>
+                </tr>
                         ))}
                       </tbody>
                     </table>
@@ -1235,9 +1232,48 @@ export default function Rooms() {
       {payAdd && detailR && (
         <AddPaymentDialog
           onClose={() => setPayAdd(false)}
-          onSubmit={(p) => addPayMut.mutate({ id: detailR.id, method: p.method, amount: p.amount })}
+          onSubmit={(p) => addPayMut.mutate({ id: detailR.id, method: p.method, amount: p.amount, remark: p.remark })}
           busy={addPayMut.isPending}
         />
+      )}
+
+      {/* ---------- 删除收款确认（应用内弹层替代 window.confirm；确认后详情保持打开） ---------- */}
+      {delPay && detailR && (
+        <ConfirmDialog open onClose={() => setDelPay(null)} busy={delPayMut.isPending}
+          title="删除收款" sub={`${detailR.guest_name} · ${detailR.code}`} confirmText="删除"
+          onConfirm={() => delPayMut.mutate({ rid: delPay.rid, pid: delPay.pay.id })}>
+          <p className="confirm-msg">确定删除这笔收款吗？</p>
+          <div className="info-row"><span>款项</span><span>{payMethodLabel(pms.data, delPay.pay.method)} {fmtMoney(delPay.pay.amount)}</span></div>
+          <div className="info-row"><span>收款时间</span><span>{mdt(delPay.pay.created_at)}</span></div>
+          {delPay.pay.remark && <div className="info-row"><span>备注</span><span>{delPay.pay.remark}</span></div>}
+          <div className="danger-note">
+            删除后账单余额将增加 <b>{fmtMoney(delPay.pay.amount)}</b>，且不生成退款凭证（操作全程写入预订日志）。
+          </div>
+        </ConfirmDialog>
+      )}
+
+      {/* ---------- 取消预订确认（待确认/已确认：取消会清除已收款） ---------- */}
+      {cancelRes && (
+        <ConfirmDialog open onClose={() => setCancelRes(null)} busy={resMut.isPending}
+          title="取消预订" sub={`${cancelRes.guest_name} · ${cancelRes.code}`} confirmText="确认取消"
+          onConfirm={() => { setCancelRes(null); resMut.mutate({ path: `${cancelRes.id}/cancel`, label: '预订已取消' }) }}>
+          <p className="confirm-msg">确定取消该预订吗？</p>
+          <div className="danger-note">取消会清除该预订已收取的款项（不生成退款凭证），且不可恢复。</div>
+        </ConfirmDialog>
+      )}
+
+      {/* ---------- 强制退房确认（退房 409 未结清时；走原 force 请求） ---------- */}
+      {forceOut && (
+        <ConfirmDialog open onClose={() => setForceOut(null)}
+          title="强制退房" confirmText="强制退房"
+          onConfirm={() => {
+            setForceOut(null)
+            api.post(`/api/reservations/${forceOut.id}/check-out`, { force: true })
+              .then(() => { toast('已强制退房（未结清转挂账）'); setDetailRes(null); invalidate() })
+          }}>
+          <p className="confirm-msg">存在未结清账款 {fmtMoney(forceOut.bal)}，确定强制退房吗？</p>
+          <div className="danger-note">强制退房后未结清金额转挂账（订单保持欠款状态），可稍后补收；退房后房态转空脏。</div>
+        </ConfirmDialog>
       )}
 
       {/* ---------- 入住向导（预订详情内办理入住） ---------- */}
@@ -1336,15 +1372,16 @@ export default function Rooms() {
   )
 }
 
-/* ---------- 收款小弹层（订单详情「＋收款」）：金额 + 收款方式，方式来自设置配置 ---------- */
+/* ---------- 收款小弹层（订单详情「＋收款」）：金额 + 收款方式 + 选填备注，方式来自设置配置 ---------- */
 function AddPaymentDialog({ onClose, onSubmit, busy }: {
   onClose: () => void
-  onSubmit: (p: { method: string; amount: number }) => void
+  onSubmit: (p: { method: string; amount: number; remark: string }) => void
   busy: boolean
 }) {
   const pms = usePayMethods()
   const [method, setMethod] = useState('')
   const [amount, setAmount] = useState('')
+  const [remark, setRemark] = useState('')
   // 默认值必须同步进 state（来源默认值坑规则）：不能只靠 select 的渲染兜底
   useEffect(() => {
     const codes = pms.data?.map(m => m.code) ?? []
@@ -1363,7 +1400,7 @@ function AddPaymentDialog({ onClose, onSubmit, busy }: {
           <button
             className="btn btn-primary"
             disabled={busy || !n || n <= 0 || !method}
-            onClick={() => onSubmit({ method, amount: n })}
+            onClick={() => onSubmit({ method, amount: n, remark: remark.trim() })}
           >确认收款</button>
         </>
       }
@@ -1380,6 +1417,14 @@ function AddPaymentDialog({ onClose, onSubmit, busy }: {
         <select className="select" value={method} onChange={e => setMethod(e.target.value)}>
           {(pms.data ?? []).map(m => <option key={m.code} value={m.code}>{m.name}</option>)}
         </select>
+      </Field>
+      <Field label="备注" hint="选填 · 展示在收款明细与操作日志，最多 120 字。">
+        <input
+          className="input" maxLength={120}
+          placeholder="如：代收押金、楼层调整差价"
+          value={remark}
+          onChange={e => setRemark(e.target.value)}
+        />
       </Field>
     </Dialog>
   )

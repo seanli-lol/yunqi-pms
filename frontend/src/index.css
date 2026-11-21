@@ -562,6 +562,8 @@ textarea.input { height: auto; padding: 12px 14px; resize: vertical; }
   display: flex; justify-content: flex-end; align-items: center; gap: 10px; row-gap: 10px;
   flex-wrap: wrap; padding: 6px 24px 24px;
 }
+/* 应用内确认弹层的问句正文（ConfirmDialog，替代 window.confirm） */
+.confirm-msg { font-size: 14px; line-height: 1.6; color: var(--text-primary); margin: 0 0 12px; }
 /* 详情弹层内的次要/危险操作区（撤销入住等）：与主流程按钮分区，避免误触 */
 .sub-ops {
   display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
@@ -668,6 +670,8 @@ textarea.input { height: auto; padding: 12px 14px; resize: vertical; }
   color: var(--danger); font-size: 13px; padding: 0;
 }
 .pay-table .link-del:hover { text-decoration: underline; }
+/* 收款备注：项目列第二行小字（有备注才渲染，表格宽度不抖） */
+.pay-table .pay-remark { font-size: 12px; color: var(--text-secondary); margin-top: 2px; font-weight: 400; }
 /* 其他消费明细行 */
 .consume-row {
   display: flex; align-items: center; gap: 10px;

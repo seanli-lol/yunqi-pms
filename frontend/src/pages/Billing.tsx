@@ -175,7 +175,7 @@ export default function Billing() {
                 <div className="list-row" style={{ padding: '12px 16px' }} key={x.id}>
                   <span className="list-main">
                     <span className="list-title" style={{ fontWeight: 500, fontSize: 14.5 }}>{payMethodLabel(pms.data, x.method)}</span>
-                    <span className="list-sub">{x.created_at.slice(5, 16).replace('T', ' ')} · {x.operator}</span>
+                    <span className="list-sub">{x.created_at.slice(5, 16).replace('T', ' ')} · {x.operator}{x.remark ? ` · ${x.remark}` : ''}</span>
                   </span>
                   <span className="list-amount">{fmtMoney(x.amount)}</span>
                 </div>

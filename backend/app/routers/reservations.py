@@ -17,6 +17,12 @@ from app.routers.payment_methods import assert_method_usable, pay_method_label
 router = APIRouter(prefix="/api/reservations", tags=["reservations"])
 
 
+def _remark_suffix(remark: str) -> str:
+    """收款日志摘要的备注后缀（非空才追加；删除收款时记录被物理删除，日志必须留痕原文）"""
+    remark = (remark or "").strip()
+    return f" · 备注「{remark}」" if remark else ""
+
+
 # ---------- 序列化 ----------
 def res_out(db: Session, r: Reservation) -> ReservationOut:
     guest = db.get(Guest, r.guest_id)
@@ -648,9 +654,10 @@ def check_out(res_id: int, body: CheckOutBody, user: User = Depends(get_current_
         if p.amount <= 0:
             continue
         db.add(Payment(hotel_id=r.hotel_id, reservation_id=r.id,
-                       method=p.method, amount=p.amount, created_by=user.id))
+                       method=p.method, amount=p.amount, remark=(p.remark or "").strip(),
+                       created_by=user.id))
         log_op(db, r.hotel_id, user, "payment", "payment", r.id,
-               f"收款 ¥{p.amount} · {pay_method_label(db, r.hotel_id, p.method)}")
+               f"收款 ¥{p.amount} · {pay_method_label(db, r.hotel_id, p.method)}{_remark_suffix(p.remark)}")
 
     r.status = "checked_out"
     # 记录实际离店日（提前退房时早于 check_out，房态盘据此截断灰块并放出尾部「可售」）
@@ -782,7 +789,7 @@ def get_folio(res_id: int, user: User = Depends(get_current_user), db: Session =
             "operator": users.get(x.created_by, ""),
         } for x in items],
         "payments": [{
-            "id": x.id, "method": x.method, "amount": x.amount,
+            "id": x.id, "method": x.method, "amount": x.amount, "remark": x.remark,
             "created_at": x.created_at.isoformat(), "operator": users.get(x.created_by, ""),
         } for x in pays],
         "total_charge": sum(x.amount for x in items),
@@ -818,13 +825,16 @@ def add_payment(res_id: int, body: PaymentBody,
         raise HTTPException(404, "预订不存在")
     if body.amount <= 0:
         raise HTTPException(400, "收款金额需大于 0")
+    remark = (body.remark or "").strip()
+    if len(remark) > 120:
+        raise HTTPException(400, "备注最多 120 字")
     assert_method_usable(db, r.hotel_id, body.method)
     pay = Payment(hotel_id=r.hotel_id, reservation_id=r.id,
-                  method=body.method, amount=body.amount, created_by=user.id)
+                  method=body.method, amount=body.amount, remark=remark, created_by=user.id)
     db.add(pay)
     db.flush()
     log_op(db, r.hotel_id, user, "payment", "payment", r.id,
-           f"收款 ¥{body.amount} · {pay_method_label(db, r.hotel_id, body.method)}")
+           f"收款 ¥{body.amount} · {pay_method_label(db, r.hotel_id, body.method)}{_remark_suffix(remark)}")
     db.commit()
     return {"ok": True, "balance_due": balance_of(db, res_id)}
 
@@ -843,9 +853,9 @@ def delete_payment(res_id: int, payment_id: int,
     pay = db.get(Payment, payment_id)
     if not pay or pay.reservation_id != res_id:
         raise HTTPException(404, "收款记录不存在")
-    amount, method = pay.amount, pay.method
+    amount, method, remark = pay.amount, pay.method, pay.remark
     db.delete(pay)
     log_op(db, r.hotel_id, user, "payment_delete", "payment", r.id,
-           f"删除收款 ¥{amount} · {pay_method_label(db, r.hotel_id, method)}")
+           f"删除收款 ¥{amount} · {pay_method_label(db, r.hotel_id, method)}{_remark_suffix(remark)}")
     db.commit()
     return {"ok": True, "balance_due": balance_of(db, res_id)}

@@ -424,10 +424,12 @@ def test_reservation_logs_endpoint():
     })
     assert r.status_code == 200, r.text
     rid = r.json()["id"]
-    # 产生一条收款日志
+    # 产生一条收款日志（带备注：folio 返回 remark，摘要追加备注原文）
     r = client.post(f"/api/reservations/{rid}/payments", headers=h,
-                    json={"method": "wechat", "amount": 100})
+                    json={"method": "wechat", "amount": 100, "remark": "代收押金"})
     assert r.status_code == 200
+    folio = client.get(f"/api/reservations/{rid}/folio", headers=h).json()
+    assert folio["payments"][0]["remark"] == "代收押金"
     r = client.get(f"/api/reservations/{rid}/logs", headers=h)
     assert r.status_code == 200
     logs = r.json()
@@ -436,6 +438,7 @@ def test_reservation_logs_endpoint():
     assert all(set(o) >= {"time", "action", "summary", "operator"} for o in logs)
     # 倒序：最新在前
     assert logs[0]["action"] == "payment"
+    assert "备注「代收押金」" in logs[0]["summary"]
     # 他人酒店不可见
     r = client.get(f"/api/reservations/{rid}/logs", headers=_headers(_login("admin")["token"]))
     assert r.status_code == 200  # 平台管理员可查
@@ -1004,13 +1007,16 @@ def test_delete_payment():
     r = client.post(f"/api/reservations/{rid}/check-in", headers=h, json={"room_id": room["id"]})
     assert r.status_code == 200, r.text
 
-    # 两笔收款（现金 100 + 微信 50）
-    r = client.post(f"/api/reservations/{rid}/payments", headers=h, json={"method": "cash", "amount": 100})
+    # 两笔收款（现金 100 带备注 + 微信 50）
+    r = client.post(f"/api/reservations/{rid}/payments", headers=h,
+                    json={"method": "cash", "amount": 100, "remark": "现金押金"})
     assert r.status_code == 200
     r = client.post(f"/api/reservations/{rid}/payments", headers=h, json={"method": "wechat", "amount": 50})
     assert r.status_code == 200
     folio = client.get(f"/api/reservations/{rid}/folio", headers=h).json()
     assert folio["total_paid"] == 150
+    assert folio["payments"][0]["remark"] == "现金押金"
+    assert folio["payments"][1]["remark"] == ""
     p1, p2 = folio["payments"][0], folio["payments"][1]
 
     # 删除第二笔 → 物理删除 + 余额重算
@@ -1022,12 +1028,19 @@ def test_delete_payment():
     assert folio["balance_due"] == bal
     assert all(p["id"] != p2["id"] for p in folio["payments"])
 
-    # 日志：payment_delete 聚合进预订日志，摘要含金额
+    # 日志：payment_delete 聚合进预订日志，摘要含金额；收款日志带备注原文
     logs = client.get(f"/api/reservations/{rid}/logs", headers=h).json()
     actions = [o["action"] for o in logs]
     assert "payment_delete" in actions
     latest = next(o for o in logs if o["action"] == "payment_delete")
     assert "¥50" in latest["summary"]
+    pay_log = next(o for o in logs if o["action"] == "payment" and "¥100" in o["summary"])
+    assert "备注「现金押金」" in pay_log["summary"]
+
+    # 备注超 120 字 → 400
+    r = client.post(f"/api/reservations/{rid}/payments", headers=h,
+                    json={"method": "cash", "amount": 10, "remark": "字" * 121})
+    assert r.status_code == 400
 
     # 不存在的收款 → 404；他人酒店员工跨店删 → 404
     r = client.delete(f"/api/reservations/{rid}/payments/999999", headers=h)

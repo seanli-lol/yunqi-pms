@@ -219,7 +219,7 @@ export interface PaidTotalBody {
 }
 export interface Folio {
   items: { id: number; category: string; description: string; amount: number; created_at: string; operator: string }[]
-  payments: { id: number; method: string; amount: number; created_at: string; operator: string }[]
+  payments: { id: number; method: string; amount: number; remark: string; created_at: string; operator: string }[]
   total_charge: number
   total_paid: number
   balance_due: number

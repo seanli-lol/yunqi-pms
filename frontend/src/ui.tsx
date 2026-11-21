@@ -88,6 +88,30 @@ export function Dialog({ open, onClose, title, sub, children, foot, wide = false
   )
 }
 
+/** 应用内确认弹层：替代 window.confirm 的统一危险操作确认（问句 + info-row + danger-note 由调用方组织） */
+export function ConfirmDialog({ open, onClose, onConfirm, title, sub, children, confirmText, busy = false }: {
+  open: boolean
+  onClose: () => void
+  onConfirm: () => void
+  title: React.ReactNode
+  sub?: React.ReactNode
+  children?: React.ReactNode
+  confirmText: React.ReactNode
+  busy?: boolean
+}) {
+  return (
+    <Dialog open={open} onClose={onClose} title={title} sub={sub}
+      foot={
+        <>
+          <button className="btn btn-ghost" onClick={onClose}>取消</button>
+          <button className="btn btn-danger-ghost" disabled={busy} onClick={onConfirm}>{confirmText}</button>
+        </>
+      }>
+      {children}
+    </Dialog>
+  )
+}
+
 export function Drawer({ open, onClose, title, sub, children, foot, passthrough = false, lg = false, head, bodyClass, footClass }: {
   open: boolean
   onClose: () => void
