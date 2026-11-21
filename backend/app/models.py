@@ -1,7 +1,7 @@
 """数据模型：多店隔离，业务表均挂 hotel_id"""
 from datetime import date, datetime
 
-from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, String
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db import Base
@@ -53,6 +53,24 @@ class Channel(Base):
     hotel_id: Mapped[int] = mapped_column(ForeignKey("hotels.id"), index=True)
     name: Mapped[str] = mapped_column(String(40))
     color: Mapped[str] = mapped_column(String(9), default="#0071E3")
+    sort_order: Mapped[int] = mapped_column(Integer, default=99)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
+class PayMethod(Base):
+    """收款方式：前台收款 / 入住登记的下拉选项，各店独立配置。
+
+    payments.method 存稳定 code（存量数据 cash/wechat/... 与默认项天然对齐），
+    name 可随时改名，历史账目展示不受影响。
+    """
+    __tablename__ = "payment_methods"
+    __table_args__ = (UniqueConstraint("hotel_id", "code", name="uq_paymethod_hotel_code"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    hotel_id: Mapped[int] = mapped_column(ForeignKey("hotels.id"), index=True)
+    code: Mapped[str] = mapped_column(String(20))
+    name: Mapped[str] = mapped_column(String(40))
+    remark: Mapped[str] = mapped_column(String(120), default="")
     sort_order: Mapped[int] = mapped_column(Integer, default=99)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
 

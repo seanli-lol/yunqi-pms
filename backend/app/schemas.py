@@ -126,6 +126,27 @@ class ChannelOut(ChannelBody):
     is_active: bool
 
 
+# ---------- 收款方式 ----------
+class PayMethodBody(BaseModel):
+    name: str
+    remark: str = ""
+    sort_order: int | None = None
+
+
+class PayMethodPatch(BaseModel):
+    name: str | None = None
+    remark: str | None = None
+    sort_order: int | None = None
+    is_active: bool | None = None
+
+
+class PayMethodOut(PayMethodBody):
+    id: int
+    code: str  # 稳定标识（payments.method 存它）；默认项 cash/wechat/alipay/card，自定义 pm_ 前缀
+    sort_order: int
+    is_active: bool
+
+
 # ---------- room types ----------
 class RoomTypeBody(BaseModel):
     name: str
@@ -207,7 +228,7 @@ class PaidTotalBody(BaseModel):
     amount > 当前已收 → 补一笔收款（使用 method）；amount < 当前已收 → 从最新一笔起冲减。
     """
     amount: int
-    method: Literal["cash", "wechat", "alipay", "card"] = "cash"
+    method: str = "cash"  # 收款方式 code；写入时按本店 payment_methods 校验
 
 
 class ExtendBody(BaseModel):
@@ -220,7 +241,7 @@ class ExtendBody(BaseModel):
 class CheckInBody(BaseModel):
     room_id: int
     amount_received: int = 0
-    payment_method: Literal["cash", "wechat", "alipay", "card"] = "cash"
+    payment_method: str = "cash"  # 收款方式 code；写入时按本店 payment_methods 校验
 
 
 class CheckOutBody(BaseModel):
@@ -229,7 +250,7 @@ class CheckOutBody(BaseModel):
 
 
 class PaymentBody(BaseModel):
-    method: Literal["cash", "wechat", "alipay", "card"]
+    method: str  # 收款方式 code；写入时按本店 payment_methods 校验
     amount: int
 
 
@@ -288,6 +309,10 @@ class GuestOut(GuestBody):
 
 class GuestDetail(GuestOut):
     history: list[dict] = []
+
+
+class GuestNotesBody(BaseModel):
+    notes: str = ""
 
 
 # ---------- reports ----------

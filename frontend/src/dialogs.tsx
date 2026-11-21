@@ -1,7 +1,7 @@
 /* 共享业务弹层：入住向导（前台工作台 / 房态盘预订详情共用）+ 延住 */
 import { useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { api, addDaysIso, fmtMoney, md, type Reservation, type Room } from './api'
+import { api, addDaysIso, fmtMoney, md, usePayMethods, type Reservation, type Room } from './api'
 import { Dialog, Drawer, Field } from './ui'
 
 /** 入住选房：放宽后可用（脏房/前客未退）与不可用（维修）的标记 */
@@ -21,7 +21,13 @@ export function CheckInDialog({ res, busy, drawer = false, onClose, onConfirm }:
   const [roomId, setRoomId] = useState<number | null>(null)
   // 办理入住无需填押金：直接填「实收金额」，默认带出预订应收（balance_due）
   const [amount, setAmount] = useState(res.balance_due > 0 ? String(res.balance_due) : '')
-  const [method, setMethod] = useState('wechat')
+  // 收款方式来自设置（各店可配置）；默认值必须同步进 state——不能只靠 select 渲染兜底
+  const pms = usePayMethods()
+  const [method, setMethod] = useState('')
+  useEffect(() => {
+    const codes = pms.data?.map(m => m.code) ?? []
+    if (codes.length && !codes.includes(method)) setMethod(codes[0])
+  }, [pms.data, method])
   const avail = useQuery({
     queryKey: ['available', res.room_type_id, res.check_in, res.check_out, res.id],
     // 入住放宽：include_dirty 带入空脏房、allow_prev_guest 不用在住阻挡（前客未退可选）
@@ -66,8 +72,7 @@ export function CheckInDialog({ res, busy, drawer = false, onClose, onConfirm }:
         </Field>
         <Field label="收款方式">
           <select className="select" value={method} onChange={e => setMethod(e.target.value)}>
-            <option value="wechat">微信</option><option value="alipay">支付宝</option>
-            <option value="cash">现金</option><option value="card">刷卡</option>
+            {(pms.data ?? []).map(m => <option key={m.code} value={m.code}>{m.name}</option>)}
           </select>
         </Field>
       </div>

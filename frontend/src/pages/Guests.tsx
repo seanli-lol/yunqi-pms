@@ -1,21 +1,21 @@
 import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { api, fmtMoney, maskPhone, md, type Guest } from '../api'
-import { Badge, Dialog, Drawer, Field, PageHead, Spinner, useToast } from '../ui'
-
-const VIP_TABS = ['', 'VIP·黑金', 'VIP·金', 'VIP·银', '普通会员']
+import { api, fmtMoney, md, type Guest } from '../api'
+import { Dialog, Drawer, Field, PageHead, Spinner, useToast } from '../ui'
 
 export default function Guests() {
   const toast = useToast()
   const qc = useQueryClient()
   const [q, setQ] = useState('')
-  const [vip, setVip] = useState('')
   const [detail, setDetail] = useState<Guest | null>(null)
   const [addOpen, setAddOpen] = useState(false)
+  /** 备注编辑（档案抽屉内） */
+  const [notesFor, setNotesFor] = useState<Guest | null>(null)
+  const [notesText, setNotesText] = useState('')
 
   const list = useQuery({
-    queryKey: ['guests', q, vip],
-    queryFn: () => api.get<Guest[]>(`/api/guests?q=${encodeURIComponent(q)}&vip=${encodeURIComponent(vip)}`),
+    queryKey: ['guests', q],
+    queryFn: () => api.get<Guest[]>(`/api/guests?q=${encodeURIComponent(q)}`),
   })
   const detailQ = useQuery({
     queryKey: ['guest', detail?.id],
@@ -27,6 +27,17 @@ export default function Guests() {
     mutationFn: (body: any) => api.post('/api/guests', body),
     onSuccess: () => { toast('客户已创建'); setAddOpen(false); qc.invalidateQueries({ queryKey: ['guests'] }) },
     onError: (e: any) => toast(e.message ?? '创建失败'),
+  })
+
+  const notesMut = useMutation({
+    mutationFn: (p: { id: number; notes: string }) => api.patch(`/api/guests/${p.id}`, { notes: p.notes }),
+    onSuccess: (_d, p) => {
+      toast('备注已保存')
+      setNotesFor(null)
+      qc.invalidateQueries({ queryKey: ['guests'] })
+      qc.invalidateQueries({ queryKey: ['guest', p.id] })
+    },
+    onError: (e: any) => toast(e.message ?? '保存失败'),
   })
 
   return (
@@ -41,13 +52,6 @@ export default function Guests() {
         <div className="search">
           <input className="input" type="search" placeholder="搜索姓名或手机号" value={q} onChange={e => setQ(e.target.value)} />
         </div>
-        <div className="chips">
-          {VIP_TABS.map(v => (
-            <button key={v} className={`chip${vip === v ? ' active' : ''}`} onClick={() => setVip(v)}>
-              {v || '全部'}
-            </button>
-          ))}
-        </div>
       </div>
 
       {list.isLoading ? <Spinner /> : (
@@ -55,7 +59,7 @@ export default function Guests() {
           <div className="table-wrap">
             <table className="table">
               <thead>
-                <tr><th>客人</th><th>会员等级</th><th>证件号</th><th className="num">历史入住</th><th className="num">累计消费</th><th>最近入住</th><th>操作</th></tr>
+                <tr><th>客人</th><th>备注</th><th>证件号</th><th className="num">历史入住</th><th className="num">累计消费</th><th>最近入住</th><th>操作</th></tr>
               </thead>
               <tbody>
                 {list.data!.map(g => (
@@ -65,12 +69,14 @@ export default function Guests() {
                         <span className="avatar sm">{g.name.charAt(0)}</span>
                         <div>
                           <div className="cell-main">{g.name}</div>
-                          <div className="cell-sub">{maskPhone(g.phone)}</div>
+                          <div className="cell-sub">{g.phone || '—'}</div>
                         </div>
                       </div>
                     </td>
-                    <td data-label="会员等级">
-                      {g.vip_level ? <Badge color={g.vip_level.includes('黑金') ? 'purple' : g.vip_level.includes('金') ? 'blue' : 'gray'}>{g.vip_level}</Badge> : <Badge color="gray">普通会员</Badge>}
+                    <td data-label="备注">
+                      {g.notes
+                        ? <span className="cell-sub" title={g.notes} style={{ display: 'inline-block', maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', verticalAlign: 'bottom' }}>{g.notes}</span>
+                        : <span className="muted">—</span>}
                     </td>
                     <td data-label="证件号">{g.id_number || '—'}</td>
                     <td className="num" data-label="历史入住">{g.stay_count} 次</td>
@@ -104,10 +110,8 @@ export default function Guests() {
               <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
                 <span className="avatar" style={{ width: 52, height: 52, fontSize: 20 }}>{g.name.charAt(0)}</span>
                 <div>
-                  <div style={{ fontSize: 19, fontWeight: 600 }}>
-                    {g.name} {g.vip_level && <span style={{ marginLeft: 6 }}><Badge color={g.vip_level.includes('黑金') ? 'purple' : 'blue'}>{g.vip_level}</Badge></span>}
-                  </div>
-                  <div className="hint" style={{ marginTop: 3 }}>手机 {maskPhone(g.phone)}</div>
+                  <div style={{ fontSize: 19, fontWeight: 600 }}>{g.name}</div>
+                  <div className="hint" style={{ marginTop: 3 }}>手机 {g.phone || '—'}</div>
                 </div>
               </div>
               <div className="grid-3 mt-16">
@@ -129,11 +133,34 @@ export default function Guests() {
                 ))}
                 {(g.history?.length ?? 0) === 0 && <div className="empty">暂无入住记录</div>}
               </div>
-              {g.notes && <p className="hint mt-16">备注：{g.notes}</p>}
+              <div className="mt-16" style={{ display: 'flex', alignItems: 'center' }}>
+                <div className="section-sub" style={{ marginBottom: 0 }}>备注</div>
+                <button
+                  className="btn btn-quiet btn-sm" style={{ marginLeft: 'auto' }}
+                  onClick={() => { setNotesFor(g); setNotesText(g.notes ?? '') }}
+                >编辑备注</button>
+              </div>
+              <p className="hint mt-8" style={{ whiteSpace: 'pre-wrap' }}>{g.notes || '暂无备注'}</p>
             </>
           )
         })()}
       </Drawer>
+
+      {/* 编辑备注 */}
+      <Dialog
+        open={notesFor !== null} onClose={() => setNotesFor(null)} title={`编辑备注 · ${notesFor?.name ?? ''}`}
+        foot={
+          <>
+            <button className="btn btn-ghost" onClick={() => setNotesFor(null)}>取消</button>
+            <button className="btn btn-primary" disabled={notesMut.isPending}
+                    onClick={() => notesFor && notesMut.mutate({ id: notesFor.id, notes: notesText })}>保存备注</button>
+          </>
+        }
+      >
+        <Field label="备注" hint="偏好、忌口、熟客习惯等，仅本店员工可见。">
+          <textarea className="input" rows={4} value={notesText} onChange={e => setNotesText(e.target.value)} placeholder="例如：喜欢高楼层、忌辣" />
+        </Field>
+      </Dialog>
 
       {/* 添加客户 */}
       <AddGuestDialog open={addOpen} onClose={() => setAddOpen(false)} onSubmit={(b) => addMut.mutate(b)} busy={addMut.isPending} />
@@ -148,9 +175,8 @@ function AddGuestDialog({ open, onClose, onSubmit, busy }: {
   const [name, setName] = useState('')
   const [phone, setPhone] = useState('')
   const [idNo, setIdNo] = useState('')
-  const [vip, setVip] = useState('')
   const [notes, setNotes] = useState('')
-  useEffect(() => { if (open) { setName(''); setPhone(''); setIdNo(''); setVip(''); setNotes('') } }, [open])
+  useEffect(() => { if (open) { setName(''); setPhone(''); setIdNo(''); setNotes('') } }, [open])
   return (
     <Dialog
       open={open} onClose={onClose} title="添加客户"
@@ -160,20 +186,13 @@ function AddGuestDialog({ open, onClose, onSubmit, busy }: {
           <button className="btn btn-primary" disabled={busy || !name.trim()}
                   onClick={() => {
                     if (!name.trim()) { toast('请输入姓名'); return }
-                    onSubmit({ name, phone, id_number: idNo, vip_level: vip, notes })
+                    onSubmit({ name, phone, id_number: idNo, vip_level: '', notes })
                   }}>保存</button>
         </>
       }
     >
       <Field label="姓名" required><input className="input" value={name} onChange={e => setName(e.target.value)} placeholder="请输入姓名" /></Field>
-      <div className="form-row">
-        <Field label="手机号" required><input className="input" value={phone} onChange={e => setPhone(e.target.value)} placeholder="11 位手机号" /></Field>
-        <Field label="会员等级">
-          <select className="select" value={vip} onChange={e => setVip(e.target.value)}>
-            <option value="">普通会员</option><option>VIP·银</option><option>VIP·金</option><option>VIP·黑金</option>
-          </select>
-        </Field>
-      </div>
+      <Field label="手机号" required><input className="input" value={phone} onChange={e => setPhone(e.target.value)} placeholder="11 位手机号" /></Field>
       <Field label="证件号"><input className="input" value={idNo} onChange={e => setIdNo(e.target.value)} placeholder="身份证 / 护照" /></Field>
       <Field label="备注"><input className="input" value={notes} onChange={e => setNotes(e.target.value)} placeholder="偏好、忌口等" /></Field>
     </Dialog>

@@ -4,8 +4,8 @@ from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.deps import get_current_user, log_op, resolve_hotel_id
-from app.models import Guest, Reservation, Room
-from app.schemas import GuestBody, GuestDetail, GuestOut
+from app.models import Guest, Reservation, Room, User
+from app.schemas import GuestBody, GuestDetail, GuestNotesBody, GuestOut
 
 router = APIRouter(prefix="/api/guests", tags=["guests"])
 
@@ -91,3 +91,15 @@ def create_guest(body: GuestBody, hotel_id: int | None = None,
     log_op(db, hid, user, "guest_create", "guest", g.id, f"新增客户档案「{g.name}」")
     db.commit()
     return {"ok": True, "id": g.id}
+
+
+@router.patch("/{guest_id}")
+def update_guest_notes(guest_id: int, body: GuestNotesBody,
+                       user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    g = db.get(Guest, guest_id)
+    if not g or (user.role != "platform_admin" and g.hotel_id != user.hotel_id):
+        raise HTTPException(404, "客户不存在")
+    g.notes = body.notes.strip()
+    log_op(db, g.hotel_id, user, "guest_update", "guest", g.id, f"更新客户「{g.name}」备注")
+    db.commit()
+    return {"ok": True}

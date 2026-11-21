@@ -6,6 +6,7 @@ import {
   type Channel, type Reservation, type RoomType,
 } from '../api'
 import { Dialog, Field, PageHead, Segmented, Spinner, useToast, RES_STATUS_BADGE } from '../ui'
+import { GuestNameInput } from '../GuestNameInput'
 
 const STATUS_TABS = [
   { key: 'all', label: '全部' },
@@ -265,7 +266,7 @@ function NewReservationDialog({ open, onClose, channels, types, onSubmit, onDone
     >
       <div className="form-row">
         <Field label="客人姓名" required>
-          <input className="input" value={name} onChange={e => setName(e.target.value)} placeholder="请输入姓名" />
+          <GuestNameInput value={name} onChange={setName} onPick={g => { setName(g.name); setPhone(g.phone || '') }} />
         </Field>
         <Field label="手机号（选填）" hint="填写后用于接收确认短信；未填写则到店补录。">
           <input className="input" value={phone} onChange={e => setPhone(e.target.value)} placeholder="可留空，到店时补录" />

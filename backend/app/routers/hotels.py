@@ -6,6 +6,7 @@ from app.config import ROLE_LABELS
 from app.db import get_db
 from app.deps import get_current_user, log_op, require_platform_admin
 from app.models import Hotel, Room, User
+from app.routers.payment_methods import ensure_default_methods
 from app.schemas import HotelBody, HotelOut, UserBody, UserOut, UserPatch
 from app.security import hash_password
 
@@ -43,6 +44,8 @@ def create_hotel(body: HotelBody, user: User = Depends(get_current_user), db: Se
     h = Hotel(name=body.name, city=body.city, address=body.address, contact_name=body.contact_name)
     db.add(h)
     db.flush()
+    # 新店开张即有默认收款方式（渠道无此步骤是历史行为，暂不补）
+    ensure_default_methods(db, h.id)
     log_op(db, h.id, user, "hotel_create", "hotel", h.id, f"创建酒店「{h.name}」")
     db.commit()
     return HotelOut(id=h.id, name=h.name, city=h.city, address=h.address,

@@ -10,11 +10,17 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 from app.db import Base, SessionLocal, engine  # noqa: E402
 from app.main import app  # noqa: E402
+from app.models import Hotel  # noqa: E402
+from app.routers.payment_methods import ensure_default_methods  # noqa: E402
 from app.seed import ensure_seed  # noqa: E402
 
 Base.metadata.create_all(bind=engine)
 _seed_db = SessionLocal()
 ensure_seed(_seed_db)
+# 与 main.lifespan 对齐：每家酒店补种默认收款方式（测试不走 lifespan）
+for _h in _seed_db.query(Hotel).all():
+    ensure_default_methods(_seed_db, _h.id)
+_seed_db.commit()
 _seed_db.close()
 
 client = TestClient(app)
@@ -673,13 +679,15 @@ def test_early_checkout_resale():
     r = client.post(f"/api/reservations/{rid4}/check-out", headers=h, json={"force": True, "payments": []})
     assert r.status_code == 200, r.text
     assert r.json()["actual_check_out"] == date.today().isoformat()
-    # 日历上按「提前退房」截断：当天白天占房（存根 1 格压左 1/3），当晚尾段放出「可售」
+    # 日历上按「提前退房」截断：当天白天占房（存根 1 格压左 1/3）；当日往返存根
+    # （stub_nights==1 + checked_out）由前端聚合为格角「退房」角标，「可售」虚纹已退役
     board = client.get("/api/rooms/board?days=14", headers=h).json()
     blk4 = next(b for g in board["groups"] for rm in g["rooms"] if rm["id"] == room4["id"]
                 for b in rm["blocks"] if b["id"] == rid4)
     assert blk4["truncated"] is True
     assert blk4["stub_nights"] == 1 and blk4["stub_cut"] is True
-    assert blk4["resale_nights"] == 1 and blk4["resale_mid"] is True
+    assert "resale_nights" not in blk4 and "resale_mid" not in blk4
+    assert blk4["items_total"] >= 0 and blk4["paid_total"] >= 0   # 角标明细卡的金额分列
 
     # 存根整段窗外（实际离店日早于窗口起点）：灰块 nights=0 不渲染，只留「可售」虚纹
     cin3 = (date.today() - timedelta(days=6)).isoformat()
@@ -705,9 +713,9 @@ def test_early_checkout_resale():
     blk3 = next(b for g in board["groups"] for rm in g["rooms"] if rm["id"] == room3["id"]
                 for b in rm["blocks"] if b["id"] == rid3)
     assert blk3["truncated"] is True
-    assert blk3["nights"] == 0                # 前端按此跳过灰块渲染
+    assert blk3["nights"] == 0                # 前端按此跳过渲染（虚纹退役后无可视部分）
     assert "stub_nights" not in blk3
-    assert blk3["resale_nights"] >= 1         # 尾段虚纹仍要放出
+    assert "resale_nights" not in blk3
 
     # 房态盘：灰块截断——实际离店日存根 + 可售区间
     board = client.get("/api/rooms/board?days=14", headers=h).json()
@@ -716,8 +724,7 @@ def test_early_checkout_resale():
     assert blk["truncated"] is True
     assert blk["stub_nights"] == 2            # 昨天 + 今天（存根含实际离店日）
     assert blk["stub_cut"] is True            # 存根末日 = 今天 → 压左 1/3
-    assert blk["resale_nights"] == 2          # 今天尾段 + 明天
-    assert blk["resale_mid"] is True          # 虚纹起点 = 存根末日 → 左侧留 1/3 齐平
+    assert "resale_nights" not in blk and "resale_mid" not in blk
     # 同房同时段再订（今天起 2 晚）→ 不再 409，创建成功
     r = client.post("/api/reservations", headers=h, json={
         "guest_name": "续售新客", "check_in": date.today().isoformat(),
@@ -839,3 +846,159 @@ def test_refresh_rotation_and_logout():
     assert client.post("/api/auth/logout", json={"refresh_token": fresh}).status_code == 200
 
     _login_attempts.clear()
+
+
+def test_pay_methods_config_and_payment_validation():
+    """收款方式配置：默认项 / 重名拦截 / 改名 / 停用拦截收款 / 删除保护转停用 / 日志留痕"""
+    from datetime import date, timedelta
+
+    tok = _login("wanglin", hotel_id=1)["token"]
+    h = _headers(tok)
+
+    # 启动补种：默认 4 项齐全（code 与存量 payments.method 对齐）
+    ms = client.get("/api/payment-methods", headers=h).json()
+    assert {"cash", "wechat", "alipay", "card"} <= {m["code"] for m in ms}
+
+    # 新增自定义方式 → 生成 pm_ 前缀 code；同店重名 → 400
+    r = client.post("/api/payment-methods", headers=h, json={"name": "协议挂账", "remark": "月末统一结算"})
+    assert r.status_code == 200, r.text
+    pm = r.json()
+    assert pm["code"].startswith("pm_") and pm["is_active"]
+    r = client.post("/api/payment-methods", headers=h, json={"name": "协议挂账"})
+    assert r.status_code == 400
+
+    # 改名生效（历史收款不受影响：payments 存的是 code）
+    r = client.patch(f"/api/payment-methods/{pm['id']}", headers=h, json={"name": "协议挂账（月结）"})
+    assert r.status_code == 200 and r.json()["name"] == "协议挂账（月结）"
+
+    # 一单在住预订：动态挑空净房，避开其他用例占用的房号
+    rooms = client.get("/api/rooms", headers=h).json()
+    rid = None
+    for room in [x for x in rooms if x["status"] == "vacant_clean"]:
+        r = client.post("/api/reservations", headers=h, json={
+            "guest_name": "收款方式测试客", "check_in": date.today().isoformat(),
+            "check_out": (date.today() + timedelta(days=1)).isoformat(),
+            "room_id": room["id"], "status": "confirmed",
+        })
+        if r.status_code == 200:
+            rid = r.json()["id"]
+            break
+    assert rid, "没有可用的空净房"
+    r = client.post(f"/api/reservations/{rid}/check-in", headers=h, json={"room_id": room["id"]})
+    assert r.status_code == 200, r.text
+
+    # 未配置的 code → 400；自定义方式 → 200
+    r = client.post(f"/api/reservations/{rid}/payments", headers=h, json={"method": "gold", "amount": 100})
+    assert r.status_code == 400
+    r = client.post(f"/api/reservations/{rid}/payments", headers=h, json={"method": pm["code"], "amount": 100})
+    assert r.status_code == 200, r.text
+
+    # 停用后不可再用于收款，启用后恢复
+    r = client.patch(f"/api/payment-methods/{pm['id']}", headers=h, json={"is_active": False})
+    assert r.status_code == 200
+    r = client.post(f"/api/reservations/{rid}/payments", headers=h, json={"method": pm["code"], "amount": 50})
+    assert r.status_code == 400
+    client.patch(f"/api/payment-methods/{pm['id']}", headers=h, json={"is_active": True})
+
+    # 删除保护：有收款记录 → 转停用不物理删
+    r = client.delete(f"/api/payment-methods/{pm['id']}", headers=h)
+    assert r.status_code == 200 and r.json()["disabled"] is True
+    ms = client.get("/api/payment-methods", headers=h, params={"include_inactive": "true"}).json()
+    assert any(m["id"] == pm["id"] and not m["is_active"] for m in ms)
+
+    # 操作留痕：paymethod_* 动作进报表单日明细
+    day = client.get(f"/api/reports/day?day={date.today().isoformat()}", headers=h).json()
+    actions = [o["action"] for o in day["operations"]]
+    assert {"paymethod_create", "paymethod_update", "paymethod_disable"} <= set(actions)
+
+
+def test_guest_notes_edit():
+    """客户备注编辑：PATCH 更新 + 名单/详情可见"""
+    tok = _login("zhouqi", hotel_id=1)["token"]
+    h = _headers(tok)
+    r = client.post("/api/guests", headers=h, json={"name": "备注客", "phone": "13700009999"})
+    assert r.status_code == 200, r.text
+    gid = r.json()["id"]
+    r = client.patch(f"/api/guests/{gid}", headers=h, json={"notes": "喜欢高楼层，忌辣"})
+    assert r.status_code == 200, r.text
+    out = client.get(f"/api/guests/{gid}", headers=h).json()
+    assert out["notes"] == "喜欢高楼层，忌辣"
+    lst = client.get("/api/guests?q=备注客", headers=h).json()
+    assert any(g["id"] == gid and g["notes"] == "喜欢高楼层，忌辣" for g in lst)
+    # 非本店员工不可改（莫干山店员工改西湖店客户 → 404）
+    hotels = client.get("/api/hotels", headers=_headers(_login("admin")["token"])).json()
+    mogan = next(x["id"] for x in hotels if "莫干山店" in x["name"])
+    tok2 = _login("xumin", hotel_id=mogan)["token"]
+    r = client.patch(f"/api/guests/{gid}", headers=_headers(tok2), json={"notes": "x"})
+    assert r.status_code == 404
+
+
+def test_delete_payment():
+    """订单详情收款表行内删除：仅 checked_in/checked_out 可删；物理删除 + payment_delete 日志 + 余额重算"""
+    from datetime import date, timedelta
+    tok = _login("zhouqi", hotel_id=1)["token"]
+    h = _headers(tok)
+    rooms = client.get("/api/rooms", headers=h).json()
+    rid = None
+    for room in [x for x in rooms if x["status"] == "vacant_clean"]:
+        r = client.post("/api/reservations", headers=h, json={
+            "guest_name": "删款测试客", "check_in": date.today().isoformat(),
+            "check_out": (date.today() + timedelta(days=1)).isoformat(),
+            "room_id": room["id"], "status": "confirmed",
+        })
+        if r.status_code == 200:
+            rid = r.json()["id"]
+            break
+    assert rid, "没有可用的空净房"
+    r = client.post(f"/api/reservations/{rid}/check-in", headers=h, json={"room_id": room["id"]})
+    assert r.status_code == 200, r.text
+
+    # 两笔收款（现金 100 + 微信 50）
+    r = client.post(f"/api/reservations/{rid}/payments", headers=h, json={"method": "cash", "amount": 100})
+    assert r.status_code == 200
+    r = client.post(f"/api/reservations/{rid}/payments", headers=h, json={"method": "wechat", "amount": 50})
+    assert r.status_code == 200
+    folio = client.get(f"/api/reservations/{rid}/folio", headers=h).json()
+    assert folio["total_paid"] == 150
+    p1, p2 = folio["payments"][0], folio["payments"][1]
+
+    # 删除第二笔 → 物理删除 + 余额重算
+    r = client.delete(f"/api/reservations/{rid}/payments/{p2['id']}", headers=h)
+    assert r.status_code == 200, r.text
+    bal = r.json()["balance_due"]
+    folio = client.get(f"/api/reservations/{rid}/folio", headers=h).json()
+    assert folio["total_paid"] == 100
+    assert folio["balance_due"] == bal
+    assert all(p["id"] != p2["id"] for p in folio["payments"])
+
+    # 日志：payment_delete 聚合进预订日志，摘要含金额
+    logs = client.get(f"/api/reservations/{rid}/logs", headers=h).json()
+    actions = [o["action"] for o in logs]
+    assert "payment_delete" in actions
+    latest = next(o for o in logs if o["action"] == "payment_delete")
+    assert "¥50" in latest["summary"]
+
+    # 不存在的收款 → 404；他人酒店员工跨店删 → 404
+    r = client.delete(f"/api/reservations/{rid}/payments/999999", headers=h)
+    assert r.status_code == 404
+    hotels = client.get("/api/hotels", headers=_headers(_login("admin")["token"])).json()
+    mogan = next(x["id"] for x in hotels if "莫干山店" in x["name"])
+    tok2 = _login("xumin", hotel_id=mogan)["token"]
+    r = client.delete(f"/api/reservations/{rid}/payments/{p1['id']}", headers=_headers(tok2))
+    assert r.status_code == 404
+
+    # 未来 confirmed 预订（定金场景）：状态口径对齐 paid-total → 400
+    rooms2 = client.get("/api/rooms", headers=h).json()
+    avail_room = next(x for x in rooms2 if x["status"] == "vacant_clean")
+    r = client.post("/api/reservations", headers=h, json={
+        "guest_name": "删款预订客", "check_in": (date.today() + timedelta(days=70)).isoformat(),
+        "check_out": (date.today() + timedelta(days=71)).isoformat(),
+        "room_id": avail_room["id"], "status": "confirmed",
+    })
+    assert r.status_code == 200, r.text
+    rid2 = r.json()["id"]
+    r = client.post(f"/api/reservations/{rid2}/payments", headers=h, json={"method": "cash", "amount": 80})
+    assert r.status_code == 200
+    pid2 = client.get(f"/api/reservations/{rid2}/folio", headers=h).json()["payments"][0]["id"]
+    r = client.delete(f"/api/reservations/{rid2}/payments/{pid2}", headers=h)
+    assert r.status_code == 400

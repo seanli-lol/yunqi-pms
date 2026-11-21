@@ -1,10 +1,10 @@
 import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { api, fmtMoney, maskPhone, type Channel, type Hotel, type Room, type RoomType, type UserRow } from '../api'
+import { api, fmtMoney, maskPhone, type Channel, type Hotel, type PayMethod, type Room, type RoomType, type UserRow } from '../api'
 import { useAuth } from '../auth'
 import { Badge, Dialog, Field, PageHead, Segmented, Spinner, useToast } from '../ui'
 
-type Tab = 'hotels' | 'channels' | 'types' | 'rooms' | 'staff'
+type Tab = 'hotels' | 'channels' | 'paymethods' | 'types' | 'rooms' | 'staff'
 
 export default function Settings() {
   const toast = useToast()
@@ -26,7 +26,7 @@ export default function Settings() {
     <>
       <PageHead
         title="系统设置"
-        desc="酒店（多店隔离）、来源渠道、房型、客房与员工账号"
+        desc="酒店（多店隔离）、来源渠道、收款方式、房型、客房与员工账号"
       />
 
       {user?.role === 'platform_admin' && (
@@ -56,6 +56,7 @@ export default function Settings() {
           options={[
             { key: 'hotels', label: '酒店管理' },
             { key: 'channels', label: '来源渠道' },
+            { key: 'paymethods', label: '收款方式' },
             { key: 'types', label: '房型管理' },
             { key: 'rooms', label: '客房管理' },
             { key: 'staff', label: '员工账号' },
@@ -66,6 +67,7 @@ export default function Settings() {
 
       {tab === 'hotels' && <HotelsTab data={hotels.data} loading={hotels.isLoading} isAdmin={user?.role === 'platform_admin'} />}
       {tab === 'channels' && <ChannelsTab />}
+      {tab === 'paymethods' && <PayMethodsTab />}
       {tab === 'types' && <TypesTab />}
       {tab === 'rooms' && <RoomsTab />}
       {tab === 'staff' && <StaffTab users={users.data} loading={users.isLoading} />}
@@ -287,6 +289,147 @@ function AddChannelDialog({ open, onClose, onSubmit }: {
       <Field label="渠道名称" required><input className="input" value={name} onChange={e => setName(e.target.value)} placeholder="如：抖音团购" /></Field>
       <Field label="颜色" required hint="颜色将用于预订方块最前端的来源竖条与图例。">
         <input className="input" type="color" value={color} onChange={e => setColor(e.target.value)} style={{ height: 44, padding: 6, cursor: 'pointer' }} />
+      </Field>
+    </Dialog>
+  )
+}
+
+/* ==================== 收款方式 ==================== */
+function PayMethodsTab() {
+  const toast = useToast()
+  const qc = useQueryClient()
+  const [addOpen, setAddOpen] = useState(false)
+  const [editing, setEditing] = useState<PayMethod | null>(null)
+  const list = useQuery({ queryKey: ['pay-methods-all'], queryFn: () => api.get<PayMethod[]>('/api/payment-methods?include_inactive=true') })
+  const invalidate = () => {
+    qc.invalidateQueries({ queryKey: ['pay-methods'] })
+    qc.invalidateQueries({ queryKey: ['pay-methods-all'] })
+  }
+  const mut = useMutation({
+    mutationFn: (p: { method: string; path: string; body?: any }) =>
+      p.method === 'post' ? api.post(p.path, p.body) : api.patch(p.path, p.body),
+    onSuccess: () => {
+      toast('收款方式已更新')
+      invalidate()
+    },
+    onError: (e: any) => toast(e.message ?? '操作失败'),
+  })
+  const del = useMutation({
+    mutationFn: (id: number) => api.delete<{ ok: boolean; disabled?: boolean }>(`/api/payment-methods/${id}`),
+    onSuccess: (d) => {
+      toast(d?.disabled ? '该方式有收款记录，已改为停用' : '收款方式已删除')
+      invalidate()
+    },
+    onError: (e: any) => toast(e.message ?? '操作失败'),
+  })
+  const actives = (list.data ?? []).filter(m => m.is_active)
+
+  return (
+    <>
+      <div className="card">
+        <div className="card-head">
+          <div className="section-sub" style={{ fontSize: 13.5 }}>
+            前台收款与入住登记的收款方式选项 · 顺序决定下拉选项排列
+          </div>
+          <button className="btn btn-primary btn-sm" onClick={() => setAddOpen(true)}>添加方式</button>
+        </div>
+        {list.isLoading ? <Spinner /> : (
+          <div className="table-wrap">
+            <table className="table">
+              <thead><tr><th style={{ width: 64 }}>顺序</th><th>方式</th><th>说明</th><th className="num">状态</th><th>操作</th></tr></thead>
+              <tbody>
+                {(list.data ?? []).map((m, i) => (
+                  <tr key={m.id}>
+                    <td data-label="顺序">
+                      <div style={{ display: 'flex', gap: 4 }}>
+                        {i > 0 && (
+                          <button className="icon-btn" title="上移"
+                                  onClick={async () => {
+                                    const prev = list.data![i - 1]
+                                    try {
+                                      await api.patch(`/api/payment-methods/${m.id}`, { sort_order: prev.sort_order })
+                                      await api.patch(`/api/payment-methods/${prev.id}`, { sort_order: m.sort_order })
+                                      toast('顺序已调整')
+                                      invalidate()
+                                    } catch (e: any) { toast(e.message ?? '操作失败') }
+                                  }}>
+                            ↑
+                          </button>
+                        )}
+                        <span className="hint" style={{ alignSelf: 'center' }}>{i + 1}</span>
+                      </div>
+                    </td>
+                    <td data-label="方式" className="strong">{m.name}</td>
+                    <td data-label="说明">{m.remark || '—'}</td>
+                    <td className="num" data-label="状态">{m.is_active ? <Badge color="green">启用</Badge> : <Badge color="gray">停用</Badge>}</td>
+                    <td className="no-label">
+                      <button className="btn btn-quiet btn-sm" onClick={() => setEditing(m)}>编辑</button>
+                      <button
+                        className="btn btn-quiet btn-sm"
+                        onClick={() => mut.mutate({ method: 'patch', path: `/api/payment-methods/${m.id}`, body: { is_active: !m.is_active } })}
+                      >{m.is_active ? '停用' : '启用'}</button>
+                      <button className="btn btn-quiet btn-sm" style={{ color: 'var(--danger-deep)' }} onClick={() => del.mutate(m.id)}>删除</button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+      <div className="card card-pad mt-16">
+        <div className="section-title" style={{ marginBottom: 10 }}>效果预览</div>
+        <div className="segmented" style={{ maxWidth: 600 }}>
+          {actives.slice(0, 5).map((m, i) => (
+            <button key={m.id} className={i === 0 ? 'active' : ''}>{m.name}</button>
+          ))}
+        </div>
+        <p className="hint mt-8">新增或停用后，前台收款、入住登记与账务明细中的收款方式选项实时生效；有收款记录的方式不可删除，仅可停用。</p>
+      </div>
+
+      <PayMethodDialog
+        open={addOpen} onClose={() => setAddOpen(false)}
+        title="添加收款方式" submitText="创建方式"
+        onSubmit={(b) => mut.mutate({ method: 'post', path: '/api/payment-methods', body: b })}
+      />
+      <PayMethodDialog
+        open={editing !== null} onClose={() => setEditing(null)}
+        title="编辑收款方式" submitText="保存修改" initial={editing ?? undefined}
+        onSubmit={(b) => mut.mutate({ method: 'patch', path: `/api/payment-methods/${editing!.id}`, body: b })}
+      />
+    </>
+  )
+}
+
+function PayMethodDialog({ open, onClose, onSubmit, title, submitText, initial }: {
+  open: boolean; onClose: () => void
+  onSubmit: (b: { name: string; remark: string }) => void
+  title: string; submitText: string; initial?: PayMethod
+}) {
+  const toast = useToast()
+  const [name, setName] = useState('')
+  const [remark, setRemark] = useState('')
+  useEffect(() => { if (open) { setName(initial?.name ?? ''); setRemark(initial?.remark ?? '') } }, [open, initial])
+  return (
+    <Dialog
+      open={open} onClose={onClose} title={title}
+      foot={
+        <>
+          <button className="btn btn-ghost" onClick={onClose}>取消</button>
+          <button
+            className="btn btn-primary" disabled={!name.trim()}
+            onClick={() => {
+              if (!name.trim()) { toast('请输入方式名称'); return }
+              onSubmit({ name: name.trim(), remark: remark.trim() })
+              onClose()
+            }}
+          >{submitText}</button>
+        </>
+      }
+    >
+      <Field label="方式名称" required><input className="input" value={name} onChange={e => setName(e.target.value)} placeholder="如：协议挂账" /></Field>
+      <Field label="说明" hint="选填，仅用于设置页备注。">
+        <input className="input" value={remark} onChange={e => setRemark(e.target.value)} placeholder="如：挂账协议单位，月末统一结算" />
       </Field>
     </Dialog>
   )

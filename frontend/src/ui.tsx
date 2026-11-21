@@ -88,28 +88,40 @@ export function Dialog({ open, onClose, title, sub, children, foot, wide = false
   )
 }
 
-export function Drawer({ open, onClose, title, sub, children, foot, passthrough = false }: {
+export function Drawer({ open, onClose, title, sub, children, foot, passthrough = false, lg = false, head, bodyClass, footClass }: {
   open: boolean
   onClose: () => void
-  title: React.ReactNode
+  title?: React.ReactNode
   sub?: React.ReactNode
   children: React.ReactNode
   foot?: React.ReactNode
   /** 透传给 Overlay：抽屉开着时点击穿透到日历（房态盘多房预订依赖） */
   passthrough?: boolean
+  /** 加宽抽屉（订单详情 540px），不传 = 默认 460px */
+  lg?: boolean
+  /** 自定义抽屉头（订单详情双 tab 用）；传入时忽略 title/sub 的默认排版 */
+  head?: React.ReactNode
+  /** 覆盖内容区类名（订单详情用 .order-body） */
+  bodyClass?: string
+  /** 追加到 .dialog-foot 的类（订单详情左右分组用 .order-foot） */
+  footClass?: string
 }) {
   return (
     <Overlay open={open} onClose={onClose} drawer passthrough={passthrough}>
-      <aside className="drawer" role="dialog" aria-modal="true">
-        <div className="dialog-head" style={{ paddingBottom: 16, borderBottom: '1px solid var(--hairline-soft)' }}>
-          <div>
-            <div className="dialog-title">{title}</div>
-            {sub && <div className="dialog-sub">{sub}</div>}
+      <aside className={`drawer${lg ? ' drawer-lg' : ''}`} role="dialog" aria-modal="true">
+        {head !== undefined ? (
+          head
+        ) : (
+          <div className="dialog-head" style={{ paddingBottom: 16, borderBottom: '1px solid var(--hairline-soft)' }}>
+            <div>
+              {title && <div className="dialog-title">{title}</div>}
+              {sub && <div className="dialog-sub">{sub}</div>}
+            </div>
+            <button className="icon-btn" aria-label="关闭" onClick={onClose}><X size={15} /></button>
           </div>
-          <button className="icon-btn" aria-label="关闭" onClick={onClose}><X size={15} /></button>
-        </div>
-        <div className="card-body" style={{ flex: 1, overflowY: 'auto' }}>{children}</div>
-        {foot && <div className="dialog-foot" style={{ borderTop: '1px solid var(--hairline-soft)' }}>{foot}</div>}
+        )}
+        <div className={bodyClass ?? 'card-body'} style={{ flex: 1, overflowY: 'auto' }}>{children}</div>
+        {foot && <div className={footClass ? `dialog-foot ${footClass}` : 'dialog-foot'} style={{ borderTop: '1px solid var(--hairline-soft)' }}>{foot}</div>}
       </aside>
     </Overlay>
   )

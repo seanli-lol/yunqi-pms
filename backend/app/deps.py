@@ -73,6 +73,15 @@ def balance_of(db: Session, reservation_id: int) -> int:
     return sum(x.amount for x in charges) - sum(x.amount for x in pays)
 
 
+def folio_totals(db: Session, reservation_id: int) -> tuple[int, int]:
+    """（应收合计, 已收合计）——房态盘退房角标明细卡分列展示金额（余额 = 应收 - 已收）"""
+    from app.models import FolioItem, Payment
+
+    charges = db.query(FolioItem).filter(FolioItem.reservation_id == reservation_id).all()
+    pays = db.query(Payment).filter(Payment.reservation_id == reservation_id).all()
+    return sum(x.amount for x in charges), sum(x.amount for x in pays)
+
+
 def dates_overlap(a_in: date, a_out: date, b_in: date, b_out: date) -> bool:
     """日期区间是否重叠（半开区间：退房当天可再入住）"""
     return a_in < b_out and b_in < a_out

@@ -1,4 +1,6 @@
 /* API 客户端：JWT + 酒店上下文注入 */
+import { useQuery } from '@tanstack/react-query'
+
 export interface LoginUser {
   id: number
   name: string
@@ -157,6 +159,8 @@ export const api = {
 // ---------- 类型 ----------
 export interface Hotel { id: number; name: string; city: string; address: string; contact_name: string; is_active: boolean; room_count: number; staff_count: number; status: string }
 export interface Channel { id: number; name: string; color: string; sort_order: number; is_active: boolean }
+/** 收款方式（设置页可配置，各店独立）；payments.method 存稳定 code，默认项 cash/wechat/alipay/card */
+export interface PayMethod { id: number; code: string; name: string; remark: string; sort_order: number; is_active: boolean }
 export interface RoomType { id: number; name: string; base_price: number; hourly_price: number; capacity: number; description: string; room_count: number }
 export interface Room { id: number; room_number: string; floor: number; status: string; notes: string; room_type_id: number; room_type_name: string; base_price: number; hourly_price?: number }
 export interface CalBlock {
@@ -164,10 +168,13 @@ export interface CalBlock {
   channel_name: string; channel_color: string
   check_in: string; check_out: string; status: string; rate: number
   stay_type?: string; hours?: number
-  balance_due: number; col_start: number; nights: number
-  // 提前退房截断：灰块存根止于实际离店日（stub_cut=末日压左1/3），尾段放出「可售」虚纹
+  // 金额分列（退房角标明细卡用）：应收 = Σ folio_items，已收 = Σ payments，余额 = 应收 - 已收
+  balance_due: number; items_total: number; paid_total: number
+  col_start: number; nights: number
+  // 提前退房截断：灰块存根止于实际离店日（stub_cut=末日压左1/3）。
+  // 当日入住当日退（stub_nights==1，钟点房/当日往返）由前端聚合为格角「退房」角标；
+  // 原「可售」虚纹已退役——截断后右侧空白即可售
   truncated?: boolean; stub_nights?: number; stub_cut?: boolean
-  resale_start?: number; resale_nights?: number; resale_mid?: boolean
 }
 export interface BoardRoom {
   id: number; number: string; floor: number; status: string; notes: string
@@ -208,7 +215,7 @@ export interface RegistrationBody {
 /** 更正实收：把整单已收金额调整到目标总额 */
 export interface PaidTotalBody {
   amount: number
-  method?: 'cash' | 'wechat' | 'alipay' | 'card'
+  method?: string
 }
 export interface Folio {
   items: { id: number; category: string; description: string; amount: number; created_at: string; operator: string }[]
@@ -251,6 +258,11 @@ export function md(iso: string): string {
   return `${Number(m)}/${Number(d)}`
 }
 
+/** 带时间的 iso（账目/收款 created_at）→ 「M/D」短日期 */
+export function mdt(iso: string): string {
+  return iso.slice(5, 10).replace('-', '/')
+}
+
 export function addDaysIso(iso: string, n: number): string {
   const [y, m, d] = iso.split('-').map(Number)
   const dt = new Date(y, m - 1, d + n)
@@ -274,8 +286,23 @@ export const ROOM_STATUS_LABEL: Record<string, string> = {
   occupied: '在住', maintenance: '维修',
 }
 
+/** 老 code 兜底映射：收款方式被物理删除后，历史账单仍可读 */
 export const PAY_METHOD_LABEL: Record<string, string> = {
   cash: '现金', wechat: '微信', alipay: '支付宝', card: '刷卡',
+}
+
+/** 收款方式展示名：配置名优先（改名后历史记录也显示新名），再走老 code 兜底 */
+export function payMethodLabel(pms: PayMethod[] | undefined | null, code: string): string {
+  return pms?.find(m => m.code === code)?.name ?? PAY_METHOD_LABEL[code] ?? code
+}
+
+/** 各处收款下拉共用（只含启用项）；staleTime 0——设置页改完，收款弹层立即生效 */
+export function usePayMethods() {
+  return useQuery({
+    queryKey: ['pay-methods'],
+    queryFn: () => api.get<PayMethod[]>('/api/payment-methods'),
+    staleTime: 0,
+  })
 }
 
 /** 操作日志 action → 中文标签（报表页与预订详情共用） */
@@ -283,14 +310,16 @@ export const OP_ACTION_LABEL: Record<string, string> = {
   reservation_create: '创建预订', reservation_confirm: '确认预订', reservation_cancel: '取消预订',
   reservation_move: '调整预订', reservation_extend: '延住', reservation_edit: '编辑登记',
   check_in: '办理入住', check_in_undo: '撤销入住', check_out: '退房结算', check_out_undo: '撤销退房',
-  payment: '收款', payment_adjust: '更正实收', folio_add: '加收费用',
+  payment: '收款', payment_adjust: '更正实收', payment_delete: '删除收款', folio_add: '加收费用',
   room_status: '房态调整', room_create: '新增客房',
   room_type_create: '新增房型', room_type_update: '更新房型',
-  guest_create: '新增客人',
+  guest_create: '新增客人', guest_update: '更新客人',
   hotel_create: '新增酒店', hotel_update: '更新酒店',
   user_create: '新增员工', user_update: '更新员工',
   channel_create: '新增渠道', channel_update: '更新渠道',
   channel_disable: '停用渠道', channel_delete: '删除渠道',
+  paymethod_create: '新增收款方式', paymethod_update: '更新收款方式',
+  paymethod_disable: '停用收款方式', paymethod_delete: '删除收款方式',
   // 历史库遗留的清洁任务日志（功能已下线，保住旧记录的展示）
   housekeeping_create: '清洁任务', housekeeping_start: '清洁任务', housekeeping_done: '清洁任务',
 }
@@ -300,14 +329,16 @@ export const OP_ACTION_COLOR: Record<string, string> = {
   reservation_create: 'blue', reservation_confirm: 'green', reservation_cancel: 'red',
   reservation_move: 'blue', reservation_extend: 'purple', reservation_edit: 'blue',
   check_in: 'green', check_in_undo: 'orange', check_out: 'gray', check_out_undo: 'orange',
-  payment: 'green', payment_adjust: 'blue', folio_add: 'orange',
+  payment: 'green', payment_adjust: 'blue', payment_delete: 'red', folio_add: 'orange',
   room_status: 'gray', room_create: 'blue',
   room_type_create: 'blue', room_type_update: 'blue',
-  guest_create: 'blue',
+  guest_create: 'blue', guest_update: 'blue',
   hotel_create: 'blue', hotel_update: 'blue',
   user_create: 'blue', user_update: 'blue',
   channel_create: 'blue', channel_update: 'blue',
   channel_disable: 'gray', channel_delete: 'red',
+  paymethod_create: 'blue', paymethod_update: 'blue',
+  paymethod_disable: 'gray', paymethod_delete: 'red',
   // 历史库遗留的清洁任务日志（功能已下线，保住旧记录的展示）
   housekeeping_create: 'gray', housekeeping_start: 'gray', housekeeping_done: 'gray',
 }

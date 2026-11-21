@@ -1,6 +1,6 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { api, fmtMoney, md, PAY_METHOD_LABEL, type Reservation } from '../api'
+import { api, fmtMoney, md, payMethodLabel, usePayMethods, type Reservation } from '../api'
 import { Badge, Dialog, Drawer, Field, PageHead, Spinner, useToast } from '../ui'
 
 export default function Billing() {
@@ -8,7 +8,13 @@ export default function Billing() {
   const qc = useQueryClient()
   const [detail, setDetail] = useState<Reservation | null>(null)
   const [payOpen, setPayOpen] = useState(false)
-  const [method, setMethod] = useState('wechat')
+  // 收款方式来自设置（各店可配置）；默认值同步进 state，不能只靠 select 渲染兜底
+  const pms = usePayMethods()
+  const [method, setMethod] = useState('')
+  useEffect(() => {
+    const codes = pms.data?.map(m => m.code) ?? []
+    if (codes.length && !codes.includes(method)) setMethod(codes[0])
+  }, [pms.data, method])
 
   const list = useQuery({
     queryKey: ['billing-list'],
@@ -168,7 +174,7 @@ export default function Billing() {
               {folio.data.payments.map((x: any) => (
                 <div className="list-row" style={{ padding: '12px 16px' }} key={x.id}>
                   <span className="list-main">
-                    <span className="list-title" style={{ fontWeight: 500, fontSize: 14.5 }}>{PAY_METHOD_LABEL[x.method] ?? x.method}</span>
+                    <span className="list-title" style={{ fontWeight: 500, fontSize: 14.5 }}>{payMethodLabel(pms.data, x.method)}</span>
                     <span className="list-sub">{x.created_at.slice(5, 16).replace('T', ' ')} · {x.operator}</span>
                   </span>
                   <span className="list-amount">{fmtMoney(x.amount)}</span>
@@ -199,8 +205,7 @@ export default function Billing() {
       >
         <Field label="收款方式">
           <select className="select" value={method} onChange={e => setMethod(e.target.value)}>
-            <option value="wechat">微信</option><option value="alipay">支付宝</option>
-            <option value="cash">现金</option><option value="card">刷卡</option>
+            {(pms.data ?? []).map(m => <option key={m.code} value={m.code}>{m.name}</option>)}
           </select>
         </Field>
         <p className="hint">默认收取全部未结金额 {folio.data ? fmtMoney(folio.data.balance_due) : ''}。</p>

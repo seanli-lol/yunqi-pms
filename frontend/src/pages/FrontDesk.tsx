@@ -1,7 +1,7 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
-  api, fmtMoney, md, todayIso,
+  api, fmtMoney, md, todayIso, usePayMethods,
   type Reservation,
 } from '../api'
 import { CheckInDialog, ExtendDialog } from '../dialogs'
@@ -168,7 +168,13 @@ function CheckOutDialog({ res, onClose, onConfirm }: {
   onConfirm: (body: any, label: string) => void
 }) {
   const toast = useToast()
-  const [method, setMethod] = useState('wechat')
+  // 收款方式来自设置（各店可配置）；默认值同步进 state，不能只靠 select 渲染兜底
+  const pms = usePayMethods()
+  const [method, setMethod] = useState('')
+  useEffect(() => {
+    const codes = pms.data?.map(m => m.code) ?? []
+    if (codes.length && !codes.includes(method)) setMethod(codes[0])
+  }, [pms.data, method])
   const folio = useQuery({
     queryKey: ['folio', res.id],
     queryFn: () => api.get<any>(`/api/reservations/${res.id}/folio`),
@@ -213,8 +219,7 @@ function CheckOutDialog({ res, onClose, onConfirm }: {
           {due > 0 && (
             <Field label="收款方式">
               <select className="select" value={method} onChange={e => setMethod(e.target.value)}>
-                <option value="wechat">微信</option><option value="alipay">支付宝</option>
-                <option value="cash">现金</option><option value="card">刷卡</option>
+                {(pms.data ?? []).map(m => <option key={m.code} value={m.code}>{m.name}</option>)}
               </select>
             </Field>
           )}

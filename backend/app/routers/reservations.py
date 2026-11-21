@@ -12,10 +12,9 @@ from app.models import (Channel, FolioItem, Guest, OperationLog,
 from app.schemas import (CheckInBody, CheckOutBody, ExtendBody, FolioItemBody,
                          PaidTotalBody, PaymentBody, RegistrationBody,
                          ReservationBody, ReservationOut, ReservationPatch)
+from app.routers.payment_methods import assert_method_usable, pay_method_label
 
 router = APIRouter(prefix="/api/reservations", tags=["reservations"])
-
-METHOD_LABEL = dict(cash="现金", wechat="微信", alipay="支付宝", card="刷卡")
 
 
 # ---------- 序列化 ----------
@@ -380,10 +379,11 @@ def check_in(res_id: int, body: CheckInBody, user: User = Depends(get_current_us
     room.status = "occupied"
 
     if body.amount_received > 0:
+        assert_method_usable(db, r.hotel_id, body.payment_method)
         db.add(Payment(hotel_id=r.hotel_id, reservation_id=r.id,
                        method=body.payment_method, amount=body.amount_received, created_by=user.id))
         log_op(db, r.hotel_id, user, "payment", "payment", r.id,
-               f"入住实收 ¥{body.amount_received} · {METHOD_LABEL[body.payment_method]}")
+               f"入住实收 ¥{body.amount_received} · {pay_method_label(db, r.hotel_id, body.payment_method)}")
     g = db.get(Guest, r.guest_id)
     rt = db.get(RoomType, r.room_type_id)
     tag = "（前客未退）" if prev_status == "occupied" else ("（脏房入住）" if prev_status == "vacant_dirty" else "")
@@ -586,10 +586,11 @@ def adjust_paid_total(res_id: int, body: PaidTotalBody,
 
     if target > cur:
         # 补收差额：新增一笔收款，保留原有逐笔记录
+        assert_method_usable(db, r.hotel_id, body.method)
         diff = target - cur
         db.add(Payment(hotel_id=r.hotel_id, reservation_id=r.id,
                        method=body.method, amount=diff, created_by=user.id))
-        summary = f"更正实收 ¥{cur}→¥{target}（补收 ¥{diff} · {METHOD_LABEL[body.method]}）"
+        summary = f"更正实收 ¥{cur}→¥{target}（补收 ¥{diff} · {pay_method_label(db, r.hotel_id, body.method)}）"
     else:
         # 冲减：从最新一笔起删除，最后一笔按差额部分冲减
         remain = cur - target
@@ -621,6 +622,10 @@ def check_out(res_id: int, body: CheckOutBody, user: User = Depends(get_current_
     if r.check_in > date.today():
         raise HTTPException(400, f"入住日期为 {r.check_in:%m/%d}，尚未到店，不可办理退房")
 
+    # 随退房收取的款项先校验收款方式（本店配置且启用），再计入「收款后余额」判断
+    for p in body.payments:
+        if p.amount > 0:
+            assert_method_usable(db, r.hotel_id, p.method)
     # 本次随退房一并收取的款项先计入，再按「收款后余额」判断是否需要强制退房
     paid_now = sum(p.amount for p in body.payments if p.amount > 0)
     bal = balance_of(db, r.id) - paid_now
@@ -636,7 +641,7 @@ def check_out(res_id: int, body: CheckOutBody, user: User = Depends(get_current_
         db.add(Payment(hotel_id=r.hotel_id, reservation_id=r.id,
                        method=p.method, amount=p.amount, created_by=user.id))
         log_op(db, r.hotel_id, user, "payment", "payment", r.id,
-               f"收款 ¥{p.amount} · {METHOD_LABEL[p.method]}")
+               f"收款 ¥{p.amount} · {pay_method_label(db, r.hotel_id, p.method)}")
 
     r.status = "checked_out"
     # 记录实际离店日（提前退房时早于 check_out，房态盘据此截断灰块并放出尾部「可售」）
@@ -804,11 +809,34 @@ def add_payment(res_id: int, body: PaymentBody,
         raise HTTPException(404, "预订不存在")
     if body.amount <= 0:
         raise HTTPException(400, "收款金额需大于 0")
+    assert_method_usable(db, r.hotel_id, body.method)
     pay = Payment(hotel_id=r.hotel_id, reservation_id=r.id,
                   method=body.method, amount=body.amount, created_by=user.id)
     db.add(pay)
     db.flush()
     log_op(db, r.hotel_id, user, "payment", "payment", r.id,
-           f"收款 ¥{body.amount} · {METHOD_LABEL[body.method]}")
+           f"收款 ¥{body.amount} · {pay_method_label(db, r.hotel_id, body.method)}")
+    db.commit()
+    return {"ok": True, "balance_due": balance_of(db, res_id)}
+
+
+@router.delete("/{res_id}/payments/{payment_id}")
+def delete_payment(res_id: int, payment_id: int,
+                   user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """按笔删除收款（订单详情收款表行内删除）：
+    口径对齐 paid-total——仅「在住 / 已退房」可操作；pending/confirmed 的款项走取消预订统一清除。
+    物理删除该笔 Payment，写 payment_delete 日志（object_type=payment，object_id 存预订 id）。"""
+    r = db.get(Reservation, res_id)
+    if not r or (user.role != "platform_admin" and r.hotel_id != user.hotel_id):
+        raise HTTPException(404, "预订不存在")
+    if r.status not in ("checked_in", "checked_out"):
+        raise HTTPException(400, "仅「在住 / 已退房」预订可删除收款记录")
+    pay = db.get(Payment, payment_id)
+    if not pay or pay.reservation_id != res_id:
+        raise HTTPException(404, "收款记录不存在")
+    amount, method = pay.amount, pay.method
+    db.delete(pay)
+    log_op(db, r.hotel_id, user, "payment_delete", "payment", r.id,
+           f"删除收款 ¥{amount} · {pay_method_label(db, r.hotel_id, method)}")
     db.commit()
     return {"ok": True, "balance_due": balance_of(db, res_id)}
