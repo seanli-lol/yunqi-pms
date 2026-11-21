@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { X } from 'lucide-react'
+import { ChevronRight, X } from 'lucide-react'
 import {
   api, addDaysIso, fmtMoney, maskPhone, md, mdt, payMethodLabel, todayIso,
   ROOM_STATUS_LABEL, OP_ACTION_LABEL, OP_ACTION_COLOR,
@@ -69,15 +69,6 @@ function layoutRoomBlocks(blocks: CalBlock[]): {
   }
 }
 
-/** 由 board 方块构造「更正实收 / 撤销退房」弹层所需的 Reservation 骨架（弹层标题只展示这些字段） */
-function toReservation(b: CalBlock, roomNo: string): Reservation {
-  return {
-    id: b.id, code: b.code, guest_name: b.guest_name, room_number: roomNo,
-    check_in: b.check_in, check_out: b.check_out, status: b.status,
-    stay_type: b.stay_type, hours: b.hours,
-  } as Reservation
-}
-
 /** 退房角标明细卡的状态包（anchor 用于跟随定位） */
 interface DepInfo { roomNo: string; day: string; deps: CalBlock[]; anchor: HTMLElement }
 
@@ -140,10 +131,9 @@ export default function Rooms() {
   const [undoRes, setUndoRes] = useState<Reservation | null>(null)
   const [undoOutRes, setUndoOutRes] = useState<Reservation | null>(null)
   const [paidRes, setPaidRes] = useState<Reservation | null>(null)
-  // 退房角标明细卡：anchor 定位 + 钉住（点角标后移开鼠标不消失）+ 行展开状态
+  // 退房角标明细卡：anchor 定位 + 钉住（点角标后移开鼠标不消失）；行点击直接开订单详情抽屉
   const [dep, setDep] = useState<DepInfo | null>(null)
   const [depPinned, setDepPinned] = useState(false)
-  const [depOpen, setDepOpen] = useState<number[]>([])
   const depRef = useRef<HTMLDivElement | null>(null)
   const depHideTimer = useRef(0)
   const depPinnedRef = useRef(false)
@@ -194,7 +184,7 @@ export default function Rooms() {
   const formDrawerOpen = () => !!(checkinRes || extendRes || editRes || undoRes || undoOutRes || paidRes || adjustRes)
 
   /* ---------- 退房角标明细卡 ---------- */
-  const closeDep = useCallback(() => { setDep(null); setDepPinned(false); setDepOpen([]) }, [])
+  const closeDep = useCallback(() => { setDep(null); setDepPinned(false) }, [])
   const hideDepSoon = () => {
     window.clearTimeout(depHideTimer.current)
     depHideTimer.current = window.setTimeout(() => { if (!depPinnedRef.current) closeDep() }, 120)
@@ -208,7 +198,6 @@ export default function Rooms() {
     if (dep && dep.anchor === anchor) {
       if (depPinned) closeDep(); else setDepPinned(true)   // 再点角标：钉住 → 收起
     } else {
-      setDepOpen([])
       openDep(roomNo, col, list, anchor)
       setDepPinned(true)                                   // 点角标：钉住展开（触屏同此路径）
     }
@@ -857,6 +846,8 @@ export default function Rooms() {
                             // 预订抽屉开着：先完成开单；表单抽屉开着：忽略（与方块点击守卫同口径）
                             if (booking !== null) { toast('正在开单，请先提交或关闭右侧预订抽屉'); return }
                             if (formDrawerOpen()) return
+                            // 单笔聚合：跳过浮卡直接开订单详情（多笔才需要浮卡列表消歧）
+                            if (list.length === 1) { closeDep(); setDetailRes({ id: list[0].id } as Reservation); return }
                             toggleDep(room.number, col, list, e.currentTarget)
                           }}
                         >
@@ -1310,34 +1301,22 @@ export default function Rooms() {
         />
       )}
 
-      {/* ---------- 退房角标明细卡（同日多笔已退聚合；点角标钉住，行展开可编辑） ---------- */}
+      {/* ---------- 退房角标明细卡（同日多笔已退聚合；点角标钉住，点行直接开订单详情抽屉） ---------- */}
       {dep && createPortal(
         <div className="dep-pop" ref={depRef} role="dialog" aria-label={`${dep.roomNo} ${dep.day} 退房明细`}
           onMouseEnter={cancelDepHide} onMouseLeave={hideDepSoon}>
           <div className="t">{dep.roomNo} · {dep.day} 已退 {dep.deps.length} 笔</div>
           <div className="agg-list">
-            {dep.deps.map((d, i) => (
-              <div key={d.id} className={`agg-item${depOpen.includes(i) ? ' open' : ''}`}>
-                <button type="button" className="agg-row agg-toggle"
-                  onClick={() => setDepOpen(o => o.includes(i) ? o.filter(x => x !== i) : [...o, i])}>
+            {dep.deps.map(d => (
+              <div key={d.id} className="agg-item">
+                <button type="button" className="agg-row"
+                  onClick={() => { closeDep(); setDetailRes({ id: d.id } as Reservation) }}>
                   <span className="g">{d.guest_name}</span>
                   <span className="m">{d.stay_type === 'hourly' ? `钟点 ${d.hours ?? 0} 小时 · ${d.channel_name}` : `当日往返 · ${d.channel_name}`}</span>
                   <span className="badge badge-gray">已离店</span>
                   <b>¥{d.items_total}</b>
-                  <span className="agg-caret">▸</span>
+                  <span className="agg-caret"><ChevronRight size={14} strokeWidth={2.2} /></span>
                 </button>
-                <div className="agg-detail">
-                  <div className="kv"><span>入住</span><b>{md(d.check_in)}</b></div>
-                  <div className="kv"><span>时长</span><b>{d.stay_type === 'hourly' ? `${d.hours ?? 0} 小时` : '当日往返'}</b></div>
-                  <div className="kv"><span>应收</span><b>¥{d.items_total}</b></div>
-                  <div className="kv"><span>已收</span><b>¥{d.paid_total}</b></div>
-                  <div className="kv"><span>结算</span><b>{d.balance_due > 0 ? `欠 ¥${d.balance_due}` : '已结清'}</b></div>
-                  <div className="agg-ops">
-                    <button type="button" className="btn btn-ghost btn-sm" onClick={() => { closeDep(); setDetailRes({ id: d.id } as Reservation) }}>详情</button>
-                    <button type="button" className="btn btn-ghost btn-sm" onClick={() => { closeDep(); setPaidRes(toReservation(d, dep.roomNo)) }}>更正实收</button>
-                    <button type="button" className="btn btn-danger-ghost btn-sm" onClick={() => { closeDep(); setUndoOutRes(toReservation(d, dep.roomNo)) }}>撤销退房</button>
-                  </div>
-                </div>
               </div>
             ))}
           </div>
