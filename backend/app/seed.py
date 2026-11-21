@@ -149,9 +149,11 @@ def ensure_seed(db: Session) -> None:
         ("张敏", "15912348877", ""), ("周成", "13912340022", ""),
     ]
     g_map = {}
-    for name, phone, vip in guest_defs:
-        g = Guest(hotel_id=hx.id, name=name, phone=phone,
-                  id_number=f"3301**********{phone[-4:]}")
+    for i, (name, phone, vip) in enumerate(guest_defs):
+        # 18 位模拟证件号（确定性生成仅供演示；列表/抽屉均明文展示，真实号码由前台录入）
+        id_no = (f"330106{1955 + (i % 40):04d}{(i % 12) + 1:02d}"
+                 f"{(i % 28) + 1:02d}{i % 900 + 100:03d}{i % 10}")
+        g = Guest(hotel_id=hx.id, name=name, phone=phone, id_number=id_no)
         g.vip_level = vip
         db.add(g)
         db.flush()

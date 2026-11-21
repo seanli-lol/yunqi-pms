@@ -85,6 +85,15 @@ def upsert_guest(db: Session, hotel_id: int, name: str, phone: str, id_number: s
     if g is None and not phone:
         g = db.query(Guest).filter(Guest.hotel_id == hotel_id, Guest.name == name).first()
     if g is None:
+        # 新建档前校验证件号：同店已有档案用该证件号说明是老客，应走客人联想选中已有档案
+        if id_number.strip():
+            dup = (db.query(Guest)
+                   .filter(Guest.hotel_id == hotel_id,
+                           Guest.id_number == id_number.strip())
+                   .first())
+            if dup:
+                raise HTTPException(
+                    400, f"证件号已属于客户档案「{dup.name}」，请在客人联想中选择该档案")
         g = Guest(hotel_id=hotel_id, name=name.strip(), phone=phone.strip(),
                   id_number=id_number.strip())
         db.add(g)

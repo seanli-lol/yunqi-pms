@@ -933,6 +933,57 @@ def test_guest_notes_edit():
     assert r.status_code == 404
 
 
+def test_guest_profile_and_dup():
+    """客户档案查重与编辑：手机号/证件号同店撞档 400；编辑排除自身；q 支持证件号；跨店同号放行"""
+    tok = _login("zhouqi", hotel_id=1)["token"]
+    h = _headers(tok)
+    r = client.post("/api/guests", headers=h, json={
+        "name": "查重甲", "phone": "13788880001", "id_number": "330106199001010011"})
+    assert r.status_code == 200, r.text
+    gid_a = r.json()["id"]
+    # 建档：手机号/证件号撞已有档案 → 400 报出档案名
+    r = client.post("/api/guests", headers=h, json={"name": "查重乙", "phone": "13788880001"})
+    assert r.status_code == 400 and "手机号已属于客户档案" in r.json()["detail"]
+    r = client.post("/api/guests", headers=h, json={
+        "name": "查重丙", "id_number": "330106199001010011"})
+    assert r.status_code == 400 and "证件号已属于客户档案" in r.json()["detail"]
+    # 编辑：改成 A 占用的手机号/证件号 → 400
+    r = client.post("/api/guests", headers=h, json={"name": "查重丁", "phone": "13788880002"})
+    assert r.status_code == 200, r.text
+    gid_b = r.json()["id"]
+    r = client.patch(f"/api/guests/{gid_b}", headers=h,
+                     json={"phone": "13788880001", "id_number": "330106199001010011"})
+    assert r.status_code == 400 and "手机号已属于客户档案" in r.json()["detail"]
+    r = client.patch(f"/api/guests/{gid_b}", headers=h,
+                     json={"id_number": "330106199001010011"})
+    assert r.status_code == 400 and "证件号已属于客户档案" in r.json()["detail"]
+    # 编辑：排除自身（A 手机号不变 + 证件号换新值）→ 成功且 q 可按证件号搜、详情可见
+    r = client.patch(f"/api/guests/{gid_a}", headers=h,
+                     json={"phone": "13788880001", "id_number": "330106199001012345"})
+    assert r.status_code == 200, r.text
+    lst = client.get("/api/guests?q=330106199001012345", headers=h).json()
+    assert any(g["id"] == gid_a for g in lst)
+    detail = client.get(f"/api/guests/{gid_a}", headers=h).json()
+    assert detail["id_number"] == "330106199001012345"
+    # 空 PATCH（无变更）→ ok；姓名清空 → 400
+    assert client.patch(f"/api/guests/{gid_a}", headers=h, json={}).status_code == 200
+    r = client.patch(f"/api/guests/{gid_a}", headers=h, json={"name": "   "})
+    assert r.status_code == 400
+    # 跨店同号放行（查重是同店口径）：莫干山店建同手机号/证件号档案 → 成功
+    hotels = client.get("/api/hotels", headers=_headers(_login("admin")["token"])).json()
+    mogan = next(x["id"] for x in hotels if "莫干山店" in x["name"])
+    tok2 = _login("xumin", hotel_id=mogan)["token"]
+    r = client.post("/api/guests", headers=_headers(tok2), json={
+        "name": "莫干查重客", "phone": "13788880001", "id_number": "330106199001010011"})
+    assert r.status_code == 200, r.text
+    # 预订带新客人档案：证件号撞本店已有档案（查重甲现用 …12345）→ 400 引导走客人联想
+    r = client.post("/api/reservations", headers=h, json={
+        "room_type_id": 1, "guest_name": "新客戊", "guest_phone": "13788880009",
+        "guest_id_number": "330106199001012345",
+        "check_in": "2026-12-01", "check_out": "2026-12-02"})
+    assert r.status_code == 400 and "请在客人联想中选择该档案" in r.json()["detail"]
+
+
 def test_delete_payment():
     """订单详情收款表行内删除：仅 checked_in/checked_out 可删；物理删除 + payment_delete 日志 + 余额重算"""
     from datetime import date, timedelta

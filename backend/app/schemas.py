@@ -311,8 +311,12 @@ class GuestDetail(GuestOut):
     history: list[dict] = []
 
 
-class GuestNotesBody(BaseModel):
-    notes: str = ""
+class GuestUpdateBody(BaseModel):
+    """编辑客户档案：字段为 null 表示不改。"""
+    name: str | None = None
+    phone: str | None = None
+    id_number: str | None = None
+    notes: str | None = None
 
 
 # ---------- reports ----------

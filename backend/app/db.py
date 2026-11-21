@@ -31,6 +31,7 @@ _MIGRATION_COLUMNS = [
     ("reservations", "stay_type", "VARCHAR(10) NOT NULL DEFAULT 'normal'"),
     ("reservations", "hours", "INTEGER NOT NULL DEFAULT 0"),
     ("reservations", "actual_check_out", "DATE NULL"),
+    ("guests", "id_number", "VARCHAR(40) NOT NULL DEFAULT ''"),
 ]
 
 
