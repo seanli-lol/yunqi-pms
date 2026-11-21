@@ -18,11 +18,11 @@ import { GuestNameInput } from '../GuestNameInput'
     ② 当日入住当日退的窄存根（truncated + stub_nights==1，钟点房/当日往返）不画灰块，
        按退房日聚合为格角「退房」角标（不限笔数，10 笔也只占一枚角标位）。 */
 function layoutRoomBlocks(blocks: CalBlock[]): {
-  lanes: { b: CalBlock; span: number; lane: number }[]
+  lanes: { b: CalBlock; span: number; track: number; lane: number }[]
   deps: { col: number; list: CalBlock[] }[]
 } {
   const depMap = new Map<number, CalBlock[]>()
-  const real: { b: CalBlock; span: number; lane: number }[] = []
+  const real: { b: CalBlock; span: number; track: number; lane: number }[] = []
   blocks.forEach(b => {
     if (b.truncated && b.stub_nights === 1 && b.status === 'checked_out') {
       const arr = depMap.get(b.col_start) ?? []
@@ -32,21 +32,36 @@ function layoutRoomBlocks(blocks: CalBlock[]): {
     }
     const span = b.truncated ? (b.stub_nights ?? 0) : b.nights
     if (span <= 0) return // 存根整段窗外：无可视部分（「可售」虚纹已退役，空白即可售）
-    real.push({ b, span, lane: 0 })
+    real.push({ b, span, track: 0, lane: 0 })
   })
   const occupied: Array<Array<[number, number]>> = []
   real.sort((x, y) => x.b.col_start - y.b.col_start)
   real.forEach(item => {
     const s = item.b.col_start
     const e = s + item.span - 1
-    let lane = occupied.findIndex(tracks => tracks.some(([ls, le]) => s <= le && ls <= e))
-    if (lane < 0) {
+    // 贪心占轨：进第一条与 [s,e] 无冲突的轨（轨内方块互不重叠），全部冲突才开新轨。
+    // 不能写成「找到有冲突的轨就挤进去」——那样前后脚不重叠的预订会被排进新轨
+    // 压成 20px 小块，而真正同列重叠的两笔反而挤进同轨叠在一起。
+    let track = occupied.findIndex(tracks => tracks.every(([ls, le]) => e < ls || s > le))
+    if (track < 0) {
       occupied.push([[s, e]])
-      lane = occupied.length - 1
+      track = occupied.length - 1
     } else {
-      occupied[lane].push([s, e])
+      occupied[track].push([s, e])
     }
-    item.lane = lane
+    item.track = track
+  })
+  // 轨位 → 视觉 lane：0=整行 42px；1=上轨 lane-1；2=下轨 lane-2（lane 取值与 CSS 类名对应）。
+  // 同列存在异轨邻居的方块必须压进轨带（20px），否则 42px 方块会与下轨叠画；
+  // 前后脚退住、列上无邻居的孤块保持整行（203 周婷今退 + 张三明入 ≠ 重叠）。
+  // 同列可证明 ≤2 笔，track ≥2 仅兜底（cap 到下轨）。
+  real.forEach(item => {
+    const s = item.b.col_start
+    const e = s + item.span - 1
+    const paired = real.some(o =>
+      o !== item && o.track !== item.track &&
+      o.b.col_start <= e && s <= o.b.col_start + o.span - 1)
+    item.lane = item.track > 0 ? Math.min(item.track + 1, 2) : paired ? 1 : 0
   })
   return {
     lanes: real,
@@ -805,7 +820,8 @@ export default function Rooms() {
                         const cls = b.status === 'checked_in' ? 'stay'
                           : b.status === 'checked_out' ? 'past' : 'future'
                         const hourly = b.stay_type === 'hourly'
-                        const laneCls = lane > 0 ? ` lane-${Math.min(lane + 1, 2)}` : ''
+                        // lane 已在 layoutRoomBlocks 里映射好：0=整行无类，1/2=上下轨 lane-1/lane-2
+                        const laneCls = lane > 0 ? ` lane-${lane}` : ''
                         return (
                           <div
                             key={b.id}
