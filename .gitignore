@@ -33,5 +33,10 @@ backend/.env
 # 项目长期记忆（含本地部署环境细节，仅本机保留不入库）
 AGENTS.md
 
+# 设计资产与验收截图（仅本机保留不入库）
+design/
+design-system/
+screenshots/
+
 # 浏览器验证临时截图（正式验收截图在 screenshots/）
 gui-test-screenshots/

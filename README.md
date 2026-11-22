@@ -10,8 +10,6 @@
 [![MySQL](https://img.shields.io/badge/MySQL-8.4-4479A1?logo=mysql&logoColor=white)](docker-compose.yml)
 [![Docker](https://img.shields.io/badge/deploy-docker%20compose-2496ED?logo=docker&logoColor=white)](#方式一docker-一键部署推荐)
 
-![房态盘 · 日历时间轴](screenshots/deploy-rooms-light.png)
-
 </div>
 
 ---
@@ -70,8 +68,6 @@
 | 后端 | Python 3.14 · FastAPI · SQLAlchemy 2.0 · MySQL 8.4（PyMySQL 驱动，无 Docker 缺省回落 SQLite）· PyJWT（密码 PBKDF2） |
 | 前端 | Vite 6 · React 18 · TypeScript · Tailwind CSS v4 · React Router 6 · TanStack Query 5 · Recharts · lucide-react |
 | 部署 | Docker Compose 三容器（MySQL + FastAPI + nginx），一键构建、健康检查、自动建库种子 |
-
-![深色主题](screenshots/deploy-rooms-dark.png)
 
 ## 快速开始
 
@@ -168,18 +164,7 @@ frontend/src/
   pages/              # Login · Dashboard · Rooms(日历/网格) · Reservations · FrontDesk
                       #   · Billing · Guests · Reports · Settings
   api.ts              # fetch 封装（自动注入 JWT、静默续期、hotel_id 上下文）
-design/prototype/     # 高保真静态原型（视觉与交互的单一来源，见下文）
-design-system/        # 设计令牌文档
 ```
-
-## 设计稿（原型先行）
-
-项目采用「先出高保真原型 → 审阅确认 → 再落业务代码」的交付流程。阶段一原型保留在
-`design/prototype/`（纯 HTML/CSS/JS，可 `python3 -m http.server 4321 --directory design/prototype` 浏览，
-支持 `?theme=dark` 预览深色）。
-
-设计令牌单一来源 `design/prototype/tokens.css + components.css`，已 1:1 移植到前端 `frontend/src/index.css`——
-改视觉两处保持一致。
 
 ## 生产环境安全清单
 
