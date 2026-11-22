@@ -1115,3 +1115,38 @@ def test_room_edit_and_duplicate_guard():
     tok2 = _login("xumin", hotel_id=mogan)["token"]
     r = client.patch(f"/api/rooms/{room['id']}", headers=_headers(tok2), json={"notes": "跨店"})
     assert r.status_code == 404
+
+
+def test_hotel_edit_and_toggle():
+    """酒店编辑：局部更新 null=不改 + 营业/筹备切换影响登录页下拉 + 空名 400 + 非平台管理员 403"""
+    from app.routers.auth import _login_attempts
+    _login_attempts.clear()  # 测试共用 client IP，避免触发每分钟 10 次的登录限流
+    h = _headers(_login("admin")["token"])  # 平台管理员不选酒店
+    hotels = client.get("/api/hotels", headers=h).json()
+    west = next(x for x in hotels if "西湖店" in x["name"])
+
+    # 编辑四字段一次改齐 + 停用（筹备中）
+    r = client.patch(f"/api/hotels/{west['id']}", headers=h, json={
+        "name": "云栖酒店 · 西湖店", "city": "杭州", "address": "西湖区龙井路 99 号",
+        "contact_name": "王琳", "is_active": False})
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["address"] == "西湖区龙井路 99 号" and data["is_active"] is False
+
+    # 停用后登录页下拉不再出现（public 只出启用店）
+    assert all(x["id"] != west["id"] for x in client.get("/api/hotels/public").json())
+
+    # 局部更新口径：只传 is_active，其余字段不动（null=不改）
+    r = client.patch(f"/api/hotels/{west['id']}", headers=h, json={"is_active": True})
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["is_active"] is True and data["name"] == "云栖酒店 · 西湖店" \
+        and data["address"] == "西湖区龙井路 99 号"
+    assert any(x["id"] == west["id"] for x in client.get("/api/hotels/public").json())
+
+    # 空名 → 400；酒店管理员非平台管理员 → 403
+    r = client.patch(f"/api/hotels/{west['id']}", headers=h, json={"name": "  "})
+    assert r.status_code == 400
+    tok2 = _login("wanglin", hotel_id=1)["token"]
+    r = client.patch(f"/api/hotels/{west['id']}", headers=_headers(tok2), json={"name": "越权改名"})
+    assert r.status_code == 403

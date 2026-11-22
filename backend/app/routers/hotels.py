@@ -7,7 +7,7 @@ from app.db import get_db
 from app.deps import get_current_user, log_op, require_platform_admin
 from app.models import Hotel, Room, User
 from app.routers.payment_methods import ensure_default_methods
-from app.schemas import HotelBody, HotelOut, UserBody, UserOut, UserPatch
+from app.schemas import HotelBody, HotelOut, HotelPatch, UserBody, UserOut, UserPatch
 from app.security import hash_password
 
 router = APIRouter(prefix="/api", tags=["hotels & users"])
@@ -53,13 +53,38 @@ def create_hotel(body: HotelBody, user: User = Depends(get_current_user), db: Se
 
 
 @router.patch("/hotels/{hotel_id}", response_model=HotelOut)
-def patch_hotel(hotel_id: int, body: HotelBody, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def patch_hotel(hotel_id: int, body: HotelPatch, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """编辑酒店信息（仅平台管理员）：null=不改，无实际变化不打日志"""
     require_platform_admin(user)
     h = db.get(Hotel, hotel_id)
     if not h:
         raise HTTPException(404, "酒店不存在")
-    h.name, h.city, h.address, h.contact_name = body.name, body.city, body.address, body.contact_name
-    log_op(db, h.id, user, "hotel_update", "hotel", h.id, f"更新酒店信息「{h.name}」")
+    new_name = body.name.strip() if body.name is not None else None
+    if new_name is not None and not new_name:
+        raise HTTPException(400, "酒店名称不能为空")
+
+    changes: list[str] = []
+    if new_name is not None and new_name != h.name:
+        changes.append(f"名称 {h.name}→{new_name}")
+        h.name = new_name
+    if body.city is not None and body.city.strip() != h.city:
+        changes.append(f"城市 {h.city or '空'}→{body.city.strip()}")
+        h.city = body.city.strip()
+    if body.address is not None and body.address.strip() != h.address:
+        changes.append(f"地址 {h.address or '空'}→{body.address.strip()}")
+        h.address = body.address.strip()
+    if body.contact_name is not None and body.contact_name.strip() != h.contact_name:
+        changes.append(f"店长姓名 {h.contact_name or '空'}→{body.contact_name.strip()}")
+        h.contact_name = body.contact_name.strip()
+    if body.is_active is not None and body.is_active != h.is_active:
+        changes.append(f"状态 {'筹备中' if h.is_active else '营业中'}→{'营业中' if body.is_active else '筹备中'}")
+        h.is_active = body.is_active
+
+    if not changes:
+        return HotelOut(id=h.id, name=h.name, city=h.city, address=h.address,
+                        contact_name=h.contact_name, is_active=h.is_active)
+    log_op(db, h.id, user, "hotel_update", "hotel", h.id,
+           f"更新酒店「{h.name}」：{' · '.join(changes)}")
     db.commit()
     return HotelOut(id=h.id, name=h.name, city=h.city, address=h.address,
                     contact_name=h.contact_name, is_active=h.is_active)

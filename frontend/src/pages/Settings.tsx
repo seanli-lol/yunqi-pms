@@ -80,10 +80,17 @@ function HotelsTab({ data, loading, isAdmin }: { data?: Hotel[]; loading: boolea
   const toast = useToast()
   const qc = useQueryClient()
   const [addOpen, setAddOpen] = useState(false)
+  const [editHotel, setEditHotel] = useState<Hotel | null>(null)
   const mut = useMutation({
     mutationFn: (body: any) => api.post('/api/hotels', body),
     onSuccess: () => { toast('酒店已创建，数据将完全隔离'); setAddOpen(false); qc.invalidateQueries({ queryKey: ['hotels'] }) },
     onError: (e: any) => toast(e.message ?? '创建失败'),
+  })
+  // ['hotels'] 与 AppShell 平台管理员切店下拉共用缓存，改名/停用后自动跟着刷新
+  const editMut = useMutation({
+    mutationFn: (p: { id: number; body: Record<string, unknown> }) => api.patch(`/api/hotels/${p.id}`, p.body),
+    onSuccess: () => { toast('酒店信息已更新'); setEditHotel(null); qc.invalidateQueries({ queryKey: ['hotels'] }) },
+    onError: (e: any) => toast(e.message ?? '保存失败'),
   })
 
   return (
@@ -107,7 +114,9 @@ function HotelsTab({ data, loading, isAdmin }: { data?: Hotel[]; loading: boolea
                     <td className="num" data-label="客房数">{h.room_count}</td>
                     <td className="num" data-label="员工">{h.staff_count}</td>
                     <td data-label="状态">{h.is_active ? <Badge color="green">营业中</Badge> : <Badge color="orange">筹备中</Badge>}</td>
-                    <td className="no-label"><button className="btn btn-quiet btn-sm" onClick={() => toast('编辑酒店信息（演示）')}>编辑</button></td>
+                    <td className="no-label">
+                      {isAdmin && <button className="btn btn-quiet btn-sm" onClick={() => setEditHotel(h)}>编辑</button>}
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -122,6 +131,11 @@ function HotelsTab({ data, loading, isAdmin }: { data?: Hotel[]; loading: boolea
       </p>
 
       <AddHotelDialog open={addOpen} onClose={() => setAddOpen(false)} onSubmit={(b) => mut.mutate(b)} busy={mut.isPending} />
+      <EditHotelDialog
+        hotel={editHotel} busy={editMut.isPending}
+        onClose={() => setEditHotel(null)}
+        onSubmit={(b) => editHotel && editMut.mutate({ id: editHotel.id, body: b })}
+      />
     </>
   )
 }
@@ -158,6 +172,54 @@ function AddHotelDialog({ open, onClose, onSubmit, busy }: {
       </div>
       <Field label="地址"><input className="input" value={addr} onChange={e => setAddr(e.target.value)} /></Field>
       <p className="hint">创建后可在「员工账号」中为该酒店添加员工；新酒店默认为空，房型与客房需单独配置。</p>
+    </Dialog>
+  )
+}
+
+function EditHotelDialog({ hotel, onClose, onSubmit, busy }: {
+  hotel: Hotel | null; onClose: () => void; onSubmit: (b: Record<string, unknown>) => void; busy: boolean
+}) {
+  const toast = useToast()
+  const [name, setName] = useState('')
+  const [city, setCity] = useState('')
+  const [addr, setAddr] = useState('')
+  const [contact, setContact] = useState('')
+  const [active, setActive] = useState(true)
+  useEffect(() => {
+    if (hotel) {
+      setName(hotel.name); setCity(hotel.city); setAddr(hotel.address)
+      setContact(hotel.contact_name); setActive(hotel.is_active)
+    }
+  }, [hotel])
+  return (
+    <Dialog
+      open={!!hotel} onClose={onClose} title="编辑酒店信息"
+      foot={
+        <>
+          <button className="btn btn-ghost" onClick={onClose}>取消</button>
+          <button
+            className="btn btn-primary" disabled={busy || !name.trim()}
+            onClick={() => {
+              if (!name.trim()) { toast('请输入酒店名称'); return }
+              onSubmit({ name, city, address: addr, contact_name: contact, is_active: active })
+            }}
+          >保存修改</button>
+        </>
+      }
+    >
+      <Field label="酒店名称" required><input className="input" value={name} onChange={e => setName(e.target.value)} placeholder="如：云栖酒店 · 千岛湖店" /></Field>
+      <div className="form-row">
+        <Field label="城市"><input className="input" value={city} onChange={e => setCity(e.target.value)} placeholder="如：杭州" /></Field>
+        <Field label="店长姓名"><input className="input" value={contact} onChange={e => setContact(e.target.value)} /></Field>
+      </div>
+      <Field label="地址"><input className="input" value={addr} onChange={e => setAddr(e.target.value)} /></Field>
+      <Field label="状态" hint="筹备中的酒店不出现在登录页选择列表，已登录会话不受影响。">
+        <Segmented
+          value={active ? 'on' : 'off'}
+          options={[{ key: 'on', label: '营业中' }, { key: 'off', label: '筹备中' }]}
+          onChange={v => setActive(v === 'on')}
+        />
+      </Field>
     </Dialog>
   )
 }

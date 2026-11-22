@@ -79,6 +79,15 @@ class HotelOut(HotelBody):
     status: str = "营业中"
 
 
+class HotelPatch(BaseModel):
+    """编辑酒店（仅平台管理员）：局部更新 null=不改；is_active 切营业中/筹备中"""
+    name: str | None = None
+    city: str | None = None
+    address: str | None = None
+    contact_name: str | None = None
+    is_active: bool | None = None
+
+
 # ---------- users ----------
 class UserBody(BaseModel):
     name: str
