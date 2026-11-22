@@ -4,6 +4,7 @@ from datetime import date, datetime, timedelta
 
 from sqlalchemy.orm import Session
 
+from app import config
 from app.models import (Channel, FolioItem, Guest, Hotel,
                         OperationLog, Payment, Reservation, Room, RoomType, User)
 from app.security import encrypt_field, hash_password
@@ -30,15 +31,17 @@ def ensure_seed(db: Session) -> None:
     db.flush()
 
     # ---------- 用户 ----------
+    # admin 初始密码可由 ADMIN_PASSWORD 覆盖（生产部署）；DEMO_ACCOUNTS=off 时演示员工建成停用态
+    _demo_active = config.DEMO_ACCOUNTS_ENABLED
     users = [
-        User(hotel_id=None, username="admin", password_hash=hash_password("123456"), name="平台管理员", role="platform_admin"),
-        User(hotel_id=hx.id, username="wanglin", password_hash=hash_password("123456"), name="王琳", role="admin"),
-        User(hotel_id=hx.id, username="zhouqi", password_hash=hash_password("123456"), name="周琪", role="receptionist"),
-        User(hotel_id=hx.id, username="chenlu", password_hash=hash_password("123456"), name="陈露", role="receptionist"),
-        User(hotel_id=hx.id, username="zhanggf", password_hash=hash_password("123456"), name="张桂芳", role="housekeeper"),
+        User(hotel_id=None, username="admin", password_hash=hash_password(config.ADMIN_PASSWORD), name="平台管理员", role="platform_admin"),
+        User(hotel_id=hx.id, username="wanglin", password_hash=hash_password("123456"), name="王琳", role="admin", is_active=_demo_active),
+        User(hotel_id=hx.id, username="zhouqi", password_hash=hash_password("123456"), name="周琪", role="receptionist", is_active=_demo_active),
+        User(hotel_id=hx.id, username="chenlu", password_hash=hash_password("123456"), name="陈露", role="receptionist", is_active=_demo_active),
+        User(hotel_id=hx.id, username="zhanggf", password_hash=hash_password("123456"), name="张桂芳", role="housekeeper", is_active=_demo_active),
         User(hotel_id=hx.id, username="liuhb", password_hash=hash_password("123456"), name="刘红燕", role="housekeeper", is_active=False),
-        User(hotel_id=hm.id, username="xumin", password_hash=hash_password("123456"), name="徐敏", role="admin"),
-        User(hotel_id=hm.id, username="wufeng", password_hash=hash_password("123456"), name="吴峰", role="receptionist"),
+        User(hotel_id=hm.id, username="xumin", password_hash=hash_password("123456"), name="徐敏", role="admin", is_active=_demo_active),
+        User(hotel_id=hm.id, username="wufeng", password_hash=hash_password("123456"), name="吴峰", role="receptionist", is_active=_demo_active),
     ]
     db.add_all(users)
     db.flush()

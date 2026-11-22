@@ -90,6 +90,10 @@ JWT_EXPIRE_HOURS = 2
 REFRESH_TOKEN_DAYS = 7
 # 登录滑块验证码开关：.env 里写 CAPTCHA=off 可关闭（本地开发/自动化常用）
 CAPTCHA_ENABLED = os.environ.get("CAPTCHA", "on").lower() not in ("off", "0", "false", "no")
+# seed 的 admin 初始密码：缺省 123456 与演示口径一致；生产部署用环境变量覆盖（首次建库生效）
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "123456")
+# 演示员工账号开关：DEMO_ACCOUNTS=off 时 seed 把非 admin 账号建成停用态（生产部署防旁路登录）
+DEMO_ACCOUNTS_ENABLED = os.environ.get("DEMO_ACCOUNTS", "on").lower() not in ("off", "0", "false", "no")
 
 # 前端开发地址（CORS）
 FRONTEND_ORIGINS = [

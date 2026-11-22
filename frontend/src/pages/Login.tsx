@@ -123,9 +123,11 @@ export default function Login() {
           </button>
         </form>
 
-        <p className="hint" style={{ marginTop: 20, lineHeight: 1.6 }}>
-          演示账号：员工 zhouqi / 123456（任选酒店）<br />平台管理员 admin / 123456
-        </p>
+        {import.meta.env.VITE_DEMO_HINT !== 'off' && (
+          <p className="hint" style={{ marginTop: 20, lineHeight: 1.6 }}>
+            演示账号：员工 zhouqi / 123456（任选酒店）<br />平台管理员 admin / 123456
+          </p>
+        )}
       </main>
     </div>
   )

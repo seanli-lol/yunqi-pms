@@ -57,6 +57,11 @@ git clone <本仓库> && cd my-hotel-pms
 # 生产建议：仓库根目录建 .env 覆盖密钥（compose 自动读取并注入容器）
 #   JWT_SECRET=<强随机值>
 #   DATA_SECRET_KEY=<强随机值>     # 证件号加密密钥：一旦有数据上盘，此后【不可更换】
+#   ADMIN_PASSWORD=<admin 初始密码> # 缺省 123456；仅首次建库生效
+#   DEMO_ACCOUNTS=off              # 演示员工账号建成停用态（生产推荐）
+#   VITE_DEMO_HINT=off             # 登录页不显示演示账号提示（随构建固化）
+#   PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple   # 国内服务器构建加速
+#   NPM_REGISTRY=https://registry.npmmirror.com
 docker compose up -d --build      # 起 MySQL + 后端 + 前端(nginx) 三容器，等 docker compose ps 全部 healthy
 ```
 

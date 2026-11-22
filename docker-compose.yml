@@ -8,12 +8,17 @@
 # 本地开发（后端 uvicorn / 前端 vite 仍在宿主机跑）：
 #   docker compose up -d mysql           # 只起数据库，backend/.env 连 127.0.0.1:3306
 #
-# 生产必须覆盖的变量（写在本文件同目录的 .env 里，compose 自动读取并注入容器）：
+# 生产必须覆盖的变量（写在本文件同目录的 .env 里，compose 自动读取并注入容器/构建）：
 #   JWT_SECRET=<强随机值>                # 有 dev 默认值，生产必须换
 #   DATA_SECRET_KEY=<强随机值>           # 证件号加密密钥：一旦有数据上盘，此后【不可更换】（换钥=密文全废）
+#   ADMIN_PASSWORD=<初始密码>            # seed 的 admin 账号初始密码，缺省 123456（仅首次建库生效）
+#   DEMO_ACCOUNTS=off                    # 缺省 on；off 时演示员工账号建成停用态（生产推荐）
 #   CAPTCHA=on                           # 缺省 on；本地演示/自动化可临时 off
 #   PMS_PORT=8080                        # 门户端口
+#   MYSQL_ROOT_PASSWORD=<强随机值>       # root 初始密码，缺省演示值（仅首次建卷生效）
 #   DB_USER/DB_PASSWORD/DB_NAME          # 与 mysql 服务的建库账号同源；首次建卷后改值需 down -v
+#   PIP_INDEX_URL / NPM_REGISTRY         # 构建期依赖源（国内服务器可换清华源/npmmirror 加速）
+#   VITE_DEMO_HINT=off                   # 缺省 on；off 时登录页不显示演示账号提示（随前端构建固化）
 
 services:
   mysql:
@@ -21,7 +26,7 @@ services:
     container_name: pms-mysql
     restart: unless-stopped
     environment:
-      MYSQL_ROOT_PASSWORD: pms123456
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-pms123456}
       MYSQL_DATABASE: ${DB_NAME:-pms}
       MYSQL_USER: ${DB_USER:-pms}
       MYSQL_PASSWORD: ${DB_PASSWORD:-pms123456}
@@ -41,7 +46,10 @@ services:
       start_period: 15s
 
   backend:
-    build: ./backend
+    build:
+      context: ./backend
+      args:
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.org/simple}
     container_name: pms-backend
     restart: unless-stopped
     environment:
@@ -69,7 +77,11 @@ services:
     #   - "127.0.0.1:8000:8000"
 
   frontend:
-    build: ./frontend
+    build:
+      context: ./frontend
+      args:
+        NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmjs.org}
+        VITE_DEMO_HINT: ${VITE_DEMO_HINT:-on}
     container_name: pms-frontend
     restart: unless-stopped
     ports:

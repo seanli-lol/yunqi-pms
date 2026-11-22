@@ -2,8 +2,11 @@
 FROM node:22-alpine AS build
 
 WORKDIR /app
+# 构建期可注入：NPM_REGISTRY 换国内源；VITE_DEMO_HINT=off 隐藏登录页演示账号提示
+ARG NPM_REGISTRY=https://registry.npmjs.org
+ARG VITE_DEMO_HINT=on
 COPY package.json package-lock.json ./
-RUN npm ci
+RUN npm config set registry "${NPM_REGISTRY}" && npm ci
 
 COPY . .
 RUN npm run build
