@@ -165,6 +165,9 @@ def delete_room(room_id: int, user: User = Depends(get_current_user), db: Sessio
         raise HTTPException(404, "客房不存在")
     if db.query(Reservation).filter(Reservation.room_id == room_id).count():
         raise HTTPException(400, "该客房有历史预订，不可删除")
+    t = db.get(RoomType, r.room_type_id)
+    log_op(db, r.hotel_id, user, "room_delete", "room", r.id,
+           f"删除客房 {r.room_number}（{t.name if t else '未知房型'}）")
     db.delete(r)
     db.commit()
     return {"ok": True}

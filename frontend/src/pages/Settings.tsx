@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, fmtMoney, maskPhone, type Channel, type Hotel, type PayMethod, type Room, type RoomType, type UserRow } from '../api'
 import { useAuth } from '../auth'
-import { Badge, Dialog, Field, PageHead, Segmented, Spinner, useToast } from '../ui'
+import { Badge, ConfirmDialog, Dialog, Field, PageHead, Segmented, Spinner, useToast } from '../ui'
 
 type Tab = 'hotels' | 'channels' | 'paymethods' | 'types' | 'rooms' | 'staff'
 
@@ -637,6 +637,19 @@ function RoomsTab() {
     onSuccess: () => { toast('客房信息已更新'); setEditOpen(false); qc.invalidateQueries({ queryKey: ['rooms'] }) },
     onError: (e: any) => toast(e.message ?? '保存失败'),
   })
+  /** 待删除客房（null = 不打开确认弹层）；在住房不提供删除入口（必然有预订，后端会拒） */
+  const [delRes, setDelRes] = useState<Room | null>(null)
+  const delMut = useMutation({
+    mutationFn: (id: number) => api.delete(`/api/rooms/${id}`),
+    onSuccess: () => {
+      toast('客房已删除')
+      setDelRes(null)
+      // 房型的「间数」列随删除减少，一并失效
+      qc.invalidateQueries({ queryKey: ['rooms'] })
+      qc.invalidateQueries({ queryKey: ['room-types'] })
+    },
+    onError: (e: any) => toast(e.message ?? '删除失败'),
+  })
   const openEdit = (r: Room) => {
     setEditing(r)
     setEdNo(r.room_number)
@@ -690,6 +703,10 @@ function RoomsTab() {
                         </select>
                       )}
                       <button className="btn btn-quiet btn-sm" style={{ marginLeft: 6 }} onClick={() => openEdit(r)}>编辑</button>
+                      {r.status !== 'occupied' && (
+                        <button className="btn btn-quiet btn-sm" style={{ color: 'var(--danger-deep)' }}
+                                onClick={() => setDelRes(r)}>删除</button>
+                      )}
                     </td>
                   </tr>
                 ))}
@@ -755,6 +772,19 @@ function RoomsTab() {
         </Field>
         <p className="hint mt-8">房号需全店唯一，不可与现有客房重复；修改保存后即时生效。</p>
       </Dialog>
+
+      <ConfirmDialog
+        open={!!delRes} onClose={() => setDelRes(null)}
+        title="删除客房" sub={delRes ? `${delRes.room_number} · ${delRes.room_type_name}` : ''}
+        confirmText="删除" busy={delMut.isPending}
+        onConfirm={() => { if (delRes) delMut.mutate(delRes.id) }}
+      >
+        <p className="confirm-msg">确定删除这间客房吗？</p>
+        <div className="info-row"><span>房号</span><span>{delRes?.room_number}</span></div>
+        <div className="info-row"><span>房型 / 楼层</span><span>{delRes ? `${delRes.room_type_name} · ${delRes.floor}F` : ''}</span></div>
+        <div className="info-row"><span>当前状态</span><span>{delRes?.status === 'vacant_clean' ? '空净' : delRes?.status === 'vacant_dirty' ? '空脏' : delRes?.status === 'maintenance' ? '维修' : '在住'}</span></div>
+        <div className="danger-note">删除后该客房将从本店<b>永久移除</b>（房态盘与客房列表同步消失），操作写入酒店日志。仅<b>无任何预订记录</b>（含历史）的客房可删除；有在住客人或历史预订时会被拒绝，只能调整房态或保留档案。</div>
+      </ConfirmDialog>
     </>
   )
 }

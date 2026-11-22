@@ -1117,6 +1117,51 @@ def test_room_edit_and_duplicate_guard():
     assert r.status_code == 404
 
 
+def test_room_delete_guard():
+    """客房删除：无预订可删（记 room_delete 日志）+ 有预订记录（含已取消历史）拒绝 + 再删 404 + 跨店 404"""
+    from app.routers.auth import _login_attempts
+    _login_attempts.clear()  # 测试共用 client IP，避免触发每分钟 10 次的登录限流
+    tok = _login("wanglin", hotel_id=1)["token"]
+    h = _headers(tok)
+    types = client.get("/api/room-types", headers=h).json()
+    r = client.post("/api/rooms", headers=h, json={"room_number": "9905", "floor": 9, "room_type_id": types[0]["id"]})
+    assert r.status_code == 200, r.text
+    room = r.json()
+
+    # 有预订记录（未到店）→ 400；取消后仍是历史记录 → 依旧拒绝（历史完整性口径）
+    from datetime import date, timedelta
+    cin = (date.today() + timedelta(days=30)).isoformat()
+    cout = (date.today() + timedelta(days=31)).isoformat()
+    r = client.post("/api/reservations", headers=h, json={
+        "guest_name": "删房测试客", "check_in": cin, "check_out": cout,
+        "room_id": room["id"], "notes": "占住防删",
+    })
+    assert r.status_code == 200, r.text
+    res_id = r.json()["id"]
+    r = client.delete(f"/api/rooms/{room['id']}", headers=h)
+    assert r.status_code == 400
+    r = client.post(f"/api/reservations/{res_id}/cancel", headers=h)
+    assert r.status_code == 200, r.text
+    r = client.delete(f"/api/rooms/{room['id']}", headers=h)
+    assert r.status_code == 400
+
+    # 无任何预订记录的客房：可删除；再删 → 404
+    r = client.post("/api/rooms", headers=h, json={"room_number": "9906", "floor": 9, "room_type_id": types[0]["id"]})
+    assert r.status_code == 200, r.text
+    room2 = r.json()
+    r = client.delete(f"/api/rooms/{room2['id']}", headers=h)
+    assert r.status_code == 200 and r.json()["ok"] is True
+    r = client.delete(f"/api/rooms/{room2['id']}", headers=h)
+    assert r.status_code == 404
+
+    # 跨店隔离：莫干山店员工删西湖店客房 → 404
+    hotels = client.get("/api/hotels", headers=_headers(_login("admin")["token"])).json()
+    mogan = next(x["id"] for x in hotels if "莫干山店" in x["name"])
+    tok2 = _login("xumin", hotel_id=mogan)["token"]
+    r = client.delete(f"/api/rooms/{room['id']}", headers=_headers(tok2))
+    assert r.status_code == 404
+
+
 def test_hotel_edit_and_toggle():
     """酒店编辑：局部更新 null=不改 + 营业/筹备切换影响登录页下拉 + 空名 400 + 非平台管理员 403"""
     from app.routers.auth import _login_attempts
