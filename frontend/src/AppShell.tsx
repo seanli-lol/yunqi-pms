@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
+import { useQuery } from '@tanstack/react-query'
 import {
   BedDouble, BellRing, CalendarDays, ChevronRight, ChevronsLeft, Ellipsis, LayoutDashboard,
   LogOut, Monitor, Moon, ReceiptText, SlidersHorizontal, Sun, Users, ChartColumn,
 } from 'lucide-react'
+import { api, type Hotel } from './api'
 import { Overlay } from './ui'
 import { useAuth } from './auth'
 import { useTheme, type ThemeMode } from './theme'
@@ -166,6 +168,19 @@ export default function AppShell() {
   const loc = useLocation()
   const nav = useNavigate()
   const { user, activeHotelName, activeHotelId, setActiveHotel, logout } = useAuth()
+  // 平台管理员可操作的酒店全列表（与设置页共用 ['hotels'] 缓存）
+  const hotels = useQuery({
+    queryKey: ['hotels'],
+    queryFn: () => api.get<Hotel[]>('/api/hotels'),
+    enabled: user?.role === 'platform_admin',
+  })
+
+  // 平台管理员尚未选店（首次登录）时与设置页同口径：自动选中第一家酒店作为业务上下文
+  useEffect(() => {
+    if (user?.role === 'platform_admin' && !activeHotelId && hotels.data?.length) {
+      setActiveHotel(hotels.data[0].id, hotels.data[0].name)
+    }
+  }, [user, activeHotelId, hotels.data, setActiveHotel])
   // 角色 + 去掉「云栖酒店 · 」前缀的门店名（顶栏 title 与更多面板共用同一口径）
   const roleLine = `${user?.role_label ?? ''}${
     activeHotelName && user?.role !== 'platform_admin'
@@ -200,13 +215,15 @@ export default function AppShell() {
         </a>
         <nav className="nav">
           {user?.role === 'platform_admin' && (
-            <div style={{ padding: '8px 10px' }}>
+            <div className="hotel-switch" style={{ padding: '8px 10px' }}>
               <select
                 className="select" style={{ height: 36, fontSize: 13 }}
                 value={activeHotelId ?? ''} onChange={onSwitchHotel}
                 aria-label="切换酒店"
               >
-                <option value={activeHotelId ?? ''}>{activeHotelName ?? '选择酒店'}</option>
+                {hotels.data?.length
+                  ? hotels.data.map(h => <option key={h.id} value={h.id}>{h.name}</option>)
+                  : <option value={activeHotelId ?? ''}>{activeHotelName ?? '选择酒店'}</option>}
               </select>
             </div>
           )}

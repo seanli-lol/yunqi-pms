@@ -262,7 +262,8 @@ a.topbar-icon:hover { text-decoration: none; }
 .app.rail .brand-text,
 .app.rail .sidebar .user-name,
 .app.rail .sidebar .user-role,
-.app.rail .sidebar-user .btn { display: none; }
+.app.rail .sidebar-user .btn,
+.app.rail .sidebar .hotel-switch { display: none; }
 .app.rail .sidebar-user { justify-content: center; padding: 6px; }
 .app.rail .sidebar .nav-label {
   display: block; font-size: 0; height: 1px; padding: 0; margin: 10px 6px 4px;
