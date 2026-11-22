@@ -6,23 +6,32 @@ from app.db import get_db
 from app.deps import get_current_user, log_op, resolve_hotel_id
 from app.models import Guest, Reservation, Room, User
 from app.schemas import GuestBody, GuestDetail, GuestOut, GuestUpdateBody
+from app.security import decrypt_field, encrypt_field, mask_id_number
 
 router = APIRouter(prefix="/api/guests", tags=["guests"])
 
 
 def _dup_check(db: Session, hotel_id: int, *, phone: str | None = None,
                id_number: str | None = None, exclude_id: int | None = None) -> None:
-    """同店内手机号/证件号查重：非空才查，撞已有档案直接 400（文案对齐 reservations.registration）。"""
-    checks = [(phone, "手机号", Guest.phone), (id_number, "证件号", Guest.id_number)]
-    for value, label, col in checks:
-        if not value:
-            continue
-        q = db.query(Guest).filter(Guest.hotel_id == hotel_id, col == value)
+    """同店内手机号/证件号查重：非空才查，撞已有档案直接 400（文案对齐 reservations.registration）。
+
+    手机号明文存储走 SQL 等值；证件号密文存储（随机 nonce 不可 SQL 等值）取本店档案
+    解密后内存比对——与列表 q 过滤同款口径，演示级数据量可接受。
+    """
+    if phone:
+        q = db.query(Guest).filter(Guest.hotel_id == hotel_id, Guest.phone == phone)
         if exclude_id:
             q = q.filter(Guest.id != exclude_id)
         dup = q.first()
         if dup:
-            raise HTTPException(400, f"{label}已属于客户档案「{dup.name}」，请核对后再改")
+            raise HTTPException(400, f"手机号已属于客户档案「{dup.name}」，请核对后再改")
+    if id_number:
+        q = db.query(Guest).filter(Guest.hotel_id == hotel_id)
+        if exclude_id:
+            q = q.filter(Guest.id != exclude_id)
+        for g in q:
+            if decrypt_field(g.id_number) == id_number:
+                raise HTTPException(400, f"证件号已属于客户档案「{g.name}」，请核对后再改")
 
 
 @router.get("")
@@ -48,7 +57,7 @@ def list_guests(q: str | None = None, vip: str | None = None,
             spend += ((r.check_out - r.check_in).days) * r.rate
         last = max((s.check_in for s in stays), default=None)
         out.append(GuestOut(
-            id=g.id, name=g.name, phone=g.phone, id_number=g.id_number,
+            id=g.id, name=g.name, phone=g.phone, id_number=decrypt_field(g.id_number),
             vip_level=g.vip_level, notes=g.notes,
             stay_count=len(stays), total_spend=spend,
             last_stay=last.isoformat() if last else None,
@@ -88,7 +97,7 @@ def guest_detail(guest_id: int, user: User = Depends(get_current_user), db: Sess
             "amount": amount,
         })
     return GuestDetail(
-        id=g.id, name=g.name, phone=g.phone, id_number=g.id_number,
+        id=g.id, name=g.name, phone=g.phone, id_number=decrypt_field(g.id_number),
         vip_level=g.vip_level, notes=g.notes,
         stay_count=len(stays), total_spend=spend,
         last_stay=history[0]["check_in"] if history else None,
@@ -102,7 +111,7 @@ def create_guest(body: GuestBody, hotel_id: int | None = None,
     hid = resolve_hotel_id(user, hotel_id)
     _dup_check(db, hid, phone=body.phone.strip(), id_number=body.id_number.strip())
     g = Guest(hotel_id=hid, name=body.name.strip(), phone=body.phone.strip(),
-              id_number=body.id_number.strip(), vip_level=body.vip_level, notes=body.notes)
+              id_number=encrypt_field(body.id_number.strip()), vip_level=body.vip_level, notes=body.notes)
     db.add(g)
     db.flush()
     log_op(db, hid, user, "guest_create", "guest", g.id, f"新增客户档案「{g.name}」")
@@ -120,10 +129,11 @@ def update_guest(guest_id: int, body: GuestUpdateBody,
     new_name = body.name.strip() if body.name is not None else None
     new_phone = body.phone.strip() if body.phone is not None else None
     new_id = body.id_number.strip() if body.id_number is not None else None
+    plain_id = decrypt_field(g.id_number)  # 库内密文，比较/日志都用解密后的明文
     if new_name is not None and not new_name:
         raise HTTPException(400, "客人姓名不能为空")
     if (new_phone is not None and new_phone != g.phone) or \
-            (new_id is not None and new_id != g.id_number):
+            (new_id is not None and new_id != plain_id):
         _dup_check(db, g.hotel_id, phone=new_phone, id_number=new_id, exclude_id=g.id)
 
     changes: list[str] = []
@@ -133,9 +143,10 @@ def update_guest(guest_id: int, body: GuestUpdateBody,
     if new_phone is not None and new_phone != g.phone:
         changes.append(f"手机号 {g.phone or '未留'}→{new_phone or '未留'}")
         g.phone = new_phone
-    if new_id is not None and new_id != g.id_number:
-        changes.append(f"证件号 {g.id_number or '未登记'}→{new_id or '未登记'}")
-        g.id_number = new_id
+    if new_id is not None and new_id != plain_id:
+        # 摘要落掩码：操作日志与库同泄露面，不落明文证件号
+        changes.append(f"证件号 {mask_id_number(plain_id) or '未登记'}→{mask_id_number(new_id) or '未登记'}")
+        g.id_number = encrypt_field(new_id)
     if body.notes is not None and body.notes.strip() != g.notes:
         changes.append(f"备注「{g.notes or '空'}」→「{body.notes.strip() or '空'}」")
         g.notes = body.notes.strip()

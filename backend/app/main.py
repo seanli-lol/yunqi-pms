@@ -5,7 +5,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import FRONTEND_ORIGINS
-from app.db import Base, SessionLocal, engine, run_db_migrations
+from app.db import Base, SessionLocal, engine, backfill_encrypted_fields, run_db_migrations
 from app.models import Hotel
 from app.routers import auth, channels, guests, hotels, reports, reservations, rooms
 from app.routers import payment_methods
@@ -19,6 +19,7 @@ async def lifespan(app: FastAPI):
     run_db_migrations()
     db = SessionLocal()
     try:
+        backfill_encrypted_fields(db)  # 存量明文证件号 → 密文（幂等，seed 前执行）
         ensure_seed(db)
         # 存量库 / 新建店补种默认收款方式（幂等：有配置的店跳过）
         for h in db.query(Hotel).all():

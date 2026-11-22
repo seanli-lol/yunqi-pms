@@ -81,6 +81,9 @@ DATABASE_URL = _database_url()
 
 # 开发用密钥；生产环境请通过环境变量覆盖
 JWT_SECRET = os.environ.get("JWT_SECRET", "pms-dev-secret-2026")
+# PII 字段静态加密密钥（客人证件号 AES-256-GCM 落库加密）。生产必须覆盖；一旦启用不可更换
+# ——换钥后存量密文全部无法解密（decrypt_field 显式抛错）。
+DATA_SECRET_KEY = os.environ.get("DATA_SECRET_KEY", "pms-dev-data-key-2026")
 # 访问令牌（JWT）有效期；到期由前端用刷新令牌静默续期
 JWT_EXPIRE_HOURS = 2
 # 刷新令牌有效期（滑动窗口：每次续期都从当下重新计时）

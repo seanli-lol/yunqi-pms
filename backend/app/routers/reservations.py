@@ -13,6 +13,7 @@ from app.schemas import (CheckInBody, CheckOutBody, ExtendBody, FolioItemBody,
                          PaidTotalBody, PaymentBody, RegistrationBody,
                          ReservationBody, ReservationOut, ReservationPatch)
 from app.routers.payment_methods import assert_method_usable, pay_method_label
+from app.security import decrypt_field, encrypt_field
 
 router = APIRouter(prefix="/api/reservations", tags=["reservations"])
 
@@ -92,21 +93,19 @@ def upsert_guest(db: Session, hotel_id: int, name: str, phone: str, id_number: s
         g = db.query(Guest).filter(Guest.hotel_id == hotel_id, Guest.name == name).first()
     if g is None:
         # 新建档前校验证件号：同店已有档案用该证件号说明是老客，应走客人联想选中已有档案
+        # （证件号密文存储不可 SQL 等值 → 本店解密内存比对，口径同 guests._dup_check）
         if id_number.strip():
-            dup = (db.query(Guest)
-                   .filter(Guest.hotel_id == hotel_id,
-                           Guest.id_number == id_number.strip())
-                   .first())
-            if dup:
-                raise HTTPException(
-                    400, f"证件号已属于客户档案「{dup.name}」，请在客人联想中选择该档案")
+            for other in db.query(Guest).filter(Guest.hotel_id == hotel_id):
+                if decrypt_field(other.id_number) == id_number.strip():
+                    raise HTTPException(
+                        400, f"证件号已属于客户档案「{other.name}」，请在客人联想中选择该档案")
         g = Guest(hotel_id=hotel_id, name=name.strip(), phone=phone.strip(),
-                  id_number=id_number.strip())
+                  id_number=encrypt_field(id_number.strip()))
         db.add(g)
         db.flush()
     else:
         if id_number and not g.id_number:
-            g.id_number = id_number.strip()
+            g.id_number = encrypt_field(id_number.strip())
     return g
 
 

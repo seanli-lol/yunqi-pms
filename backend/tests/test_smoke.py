@@ -1195,3 +1195,68 @@ def test_hotel_edit_and_toggle():
     tok2 = _login("wanglin", hotel_id=1)["token"]
     r = client.patch(f"/api/hotels/{west['id']}", headers=_headers(tok2), json={"name": "越权改名"})
     assert r.status_code == 403
+
+
+def test_pii_field_encryption_and_masking():
+    """PII 静态加密：证件号库内密文不可读（含存量明文回填）+ 搜索/查重/详情照常 + 日志摘要掩码 + 密码哈希形态"""
+    from app.db import backfill_encrypted_fields
+    from app.models import Guest, OperationLog, User
+    from app.routers.auth import _login_attempts
+    from app.security import decrypt_field
+
+    _login_attempts.clear()
+    tok = _headers(_login("zhouqi", hotel_id=1)["token"])
+
+    # 建档（API 收明文）→ 库内是 enc1: 密文，不含明文片段，解密往返一致
+    r = client.post("/api/guests", headers=tok, json={
+        "name": "加密验证客", "phone": "13900009999", "id_number": "330106199001011234"})
+    assert r.status_code == 200, r.text
+    gid = r.json()["id"]
+    db = SessionLocal()
+    g = db.get(Guest, gid)
+    assert g.id_number.startswith("enc1:")
+    assert "199001011234" not in g.id_number
+    assert decrypt_field(g.id_number) == "330106199001011234"
+
+    # 存量明文回填：手工改回明文 → backfill 一次加密（幂等，enc1: 前缀视为已加密跳过）
+    g.id_number = "330106199001011234"
+    db.commit()
+    backfill_encrypted_fields(db)
+    backfill_encrypted_fields(db)  # 连跑两次验证幂等
+    db.expire_all()
+    g2 = db.get(Guest, gid)
+    assert g2.id_number.startswith("enc1:") and "199001011234" not in g2.id_number
+    assert decrypt_field(g2.id_number) == "330106199001011234"
+    db.close()
+
+    # API 仍返回明文（客户页明文口径不变）；q 按证件片段搜索照常可用（解密后内存过滤）
+    r = client.get(f"/api/guests/{gid}", headers=tok)
+    assert r.status_code == 200 and r.json()["id_number"] == "330106199001011234"
+    r = client.get("/api/guests", params={"q": "199001011234"}, headers=tok)
+    assert r.status_code == 200
+    assert any(x["id"] == gid for x in r.json())
+
+    # 同店撞证件号 → 400（内存解密查重）
+    r = client.post("/api/guests", headers=tok, json={
+        "name": "撞证号客", "phone": "13900009998", "id_number": "330106199001011234"})
+    assert r.status_code == 400 and "客户档案" in r.json()["detail"]
+
+    # 编辑证件号 → 日志摘要只落掩码（前3+***+后4），不落明文 A→B
+    r = client.patch(f"/api/guests/{gid}", headers=tok, json={"id_number": "330106199202022345"})
+    assert r.status_code == 200, r.text
+    db = SessionLocal()
+    log = (db.query(OperationLog)
+           .filter(OperationLog.action == "guest_update", OperationLog.object_id == gid)
+           .order_by(OperationLog.id.desc()).first())
+    db.close()
+    assert log is not None
+    assert "证件号 330***1234→330***2345" in log.summary
+    assert "199001011234" not in log.summary and "199202022345" not in log.summary
+
+    # 密码：库内只有加盐 PBKDF2（salt$digest = 32hex$64hex），无明文
+    db = SessionLocal()
+    u = db.query(User).filter(User.username == "zhouqi").first()
+    db.close()
+    salt, digest = u.password_hash.split("$", 1)
+    assert len(salt) == 32 and len(digest) == 64
+    assert "123456" not in u.password_hash

@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.models import (Channel, FolioItem, Guest, Hotel,
                         OperationLog, Payment, Reservation, Room, RoomType, User)
-from app.security import hash_password
+from app.security import encrypt_field, hash_password
 
 
 def _d(offset: int) -> date:
@@ -150,10 +150,11 @@ def ensure_seed(db: Session) -> None:
     ]
     g_map = {}
     for i, (name, phone, vip) in enumerate(guest_defs):
-        # 18 位模拟证件号（确定性生成仅供演示；列表/抽屉均明文展示，真实号码由前台录入）
+        # 18 位模拟证件号（确定性生成仅供演示；列表/抽屉均明文展示，真实号码由前台录入）；
+        # 落库即静态加密（security.encrypt_field），库泄露不可读
         id_no = (f"330106{1955 + (i % 40):04d}{(i % 12) + 1:02d}"
                  f"{(i % 28) + 1:02d}{i % 900 + 100:03d}{i % 10}")
-        g = Guest(hotel_id=hx.id, name=name, phone=phone, id_number=id_no)
+        g = Guest(hotel_id=hx.id, name=name, phone=phone, id_number=encrypt_field(id_no))
         g.vip_level = vip
         db.add(g)
         db.flush()

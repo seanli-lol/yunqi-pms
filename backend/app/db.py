@@ -1,8 +1,9 @@
-"""数据库：引擎、会话、模型基类 + 轻量通用迁移（SQLite / MySQL 两方言通用）"""
+"""数据库：引擎、会话、模型基类 + 轻量通用迁移（SQLite / MySQL 两方言通用）+ PII 存量回填"""
 from sqlalchemy import create_engine, inspect, text
-from sqlalchemy.orm import DeclarativeBase, sessionmaker
+from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from app.config import DATABASE_URL
+from app.security import encrypt_field
 
 # check_same_thread 是 SQLite 专属参数，MySQL（PyMySQL）不认识，按方言条件传入
 _is_sqlite = DATABASE_URL.startswith("sqlite")
@@ -37,6 +38,12 @@ _MIGRATION_COLUMNS = [
     ("payments", "remark", "VARCHAR(120) NOT NULL DEFAULT ''"),
 ]
 
+# 列类型放宽：仅 MySQL 执行 MODIFY（SQLite 不强制 VARCHAR 长度，无需处理）。
+# (table, column, 目标长度, 完整列 DDL)——当前列长度更短时才执行，幂等。
+_MIGRATION_ALTERTYPES = [
+    ("guests", "id_number", 120, "VARCHAR(120) NOT NULL DEFAULT ''"),  # 证件号密文（enc1: ~69 字符）
+]
+
 
 def run_db_migrations() -> None:
     """列存在性用 SQLAlchemy inspector 探测（SQLite/MySQL 通用），ALTER 语句两方言兼容。"""
@@ -48,3 +55,27 @@ def run_db_migrations() -> None:
             cols = {c["name"] for c in insp.get_columns(table)}
             if column not in cols:
                 conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}"))
+        if engine.dialect.name == "mysql":
+            for table, column, target_len, ddl in _MIGRATION_ALTERTYPES:
+                if not insp.has_table(table):
+                    continue
+                col = next((c for c in insp.get_columns(table) if c["name"] == column), None)
+                if col and (col["type"].length or 0) < target_len:
+                    conn.execute(text(f"ALTER TABLE {table} MODIFY {column} {ddl}"))
+
+
+def backfill_encrypted_fields(db: Session) -> None:
+    """存量明文证件号一次性加密回填（幂等：enc1: 前缀视为已加密跳过）。
+
+    main.lifespan 在 ensure_seed 之前调用；密钥换掉的历史密文不在回填范围（解密交给 API 显式报错）。
+    Guest 延迟导入：models.py 依赖本模块的 Base，模块级 import 会成环。
+    """
+    from app.models import Guest  # noqa: PLC0415
+
+    rows = (db.query(Guest)
+            .filter(Guest.id_number != "", ~Guest.id_number.like("enc1:%"))
+            .all())
+    for g in rows:
+        g.id_number = encrypt_field(g.id_number)
+    if rows:
+        db.commit()

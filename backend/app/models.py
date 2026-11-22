@@ -115,7 +115,9 @@ class Guest(Base):
     hotel_id: Mapped[int] = mapped_column(ForeignKey("hotels.id"), index=True)
     name: Mapped[str] = mapped_column(String(40))
     phone: Mapped[str] = mapped_column(String(20), default="")
-    id_number: Mapped[str] = mapped_column(String(40), default="")
+    # 证件号静态加密存储（security.encrypt_field，enc1: 前缀密文 ~69 字符，18 位证件号）；
+    # API 层解密返回明文（客户页明文口径不变）。列宽 120 对存量 MySQL 库由 _MIGRATION_ALTERTYPES 放宽
+    id_number: Mapped[str] = mapped_column(String(120), default="")
     vip_level: Mapped[str] = mapped_column(String(20), default="")
     notes: Mapped[str] = mapped_column(String(200), default="")
     created_at: Mapped[datetime] = mapped_column(DateTimeMS, default=datetime.now)
