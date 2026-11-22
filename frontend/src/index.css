@@ -913,7 +913,7 @@ textarea.input { height: auto; padding: 12px 14px; resize: vertical; }
   grid-column: 1; grid-row: 1; position: sticky; left: 0; z-index: 2;
   background: var(--bg); border-right: 1px solid var(--hairline-soft);
   display: flex; align-items: center; justify-content: center; gap: 5px;
-  /* 左右同宽内边距：无论是否显示「设净」，房号都保持水平居中 */
+  /* 左右同宽内边距：房态小按钮悬浮于内边距区不占布局，房号保持水平居中 */
   padding: 0 36px;
   font-size: 14.5px; font-weight: 600; color: var(--text-primary);
 }
@@ -931,9 +931,9 @@ textarea.input { height: auto; padding: 12px 14px; resize: vertical; }
 }
 .cal-setclean:hover { background: var(--success-soft-2); }
 .cal-setclean:active { transform: translateY(-50%) scale(.94); }
-/* 净房房号旁「设脏」小按钮：与「设净」对称，橙色系，定位到标签左侧 */
+/* 净房房号旁「设脏」小按钮：与「设净」同侧（房号右侧），橙色系 */
 .cal-setdirty {
-  position: absolute; left: 7px; top: 50%; transform: translateY(-50%);
+  position: absolute; right: 7px; top: 50%; transform: translateY(-50%);
   border: 0; cursor: pointer; font-size: 10.5px; font-weight: 600;
   color: var(--warning-deep); background: var(--warning-soft);
   border-radius: 100px; padding: 2px 7px; line-height: 1.4;
@@ -941,7 +941,7 @@ textarea.input { height: auto; padding: 12px 14px; resize: vertical; }
 }
 .cal-setdirty:hover { background: var(--warning-soft-2); }
 .cal-setdirty:active { transform: translateY(-50%) scale(.94); }
-@media (prefers-reduced-motion: reduce) { .cal-setdirty:active { transform: translateY(-50%); } }
+@media (prefers-reduced-motion: reduce) { .cal-setclean:active, .cal-setdirty:active { transform: translateY(-50%); } }
 .cal-block {
   grid-row: 1; align-self: center; z-index: 1;
   height: 42px; margin: 0 3px; border-radius: 9px; padding: 5px 8px 5px 13px;
