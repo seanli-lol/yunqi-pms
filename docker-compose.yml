@@ -61,6 +61,8 @@ services:
       DB_NAME: ${DB_NAME:-pms}
       JWT_SECRET: ${JWT_SECRET:-pms-dev-secret-2026}
       DATA_SECRET_KEY: ${DATA_SECRET_KEY:-pms-dev-data-key-2026}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-123456}
+      DEMO_ACCOUNTS: ${DEMO_ACCOUNTS:-on}
       CAPTCHA: ${CAPTCHA:-on}
       TZ: Asia/Shanghai                # 后端 datetime.now() 的「今天」按本地时区，容器缺省 UTC 会错位
     depends_on:
