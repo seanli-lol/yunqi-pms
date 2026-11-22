@@ -245,8 +245,22 @@ export interface UserRow {
   hotel_id: number | null; hotel_name: string | null; is_active: boolean; last_login_at: string | null
 }
 
+/** 金额显示：统一两位小数（保留到分） */
 export function fmtMoney(n: number): string {
-  return '¥' + n.toLocaleString('zh-CN')
+  return '¥' + n.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+}
+
+/** 金额按分取整（四舍五入 half-up）：Math.round(v*100) 有二进制尾差（4.025*100=402.4999…），
+ *  走 e 记法字符串中转规避；金额输入解析 / 整单总额折算单价统一走此函数 */
+export function round2(v: number): number {
+  return Number(Math.round(parseFloat(`${v}e2`)) + 'e-2')
+}
+
+/** 金额输入过滤：只留数字与一个小数点（「最多保留到分」由提交时 round2 兜底） */
+export function moneyInputText(v: string): string {
+  const s = v.replace(/[^\d.]/g, '')
+  const i = s.indexOf('.')
+  return i === -1 ? s : s.slice(0, i + 1) + s.slice(i + 1).replace(/\./g, '')
 }
 
 export function maskPhone(p: string): string {

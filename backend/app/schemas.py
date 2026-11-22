@@ -1,8 +1,18 @@
 """Pydantic 请求/响应模型"""
 from datetime import date, datetime
-from typing import Literal
+from decimal import ROUND_HALF_UP, Decimal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import AfterValidator, BaseModel, Field
+
+
+def _to_money(v: float) -> float:
+    """入参金额规整到分（四舍五入 half-up）：容忍浮点尾差，超过两位小数的入参按分落账。"""
+    return float(Decimal(str(v)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+
+
+# 金额入参类型：float 基型（旧前端传 int 自动兼容）+ 规整到分
+Money = Annotated[float, AfterValidator(_to_money)]
 
 
 # ---------- auth ----------
@@ -159,8 +169,8 @@ class PayMethodOut(PayMethodBody):
 # ---------- room types ----------
 class RoomTypeBody(BaseModel):
     name: str
-    base_price: int
-    hourly_price: int = 0  # 钟点房价（元/小时）；0 = 不支持钟点房
+    base_price: Money
+    hourly_price: Money = 0  # 钟点房价（元/小时）；0 = 不支持钟点房
     capacity: int = 2
     description: str = ""
 
@@ -194,7 +204,7 @@ class RoomOut(BaseModel):
     notes: str
     room_type_id: int
     room_type_name: str
-    base_price: int
+    base_price: float
 
 
 # ---------- reservations ----------
@@ -207,7 +217,7 @@ class ReservationBody(BaseModel):
     room_type_id: int | None = None
     room_id: int | None = None        # 房态盘直接预订：锁定房号
     channel_id: int | None = None
-    rate: int | None = None
+    rate: Money | None = None
     stay_type: Literal["normal", "hourly"] = "normal"
     hours: int = 0                    # 钟点房：入住时长（小时）
     notes: str = ""
@@ -219,7 +229,7 @@ class ReservationPatch(BaseModel):
     room_id: int | None = None
     check_in: date | None = None
     check_out: date | None = None
-    rate: int | None = None           # 房价单价（前端按整单总额折算）
+    rate: Money | None = None        # 房价单价（前端按整单总额折算）
 
 
 class RegistrationBody(BaseModel):
@@ -229,7 +239,7 @@ class RegistrationBody(BaseModel):
     guest_name: str | None = None
     guest_phone: str | None = None
     nights: int | None = None         # 普通房：改入住天数（离店日 = 入住日 + 天数）
-    rate: int | None = None
+    rate: Money | None = None
     channel_id: int | None = None
     notes: str | None = None
 
@@ -239,7 +249,7 @@ class PaidTotalBody(BaseModel):
 
     amount > 当前已收 → 补一笔收款（使用 method）；amount < 当前已收 → 从最新一笔起冲减。
     """
-    amount: int
+    amount: Money
     method: str = "cash"  # 收款方式 code；写入时按本店 payment_methods 校验
 
 
@@ -247,12 +257,12 @@ class ExtendBody(BaseModel):
     """延住：普通预订按晚数延长，钟点预订按小时延长"""
     nights: int = 1
     hours: int = 0
-    rate: int | None = None           # 应收单价（默认取预订当前 rate）
+    rate: Money | None = None         # 应收单价（默认取预订当前 rate）
 
 
 class CheckInBody(BaseModel):
     room_id: int
-    amount_received: int = 0
+    amount_received: Money = 0
     payment_method: str = "cash"  # 收款方式 code；写入时按本店 payment_methods 校验
 
 
@@ -263,14 +273,14 @@ class CheckOutBody(BaseModel):
 
 class PaymentBody(BaseModel):
     method: str  # 收款方式 code；写入时按本店 payment_methods 校验
-    amount: int
+    amount: Money
     remark: str = ""  # 收款备注（选填；＋收款弹层录入，超 120 字 400）
 
 
 class FolioItemBody(BaseModel):
     category: Literal["room_charge", "other"] = "other"
     description: str
-    amount: int
+    amount: Money
 
 
 class ReservationOut(BaseModel):
@@ -295,11 +305,11 @@ class ReservationOut(BaseModel):
     channel_id: int | None
     channel_name: str | None
     channel_color: str | None
-    rate: int
+    rate: float
     stay_type: str
     hours: int
     notes: str
-    balance_due: int
+    balance_due: float
     operator_name: str | None
     created_at: datetime
 
@@ -316,7 +326,7 @@ class GuestBody(BaseModel):
 class GuestOut(GuestBody):
     id: int
     stay_count: int = 0
-    total_spend: int = 0
+    total_spend: float = 0
     last_stay: str | None = None
 
 
@@ -342,9 +352,9 @@ class SummaryOut(BaseModel):
     occupancy: float
     adr: float
     revpar: float
-    revenue_total: int
-    revenue_room: int
-    revenue_other: int
+    revenue_total: float
+    revenue_room: float
+    revenue_other: float
     days: int
     rooms: int
 
@@ -352,9 +362,9 @@ class SummaryOut(BaseModel):
 class DayOut(BaseModel):
     date: date
     occupancy: float
-    revenue: int
-    revenue_room: int
-    revenue_other: int
+    revenue: float
+    revenue_room: float
+    revenue_other: float
     arrivals: int
     departures: int
     operations: list[dict]

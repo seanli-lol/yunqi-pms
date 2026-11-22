@@ -5,8 +5,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.db import get_db
-from app.deps import (balance_of, blocking_ids, free_rooms, get_current_user,
-                      log_op, resolve_hotel_id)
+from app.deps import (balance_of, blocking_ids, fmt_money, free_rooms,
+                      get_current_user, log_op, money, resolve_hotel_id)
 from app.models import (Channel, FolioItem, Guest, OperationLog,
                         Payment, Reservation, Room, RoomType, User)
 from app.schemas import (CheckInBody, CheckOutBody, ExtendBody, FolioItemBody,
@@ -52,7 +52,7 @@ def res_out(db: Session, r: Reservation) -> ReservationOut:
         channel_color=ch.color if ch else None,
         rate=r.rate, stay_type=r.stay_type, hours=r.hours,
         notes=r.notes,
-        balance_due=max(0, balance_of(db, r.id)),
+        balance_due=max(0.0, balance_of(db, r.id)),
         operator_name=op.name if op else None,
         created_at=r.created_at,
     )
@@ -77,12 +77,12 @@ def recalc_room_charge(db: Session, r: Reservation) -> None:
     if not fee:
         return
     if r.stay_type == "hourly":
-        fee.amount = r.hours * r.rate
-        fee.description = f"钟点房费 · {r.hours} 小时 × ¥{r.rate}"
+        fee.amount = money(r.hours * r.rate)
+        fee.description = f"钟点房费 · {r.hours} 小时 × ¥{fmt_money(r.rate)}"
     else:
         nights = (r.check_out - r.check_in).days
-        fee.amount = nights * r.rate
-        fee.description = f"房费 · {nights} 晚 × ¥{r.rate}"
+        fee.amount = money(nights * r.rate)
+        fee.description = f"房费 · {nights} 晚 × ¥{fmt_money(r.rate)}"
 
 
 def upsert_guest(db: Session, hotel_id: int, name: str, phone: str, id_number: str) -> Guest:
@@ -232,11 +232,11 @@ def create_reservation(body: ReservationBody, hotel_id: int | None = None,
     db.flush()
     # 预生成房费账目（在住挂账可见）
     if body.stay_type == "hourly":
-        fee_desc = f"钟点房费 · {hours} 小时 × ¥{rate}"
-        fee_amount = hours * rate
+        fee_desc = f"钟点房费 · {hours} 小时 × ¥{fmt_money(rate)}"
+        fee_amount = money(hours * rate)
     else:
-        fee_desc = f"房费 · {nights} 晚 × ¥{rate}"
-        fee_amount = nights * rate
+        fee_desc = f"房费 · {nights} 晚 × ¥{fmt_money(rate)}"
+        fee_amount = money(nights * rate)
     db.add(FolioItem(
         hotel_id=hid, reservation_id=r.id, category="room_charge",
         description=fee_desc,
@@ -313,7 +313,7 @@ def move_reservation(res_id: int, body: ReservationPatch,
     if span_changed:
         detail.append(f"{cin:%m/%d}–{cout:%m/%d}")
     if rate_changed:
-        detail.append(f"房价 ¥{body.rate}/晚")
+        detail.append(f"房价 ¥{fmt_money(body.rate)}/晚")
     guest = db.get(Guest, r.guest_id)
     log_op(db, r.hotel_id, user, "reservation_move", "reservation", r.id,
            f"调整预订 {r.code}（{guest.name if guest else ''}）：{' · '.join(detail) or '无变化'}")
@@ -348,16 +348,16 @@ def cancel_reservation(res_id: int, user: User = Depends(get_current_user), db: 
     r.status = "cancelled"
     # 取消是整条流转里唯一清除已收款的环节（撤销入住 / 撤销退房都保留款项）
     pays = db.query(Payment).filter(Payment.reservation_id == r.id).all()
-    paid_total = sum(p.amount for p in pays)
+    paid_total = money(sum(p.amount for p in pays))
     for p in pays:
         db.delete(p)
     g = db.get(Guest, r.guest_id)
     if paid_total > 0:
         log_op(db, r.hotel_id, user, "payment", "payment", r.id,
-               f"取消预订清除收款 ¥{paid_total}（共 {len(pays)} 笔，无退款凭证）")
+               f"取消预订清除收款 ¥{fmt_money(paid_total)}（共 {len(pays)} 笔，无退款凭证）")
     log_op(db, r.hotel_id, user, "reservation_cancel", "reservation", r.id,
            f"取消预订 {r.code}（{g.name if g else ''}）"
-           + (f" · 清除已收款 ¥{paid_total}" if paid_total > 0 else ""))
+           + (f" · 清除已收款 ¥{fmt_money(paid_total)}" if paid_total > 0 else ""))
     db.commit()
     return res_out(db, r)
 
@@ -395,9 +395,10 @@ def check_in(res_id: int, body: CheckInBody, user: User = Depends(get_current_us
     if body.amount_received > 0:
         assert_method_usable(db, r.hotel_id, body.payment_method)
         db.add(Payment(hotel_id=r.hotel_id, reservation_id=r.id,
-                       method=body.payment_method, amount=body.amount_received, created_by=user.id))
+                       method=body.payment_method, amount=money(body.amount_received),
+                       created_by=user.id))
         log_op(db, r.hotel_id, user, "payment", "payment", r.id,
-               f"入住实收 ¥{body.amount_received} · {pay_method_label(db, r.hotel_id, body.payment_method)}")
+               f"入住实收 ¥{fmt_money(body.amount_received)} · {pay_method_label(db, r.hotel_id, body.payment_method)}")
     g = db.get(Guest, r.guest_id)
     rt = db.get(RoomType, r.room_type_id)
     tag = "（前客未退）" if prev_status == "occupied" else ("（脏房入住）" if prev_status == "vacant_dirty" else "")
@@ -462,7 +463,7 @@ def edit_registration(res_id: int, body: RegistrationBody,
         raise HTTPException(400, "房价不能为负数")
     rate_changed = body.rate is not None and body.rate != r.rate
     if rate_changed:
-        changes.append(f"房价 ¥{r.rate}→¥{body.rate}")
+        changes.append(f"房价 ¥{fmt_money(r.rate)}→¥{fmt_money(body.rate)}")
         r.rate = body.rate
     if rate_changed or body.nights is not None:
         recalc_room_charge(db, r)
@@ -501,7 +502,7 @@ def undo_check_in(res_id: int, user: User = Depends(get_current_user), db: Sessi
 
     g = db.get(Guest, r.guest_id)
     room = db.get(Room, r.room_id) if r.room_id else None
-    paid_total = sum(p.amount for p in db.query(Payment).filter(Payment.reservation_id == r.id).all())
+    paid_total = money(sum(p.amount for p in db.query(Payment).filter(Payment.reservation_id == r.id).all()))
 
     # 款项保留：只有「取消预订」才清除已收款（撤销入住/撤销退房均不动 payments）
     r.status = "confirmed"
@@ -522,7 +523,7 @@ def undo_check_in(res_id: int, user: User = Depends(get_current_user), db: Sessi
            f"撤销入住 {g.name if g else ''} · {r.code} · {room.room_number if room else '未分配'} · "
            f"退回已确认"
            + (f" · 房态转空脏" if room and not other_guests else " · 同房仍有在住客人，房态不变")
-           + (f" · 已收款 ¥{paid_total} 保留" if paid_total > 0 else ""))
+           + (f" · 已收款 ¥{fmt_money(paid_total)} 保留" if paid_total > 0 else ""))
     db.commit()
     return res_out(db, r)
 
@@ -538,7 +539,7 @@ def undo_check_out(res_id: int, user: User = Depends(get_current_user), db: Sess
 
     g = db.get(Guest, r.guest_id)
     room = db.get(Room, r.room_id) if r.room_id else None
-    paid_total = sum(p.amount for p in db.query(Payment).filter(Payment.reservation_id == r.id).all())
+    paid_total = money(sum(p.amount for p in db.query(Payment).filter(Payment.reservation_id == r.id).all()))
 
     # 提前退房后尾段可能已售出新单：撤销回到在住会重新占满原订区间，重叠则拒绝
     # （前台需先处理新单——改房/改期或取消，再撤销退房）
@@ -572,7 +573,7 @@ def undo_check_out(res_id: int, user: User = Depends(get_current_user), db: Sess
     log_op(db, r.hotel_id, user, "check_out_undo", "reservation", r.id,
            f"撤销退房 {g.name if g else ''} · {r.code} · {room.room_number if room else '未分配'} · 回到在住"
            + (" · 房间维修中，房态保持维修" if room_kept_maint else " · 房态恢复在住")
-           + (f" · 已收款 ¥{paid_total} 保留" if paid_total > 0 else ""))
+           + (f" · 已收款 ¥{fmt_money(paid_total)} 保留" if paid_total > 0 else ""))
     db.commit()
     return res_out(db, r)
 
@@ -593,7 +594,7 @@ def adjust_paid_total(res_id: int, body: PaidTotalBody,
             .filter(Payment.reservation_id == r.id)
             .order_by(Payment.id)
             .all())
-    cur = sum(p.amount for p in pays)
+    cur = money(sum(p.amount for p in pays))
     target = body.amount
     if target == cur:
         return res_out(db, r)
@@ -601,23 +602,25 @@ def adjust_paid_total(res_id: int, body: PaidTotalBody,
     if target > cur:
         # 补收差额：新增一笔收款，保留原有逐笔记录
         assert_method_usable(db, r.hotel_id, body.method)
-        diff = target - cur
+        diff = money(target - cur)
         db.add(Payment(hotel_id=r.hotel_id, reservation_id=r.id,
                        method=body.method, amount=diff, created_by=user.id))
-        summary = f"更正实收 ¥{cur}→¥{target}（补收 ¥{diff} · {pay_method_label(db, r.hotel_id, body.method)}）"
+        summary = (f"更正实收 ¥{fmt_money(cur)}→¥{fmt_money(target)}"
+                   f"（补收 ¥{fmt_money(diff)} · {pay_method_label(db, r.hotel_id, body.method)}）")
     else:
         # 冲减：从最新一笔起删除，最后一笔按差额部分冲减
-        remain = cur - target
+        remain = money(cur - target)
         for p in reversed(pays):
             if remain <= 0:
                 break
             if p.amount <= remain:
-                remain -= p.amount
+                remain = money(remain - p.amount)
                 db.delete(p)
             else:
-                p.amount -= remain
+                p.amount = money(p.amount - remain)
                 remain = 0
-        summary = f"更正实收 ¥{cur}→¥{target}（冲减 ¥{cur - target}，无退款凭证）"
+        summary = (f"更正实收 ¥{fmt_money(cur)}→¥{fmt_money(target)}"
+                   f"（冲减 ¥{fmt_money(cur - target)}，无退款凭证）")
 
     log_op(db, r.hotel_id, user, "payment_adjust", "payment", r.id, summary)
     db.commit()
@@ -641,8 +644,8 @@ def check_out(res_id: int, body: CheckOutBody, user: User = Depends(get_current_
         if p.amount > 0:
             assert_method_usable(db, r.hotel_id, p.method)
     # 本次随退房一并收取的款项先计入，再按「收款后余额」判断是否需要强制退房
-    paid_now = sum(p.amount for p in body.payments if p.amount > 0)
-    bal = balance_of(db, r.id) - paid_now
+    paid_now = money(sum(p.amount for p in body.payments if p.amount > 0))
+    bal = money(balance_of(db, r.id) - paid_now)
     if bal > 0 and not body.force:
         raise HTTPException(409, detail={
             "message": "存在未结清账款，请先收款或强制退房",
@@ -653,10 +656,10 @@ def check_out(res_id: int, body: CheckOutBody, user: User = Depends(get_current_
         if p.amount <= 0:
             continue
         db.add(Payment(hotel_id=r.hotel_id, reservation_id=r.id,
-                       method=p.method, amount=p.amount, remark=(p.remark or "").strip(),
+                       method=p.method, amount=money(p.amount), remark=(p.remark or "").strip(),
                        created_by=user.id))
         log_op(db, r.hotel_id, user, "payment", "payment", r.id,
-               f"收款 ¥{p.amount} · {pay_method_label(db, r.hotel_id, p.method)}{_remark_suffix(p.remark)}")
+               f"收款 ¥{fmt_money(p.amount)} · {pay_method_label(db, r.hotel_id, p.method)}{_remark_suffix(p.remark)}")
 
     r.status = "checked_out"
     # 记录实际离店日（提前退房时早于 check_out，房态盘据此截断灰块并放出尾部「可售」）
@@ -678,7 +681,7 @@ def check_out(res_id: int, body: CheckOutBody, user: User = Depends(get_current_
     bal_after = balance_of(db, r.id)
     log_op(db, r.hotel_id, user, "check_out", "reservation", r.id,
            f"退房结算 {g.name if g else ''} · {room.room_number if room else ''} · "
-           f"{'结清' if bal_after <= 0 else f'未结清 ¥{bal_after}'}"
+           f"{'结清' if bal_after <= 0 else f'未结清 ¥{fmt_money(bal_after)}'}"
            + (" · 房态转空脏" if room and not other_guests else " · 同房仍有在住客人，房态不变"))
     db.commit()
     return res_out(db, r)
@@ -707,8 +710,8 @@ def extend_reservation(res_id: int, body: ExtendBody,
         if new_hours > 12:
             raise HTTPException(400, "钟点房时长累计不可超过 12 小时")
         r.hours = new_hours
-        amount = body.hours * rate
-        desc = f"延住房费 · {body.hours} 小时 × ¥{rate}"
+        amount = money(body.hours * rate)
+        desc = f"延住房费 · {body.hours} 小时 × ¥{fmt_money(rate)}"
     else:
         if body.hours:
             raise HTTPException(400, "仅钟点房可按小时延住")
@@ -723,8 +726,8 @@ def extend_reservation(res_id: int, body: ExtendBody,
                 room = db.get(Room, r.room_id)
                 raise HTTPException(409, f"{room.room_number if room else '客房'} 延住时段已被其他预订占用")
         r.check_out = new_out
-        amount = body.nights * rate
-        desc = f"延住房费 · {body.nights} 晚 × ¥{rate}"
+        amount = money(body.nights * rate)
+        desc = f"延住房费 · {body.nights} 晚 × ¥{fmt_money(rate)}"
 
     db.add(FolioItem(hotel_id=r.hotel_id, reservation_id=r.id,
                      category="room_charge", description=desc,
@@ -733,7 +736,7 @@ def extend_reservation(res_id: int, body: ExtendBody,
     g = db.get(Guest, r.guest_id)
     unit = f"{body.hours} 小时" if r.stay_type == "hourly" else f"{body.nights} 晚"
     log_op(db, r.hotel_id, user, "reservation_extend", "reservation", r.id,
-           f"延住 {g.name if g else ''} · {r.code}：+{unit} × ¥{rate}，应收 ¥{amount}，"
+           f"延住 {g.name if g else ''} · {r.code}：+{unit} × ¥{fmt_money(rate)}，应收 ¥{fmt_money(amount)}，"
            f"{'时长 ' + str(r.hours) + ' 小时' if r.stay_type == 'hourly' else '新离店 ' + format(r.check_out, '%m/%d')}")
     db.commit()
     return res_out(db, r)
@@ -791,8 +794,8 @@ def get_folio(res_id: int, user: User = Depends(get_current_user), db: Session =
             "id": x.id, "method": x.method, "amount": x.amount, "remark": x.remark,
             "created_at": x.created_at.isoformat(), "operator": users.get(x.created_by, ""),
         } for x in pays],
-        "total_charge": sum(x.amount for x in items),
-        "total_paid": sum(x.amount for x in pays),
+        "total_charge": money(sum(x.amount for x in items)),
+        "total_paid": money(sum(x.amount for x in pays)),
         "balance_due": balance_of(db, res_id),
     }
 
@@ -807,11 +810,11 @@ def add_folio_item(res_id: int, body: FolioItemBody,
         raise HTTPException(400, "当前状态不可加收费用")
     item = FolioItem(hotel_id=r.hotel_id, reservation_id=r.id,
                      category=body.category, description=body.description,
-                     amount=body.amount, created_by=user.id)
+                     amount=money(body.amount), created_by=user.id)
     db.add(item)
     db.flush()
     log_op(db, r.hotel_id, user, "folio_add", "reservation", r.id,
-           f"加收{dict(room_charge='房费', other='杂费')[body.category]} {body.description} ¥{body.amount}")
+           f"加收{dict(room_charge='房费', other='杂费')[body.category]} {body.description} ¥{fmt_money(body.amount)}")
     db.commit()
     return {"ok": True, "balance_due": balance_of(db, res_id)}
 
@@ -829,11 +832,11 @@ def add_payment(res_id: int, body: PaymentBody,
         raise HTTPException(400, "备注最多 120 字")
     assert_method_usable(db, r.hotel_id, body.method)
     pay = Payment(hotel_id=r.hotel_id, reservation_id=r.id,
-                  method=body.method, amount=body.amount, remark=remark, created_by=user.id)
+                  method=body.method, amount=money(body.amount), remark=remark, created_by=user.id)
     db.add(pay)
     db.flush()
     log_op(db, r.hotel_id, user, "payment", "payment", r.id,
-           f"收款 ¥{body.amount} · {pay_method_label(db, r.hotel_id, body.method)}{_remark_suffix(remark)}")
+           f"收款 ¥{fmt_money(body.amount)} · {pay_method_label(db, r.hotel_id, body.method)}{_remark_suffix(remark)}")
     db.commit()
     return {"ok": True, "balance_due": balance_of(db, res_id)}
 
@@ -855,6 +858,6 @@ def delete_payment(res_id: int, payment_id: int,
     amount, method, remark = pay.amount, pay.method, pay.remark
     db.delete(pay)
     log_op(db, r.hotel_id, user, "payment_delete", "payment", r.id,
-           f"删除收款 ¥{amount} · {pay_method_label(db, r.hotel_id, method)}{_remark_suffix(remark)}")
+           f"删除收款 ¥{fmt_money(amount)} · {pay_method_label(db, r.hotel_id, method)}{_remark_suffix(remark)}")
     db.commit()
     return {"ok": True, "balance_due": balance_of(db, res_id)}

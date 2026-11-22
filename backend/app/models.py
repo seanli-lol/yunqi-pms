@@ -1,7 +1,7 @@
 """数据模型：多店隔离，业务表均挂 hotel_id"""
 from datetime import date, datetime
 
-from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, String, UniqueConstraint
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, Numeric, String, UniqueConstraint
 from sqlalchemy.dialects.mysql import DATETIME as MYSQL_DATETIME
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -12,6 +12,11 @@ from app.db import Base
 # 逃过过期判断掉进轮换宽限分支返回 200（SQLite 存全精度微秒无此问题）。
 # 注意 SQLAlchemy 通用 DateTime 的首个位置参数是 timezone 不是精度，必须走 with_variant。
 DateTimeMS = DateTime().with_variant(MYSQL_DATETIME(fsp=6), "mysql")
+
+# 金额列统一用 Money：DECIMAL(12,2) 落库（保留到分），asdecimal=False 读出即 float
+# （驱动层 Decimal→float 转换，业务算术仍走 Python 数字；规整统一走 deps.money）。
+# 存量 MySQL 整数列由 db._MIGRATION_ALTERTYPES_NUMERIC 幂等 MODIFY 改型，数据自动保值。
+Money = Numeric(12, 2, asdecimal=False)
 
 
 class Hotel(Base):
@@ -88,9 +93,9 @@ class RoomType(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     hotel_id: Mapped[int] = mapped_column(ForeignKey("hotels.id"), index=True)
     name: Mapped[str] = mapped_column(String(40))
-    base_price: Mapped[int] = mapped_column(Integer)
+    base_price: Mapped[float] = mapped_column(Money)
     # 钟点房价（元/小时）；0 = 该房型不支持钟点房
-    hourly_price: Mapped[int] = mapped_column(Integer, default=0)
+    hourly_price: Mapped[float] = mapped_column(Money, default=0)
     capacity: Mapped[int] = mapped_column(Integer, default=2)
     description: Mapped[str] = mapped_column(String(120), default="")
 
@@ -139,7 +144,7 @@ class Reservation(Base):
     # pending / confirmed / checked_in / checked_out / cancelled / no_show
     status: Mapped[str] = mapped_column(String(20), default="confirmed")
     channel_id: Mapped[int | None] = mapped_column(ForeignKey("channels.id"), nullable=True)
-    rate: Mapped[int] = mapped_column(Integer, default=0)
+    rate: Mapped[float] = mapped_column(Money, default=0)
     # stay_type: normal（整晚）/ hourly（钟点房）；hourly 时 hours 为入住时长（小时）
     stay_type: Mapped[str] = mapped_column(String(10), default="normal")
     hours: Mapped[int] = mapped_column(Integer, default=0)
@@ -157,7 +162,7 @@ class FolioItem(Base):
     reservation_id: Mapped[int] = mapped_column(ForeignKey("reservations.id"), index=True)
     category: Mapped[str] = mapped_column(String(20), default="room_charge")  # room_charge / other
     description: Mapped[str] = mapped_column(String(120), default="")
-    amount: Mapped[int] = mapped_column(Integer, default=0)
+    amount: Mapped[float] = mapped_column(Money, default=0)
     created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTimeMS, default=datetime.now)
 
@@ -170,7 +175,7 @@ class Payment(Base):
     hotel_id: Mapped[int] = mapped_column(ForeignKey("hotels.id"), index=True)
     reservation_id: Mapped[int] = mapped_column(ForeignKey("reservations.id"), index=True)
     method: Mapped[str] = mapped_column(String(20), default="cash")  # cash / wechat / alipay / card
-    amount: Mapped[int] = mapped_column(Integer, default=0)
+    amount: Mapped[float] = mapped_column(Money, default=0)
     remark: Mapped[str] = mapped_column(String(120), default="")  # 收款备注（选填，＋收款弹层录入）
     created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTimeMS, default=datetime.now)

@@ -1,5 +1,6 @@
-"""依赖项：认证、酒店上下文解析、操作日志"""
+"""依赖项：认证、酒店上下文解析、操作日志、金额规整"""
 from datetime import date, datetime
+from decimal import ROUND_HALF_UP, Decimal
 
 import jwt
 from fastapi import Depends, HTTPException, Request
@@ -11,6 +12,20 @@ from app.models import Hotel, OperationLog, Reservation, Room, User
 from app.security import decode_token
 
 _bearer = HTTPBearer(auto_error=False)
+
+
+def money(v) -> float:
+    """金额规整到分（四舍五入 half-up）：全站金额计算/落库出口统一走此函数。
+
+    金额列是 DECIMAL(12,2)，Python 侧按 float 运算会有二进制尾差（如 0.1+0.2），
+    每次落库/比较前规整一次即可保证精确；str() 中转避免 Decimal(float) 吃进尾差。
+    """
+    return float(Decimal(str(v)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+
+
+def fmt_money(v) -> str:
+    """金额展示串（统一两位小数，无千分位）：¥ 符号由调用处拼接，如 f"¥{fmt_money(x)}"。"""
+    return f"{money(v):.2f}"
 
 
 def get_current_user(
@@ -64,22 +79,22 @@ def log_op(
     ))
 
 
-def balance_of(db: Session, reservation_id: int) -> int:
+def balance_of(db: Session, reservation_id: int) -> float:
     """账单余额：消费合计 - 收款合计（正数表示未结清）"""
     from app.models import FolioItem, Payment
 
     charges = db.query(FolioItem).filter(FolioItem.reservation_id == reservation_id).all()
     pays = db.query(Payment).filter(Payment.reservation_id == reservation_id).all()
-    return sum(x.amount for x in charges) - sum(x.amount for x in pays)
+    return money(sum(x.amount for x in charges) - sum(x.amount for x in pays))
 
 
-def folio_totals(db: Session, reservation_id: int) -> tuple[int, int]:
+def folio_totals(db: Session, reservation_id: int) -> tuple[float, float]:
     """（应收合计, 已收合计）——房态盘退房角标明细卡分列展示金额（余额 = 应收 - 已收）"""
     from app.models import FolioItem, Payment
 
     charges = db.query(FolioItem).filter(FolioItem.reservation_id == reservation_id).all()
     pays = db.query(Payment).filter(Payment.reservation_id == reservation_id).all()
-    return sum(x.amount for x in charges), sum(x.amount for x in pays)
+    return money(sum(x.amount for x in charges)), money(sum(x.amount for x in pays))
 
 
 def dates_overlap(a_in: date, a_out: date, b_in: date, b_out: date) -> bool:

@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ChevronRight, X } from 'lucide-react'
 import {
-  api, addDaysIso, fmtMoney, maskPhone, md, mdt, payMethodLabel, todayIso,
+  api, addDaysIso, fmtMoney, maskPhone, md, mdt, moneyInputText, payMethodLabel, round2, todayIso,
   ROOM_STATUS_LABEL, OP_ACTION_LABEL, OP_ACTION_COLOR,
   usePayMethods,
   type Board, type BoardRoom, type CalBlock, type Channel, type Folio, type OpLog,
@@ -455,9 +455,9 @@ export default function Rooms() {
         toast(`${lineRoom.room_number} 在 ${md(checkIn)} 起的时段已在本单里，请换房间或调整日期`)
         return
       }
-      setBooking({ lines: [...booking.lines, { room: lineRoom, checkIn, nights, totalText: String(nights * lineRoom.base_price), unitRef: null }] })
+      setBooking({ lines: [...booking.lines, { room: lineRoom, checkIn, nights, totalText: String(round2(nights * lineRoom.base_price)), unitRef: null }] })
     } else {
-      setBooking({ lines: [{ room: lineRoom, checkIn, nights, totalText: String(nights * lineRoom.base_price), unitRef: null }] })
+      setBooking({ lines: [{ room: lineRoom, checkIn, nights, totalText: String(round2(nights * lineRoom.base_price)), unitRef: null }] })
     }
   }
 
@@ -832,7 +832,7 @@ export default function Rooms() {
                             {(b.status === 'checked_in' || b.status === 'checked_out') && b.balance_due > 0 && <span className="owe">欠</span>}
                             {/* 超付（实付>应收，不限状态）——「欠」的互斥对位：超付时后端已把 balance_due 钳 0，欠徽章不会同显 */}
                             {b.paid_total > b.items_total && (
-                              <span className="over" title={`实付 ¥${b.paid_total} · 超收 ¥${b.paid_total - b.items_total}`}>超</span>
+                              <span className="over" title={`实付 ${fmtMoney(b.paid_total)} · 超收 ${fmtMoney(round2(b.paid_total - b.items_total))}`}>超</span>
                             )}
                           </div>
                         )
@@ -1358,7 +1358,7 @@ export default function Rooms() {
                   <span className="g">{d.guest_name}</span>
                   <span className="m">{d.stay_type === 'hourly' ? `钟点 ${d.hours ?? 0} 小时 · ${d.channel_name}` : `当日往返 · ${d.channel_name}`}</span>
                   <span className="badge badge-gray">已离店</span>
-                  <b>¥{d.items_total}</b>
+                  <b>{fmtMoney(d.items_total)}</b>
                   <span className="agg-caret"><ChevronRight size={14} strokeWidth={2.2} /></span>
                 </button>
               </div>
@@ -1395,7 +1395,7 @@ function AddPaymentDialog({ onClose, onSubmit, busy }: {
     const codes = pms.data?.map(m => m.code) ?? []
     if (codes.length && !codes.includes(method)) setMethod(codes[0])
   }, [pms.data, method])
-  const n = Number(amount)
+  const n = round2(Number(amount))
   return (
     <Dialog
       open
@@ -1415,10 +1415,10 @@ function AddPaymentDialog({ onClose, onSubmit, busy }: {
     >
       <Field label="收款金额（元）" required hint="在住/已退订单可随时补收；取消预订才会清除已收款。">
         <input
-          className="input" inputMode="numeric" autoFocus
-          placeholder="如：572"
+          className="input" inputMode="decimal" autoFocus
+          placeholder="如：572.50"
           value={amount}
-          onChange={e => setAmount(e.target.value.replace(/[^\d]/g, ''))}
+          onChange={e => setAmount(moneyInputText(e.target.value))}
         />
       </Field>
       <Field label="收款方式" hint="选项与顺序来自「设置 → 收款方式」配置。">
@@ -1457,7 +1457,7 @@ function EditDrawer({ res, channels, busy, onClose, onConfirm }: {
   const [phone, setPhone] = useState(res.guest_phone)
   const [nightsText, setNightsText] = useState(String(res.nights))
   /** 房价总额（整单）；单价按天数折算后提交 */
-  const [totalText, setTotalText] = useState(String(res.rate * (res.stay_type === 'hourly' ? res.hours : res.nights)))
+  const [totalText, setTotalText] = useState(String(round2(res.rate * (res.stay_type === 'hourly' ? res.hours : res.nights))))
   const [channelId, setChannelId] = useState<number | null>(res.channel_id)
   const [notes, setNotes] = useState(res.notes)
 
@@ -1465,9 +1465,9 @@ function EditDrawer({ res, channels, busy, onClose, onConfirm }: {
   const nights = Math.max(1, Math.round(Number(nightsText) || 1))
   const units = hourly ? res.hours : nights
   const unitLabel = hourly ? '小时' : '晚'
-  const total = Math.max(0, Math.round(Number(totalText) || 0))
-  const unitPrice = units > 0 ? Math.round(total / units) : 0
-  const finalTotal = unitPrice * units
+  const total = Math.max(0, round2(Number(totalText) || 0))
+  const unitPrice = units > 0 ? round2(total / units) : 0
+  const finalTotal = round2(unitPrice * units)
 
   /** 改天数时按「折合单价」重算总额（用户口径：总额根据天数计算） */
   const onNightsChange = (v: string) => {
@@ -1475,8 +1475,8 @@ function EditDrawer({ res, channels, busy, onClose, onConfirm }: {
     setNightsText(digits)
     const n = Math.max(1, Math.round(Number(digits) || 1))
     const prevUnits = units || 1
-    const prevUnit = Math.round(total / prevUnits) || res.rate
-    setTotalText(String(n * prevUnit))
+    const prevUnit = round2(total / prevUnits) || res.rate
+    setTotalText(String(round2(n * prevUnit)))
   }
 
   /* ---- 实收信息 ---- */
@@ -1490,8 +1490,8 @@ function EditDrawer({ res, channels, busy, onClose, onConfirm }: {
     if (codes.length && !codes.includes(method)) setMethod(codes[0])
   }, [pms.data, method])
   const paidValue = paidText ?? (folio ? String(curPaid) : '')
-  const paidAmount = Math.max(0, Math.round(Number(paidValue) || 0))
-  const paidDiff = paidAmount - curPaid
+  const paidAmount = Math.max(0, round2(Number(paidValue) || 0))
+  const paidDiff = round2(paidAmount - curPaid)
 
   return (
     <Drawer
@@ -1532,11 +1532,11 @@ function EditDrawer({ res, channels, busy, onClose, onConfirm }: {
         )}
         <Field
           label="房价总额（整单，元）"
-          hint={`折合 ¥${unitPrice}/${unitLabel}（${units} ${unitLabel}）· 最终应收 ¥${finalTotal.toLocaleString()}。`}
+          hint={`折合 ${fmtMoney(unitPrice)}/${unitLabel}（${units} ${unitLabel}）· 最终应收 ${fmtMoney(finalTotal)}。`}
         >
           <input
-            className="input" inputMode="numeric" value={totalText}
-            onChange={e => setTotalText(e.target.value.replace(/[^\d]/g, ''))}
+            className="input" inputMode="decimal" value={totalText}
+            onChange={e => setTotalText(moneyInputText(e.target.value))}
           />
         </Field>
       </div>
@@ -1562,8 +1562,8 @@ function EditDrawer({ res, channels, busy, onClose, onConfirm }: {
           : '读取中…'}
       >
         <input
-          className="input" inputMode="numeric" value={paidValue}
-          onChange={e => setPaidText(e.target.value.replace(/[^\d]/g, ''))}
+          className="input" inputMode="decimal" value={paidValue}
+          onChange={e => setPaidText(moneyInputText(e.target.value))}
         />
       </Field>
       <Field label="补收方式（增加时使用）">
@@ -1681,8 +1681,8 @@ function EditPaidDialog({ res, folio, busy, onClose, onConfirm }: {
   }, [pms.data, method])
   // 数据异步到达后用当前已收填充一次
   const value = amountText ?? (folio ? String(cur) : '')
-  const amount = Math.max(0, Math.round(Number(value) || 0))
-  const diff = amount - cur
+  const amount = Math.max(0, round2(Number(value) || 0))
+  const diff = round2(amount - cur)
 
   return (
     <Drawer
@@ -1708,8 +1708,8 @@ function EditPaidDialog({ res, folio, busy, onClose, onConfirm }: {
           : '读取中…'}
       >
         <input
-          className="input" inputMode="numeric" value={value}
-          onChange={e => setAmountText(e.target.value.replace(/[^\d]/g, ''))}
+          className="input" inputMode="decimal" value={value}
+          onChange={e => setAmountText(moneyInputText(e.target.value))}
         />
       </Field>
       <Field label="补收方式（增加时使用）">
@@ -1733,23 +1733,23 @@ function EditReservationDialog({ res, busy, onClose, onConfirm }: {
   const [checkIn, setCheckIn] = useState(res.check_in)
   const [nightsText, setNightsText] = useState(String(res.nights))
   const [totalText, setTotalText] = useState(
-    String(res.rate * (hourly ? res.hours : res.nights)),
+    String(round2(res.rate * (hourly ? res.hours : res.nights))),
   )
 
   const nights = Math.max(1, Math.round(Number(nightsText) || 1))
   const units = hourly ? res.hours : nights
   const unitLabel = hourly ? '小时' : '晚'
-  const total = Math.max(0, Math.round(Number(totalText) || 0))
-  const unitPrice = units > 0 ? Math.round(total / units) : 0
-  const finalTotal = unitPrice * units
+  const total = Math.max(0, round2(Number(totalText) || 0))
+  const unitPrice = units > 0 ? round2(total / units) : 0
+  const finalTotal = round2(unitPrice * units)
 
   /** 改天数时按折合单价重算总额 */
   const onNightsChange = (v: string) => {
     const digits = v.replace(/[^\d]/g, '')
     setNightsText(digits)
     const n = Math.max(1, Math.round(Number(digits) || 1))
-    const prevUnit = Math.round(total / (units || 1)) || res.rate
-    setTotalText(String(n * prevUnit))
+    const prevUnit = round2(total / (units || 1)) || res.rate
+    setTotalText(String(round2(n * prevUnit)))
   }
 
   return (
@@ -1786,11 +1786,11 @@ function EditReservationDialog({ res, busy, onClose, onConfirm }: {
       </div>
       <Field
         label="房价总额（整单，元）"
-        hint={`折合 ¥${unitPrice}/${unitLabel}（${units} ${unitLabel}）· 最终应收 ¥${finalTotal.toLocaleString()}。`}
+        hint={`折合 ${fmtMoney(unitPrice)}/${unitLabel}（${units} ${unitLabel}）· 最终应收 ${fmtMoney(finalTotal)}。`}
       >
         <input
-          className="input" inputMode="numeric" value={totalText}
-          onChange={e => setTotalText(e.target.value.replace(/[^\d]/g, ''))}
+          className="input" inputMode="decimal" value={totalText}
+          onChange={e => setTotalText(moneyInputText(e.target.value))}
         />
       </Field>
       <p className="hint">钟点房占整日固定，只能调整总价；改日期请重新开单或延住。</p>
@@ -1847,7 +1847,7 @@ function BookDrawer({ open, lines, channels, busy, onClose, onChangeLines, onSub
   useEffect(() => {
     if (!hourlyAvail && stayType === 'hourly' && lines.length > 0) {
       setStayType('normal')
-      onChangeLines(lines.map((l, i) => (i === 0 ? { ...l, totalText: String(l.nights * l.room.base_price), unitRef: null } : l)))
+      onChangeLines(lines.map((l, i) => (i === 0 ? { ...l, totalText: String(round2(l.nights * l.room.base_price)), unitRef: null } : l)))
     }
   }, [hourlyAvail, stayType])
 
@@ -1855,30 +1855,30 @@ function BookDrawer({ open, lines, channels, busy, onClose, onChangeLines, onSub
 
   const firstRoom = lines[0].room
   const isHourly = single && stayType === 'hourly'
-  const grandTotal = lines.reduce((s, l) => {
-    const n = Math.max(1, Math.round(Number(l.totalText) || 0))
+  const grandTotal = round2(lines.reduce((s, l) => {
+    const n = Math.max(0, round2(Number(l.totalText) || 0))
     return s + n
-  }, 0)
-  const linesInvalid = lines.some(l => l.nights <= 0 || (Math.round(Number(l.totalText) || 0) <= 0))
+  }, 0))
+  const linesInvalid = lines.some(l => l.nights <= 0 || (round2(Number(l.totalText) || 0) <= 0))
 
   /** 行内改天数：按行当前折合单价（手改过则用 unitRef，否则系统基准价）重算总额 */
   const lineNightsChange = (idx: number, v: string) => {
     const next = lines.map((l, i) => {
       if (i !== idx) return l
       const n = Math.max(1, Math.round(Number(v.replace(/[^\d]/g, '')) || 1))
-      const curTotal = Math.max(0, Math.round(Number(l.totalText) || 0))
-      const unit = l.unitRef ?? ((l.nights > 0 ? Math.round(curTotal / l.nights) : 0) || l.room.base_price)
-      return { ...l, nights: n, totalText: String(n * unit) }
+      const curTotal = Math.max(0, round2(Number(l.totalText) || 0))
+      const unit = l.unitRef ?? ((l.nights > 0 ? round2(curTotal / l.nights) : 0) || l.room.base_price)
+      return { ...l, nights: n, totalText: String(round2(n * unit)) }
     })
     onChangeLines(next)
   }
   /** 行内手改总额：折算单价记入 unitRef */
   const lineTotalChange = (idx: number, v: string) => {
-    const digits = v.replace(/[^\d]/g, '')
+    const digits = moneyInputText(v)
     const next = lines.map((l, i) => {
       if (i !== idx) return l
-      const t = Math.max(0, Math.round(Number(digits) || 0))
-      const unit = l.nights > 0 ? Math.round(t / l.nights) : 0
+      const t = Math.max(0, round2(Number(digits) || 0))
+      const unit = l.nights > 0 ? round2(t / l.nights) : 0
       return { ...l, totalText: digits, unitRef: unit }
     })
     onChangeLines(next)
@@ -1889,9 +1889,9 @@ function BookDrawer({ open, lines, channels, busy, onClose, onChangeLines, onSub
     onSubmit({
       guest_name: name, guest_phone: phone, channel_id: channelId, notes: '',
       lines: lines.map(l => {
-        const t = Math.max(0, Math.round(Number(l.totalText) || 0))
+        const t = Math.max(0, round2(Number(l.totalText) || 0))
         const n = Math.max(1, l.nights)
-        const rate = Math.round(t / n)
+        const rate = round2(t / n)
         if (isHourly) {
           // 钟点：仅第一行（单行模式），check_out 占整日 = check_in + 1 天，后端口径一致
           return { room_id: l.room.id, check_in: l.checkIn, check_out: addDaysIso(l.checkIn, 1), rate, nights: 1, stay_type: 'hourly' as const, hours }
@@ -1908,7 +1908,7 @@ function BookDrawer({ open, lines, channels, busy, onClose, onChangeLines, onSub
       sub="点击/拖选日历空白格追加房间；同一单共用客人与来源"
       foot={
         <>
-          <span className="hint" style={{ marginRight: 'auto' }}>共 {lines.length} 间 · 合计 ¥{grandTotal.toLocaleString()}</span>
+          <span className="hint" style={{ marginRight: 'auto' }}>共 {lines.length} 间 · 合计 {fmtMoney(grandTotal)}</span>
           <button className="btn btn-ghost" onClick={onClose}>取消</button>
           <button
             className="btn btn-primary" disabled={busy || !name.trim() || linesInvalid || lines.length === 0}
@@ -1928,10 +1928,10 @@ function BookDrawer({ open, lines, channels, busy, onClose, onChangeLines, onSub
       {hourlyAvail && (
         <Field label="入住方式">
           <div className="segmented">
-            <button className={!isHourly ? 'active' : ''} onClick={() => { setStayType('normal'); onChangeLines([{ ...lines[0], totalText: String(lines[0].nights * firstRoom.base_price), unitRef: null }]) }}>整晚</button>
-            <button className={isHourly ? 'active' : ''} onClick={() => { setStayType('hourly'); onChangeLines([{ ...lines[0], totalText: String(hours * (firstRoom.hourly_price || 0)) }]) }}>钟点</button>
+            <button className={!isHourly ? 'active' : ''} onClick={() => { setStayType('normal'); onChangeLines([{ ...lines[0], totalText: String(round2(lines[0].nights * firstRoom.base_price)), unitRef: null }]) }}>整晚</button>
+            <button className={isHourly ? 'active' : ''} onClick={() => { setStayType('hourly'); onChangeLines([{ ...lines[0], totalText: String(round2(hours * (firstRoom.hourly_price || 0))) }]) }}>钟点</button>
           </div>
-          <span className="hint">钟点价 ¥{firstRoom.hourly_price}/小时（设置 → 房型 中配置）；钟点房占用当日整天，创建后不可拖动改期。多间房仅支持整晚。</span>
+          <span className="hint">钟点价 {fmtMoney(firstRoom.hourly_price || 0)}/小时（设置 → 房型 中配置）；钟点房占用当日整天，创建后不可拖动改期。多间房仅支持整晚。</span>
         </Field>
       )}
       {isHourly && (
@@ -1940,7 +1940,7 @@ function BookDrawer({ open, lines, channels, busy, onClose, onChangeLines, onSub
             {[2, 3, 4, 6, 8].map(x => (
               <button
                 key={x} className={`chip${hours === x ? ' active' : ''}`}
-                onClick={() => { setHours(x); onChangeLines([{ ...lines[0], totalText: String(x * (firstRoom.hourly_price || 0)) }]) }}
+                onClick={() => { setHours(x); onChangeLines([{ ...lines[0], totalText: String(round2(x * (firstRoom.hourly_price || 0))) }]) }}
               >{x} 小时</button>
             ))}
           </div>
@@ -1952,9 +1952,9 @@ function BookDrawer({ open, lines, channels, busy, onClose, onChangeLines, onSub
       </div>
       <div className="book-lines">
         {lines.map((l, i) => {
-          const t = Math.max(0, Math.round(Number(l.totalText) || 0))
+          const t = Math.max(0, round2(Number(l.totalText) || 0))
           const n = Math.max(1, l.nights)
-          const unit = Math.round(t / n)
+          const unit = round2(t / n)
           return (
             <div key={`${l.room.id}-${l.checkIn}-${i}`} className="book-line">
               <div className="bl-room">
@@ -1974,12 +1974,12 @@ function BookDrawer({ open, lines, channels, busy, onClose, onChangeLines, onSub
                 </div>
               </div>
               <input
-                className="bl-input amt" inputMode="numeric" value={l.totalText}
+                className="bl-input amt" inputMode="decimal" value={l.totalText}
                 onChange={e => lineTotalChange(i, e.target.value)}
                 aria-label="行整单总额"
                 title="行整单总额（元）"
               />
-              <span className="bl-amt" style={{ color: 'var(--text-secondary)', fontWeight: 400, fontSize: 12 }}>折合 ¥{unit}/{isHourly ? '小时' : '晚'}</span>
+              <span className="bl-amt" style={{ color: 'var(--text-secondary)', fontWeight: 400, fontSize: 12 }}>折合 {fmtMoney(unit)}/{isHourly ? '小时' : '晚'}</span>
               <button className="icon-btn" aria-label="移除该房间" onClick={() => removeLine(i)}><X size={14} /></button>
             </div>
           )

@@ -106,7 +106,7 @@ export default function Billing() {
                       : r.balance_due > 0 ? <Badge color="red">未结清</Badge> : <Badge color="green">已结清</Badge>}
                   </td>
                   <td className="num" data-label="未结">
-                    {r.balance_due > 0 ? <b style={{ color: 'var(--danger-deep)' }}>{fmtMoney(r.balance_due)}</b> : '¥0'}
+                    {r.balance_due > 0 ? <b style={{ color: 'var(--danger-deep)' }}>{fmtMoney(r.balance_due)}</b> : fmtMoney(0)}
                   </td>
                   <td className="no-label">
                     <button className="btn btn-primary btn-sm" onClick={() => setDetail(r)}>查看明细</button>

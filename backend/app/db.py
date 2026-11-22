@@ -1,5 +1,5 @@
 """数据库：引擎、会话、模型基类 + 轻量通用迁移（SQLite / MySQL 两方言通用）+ PII 存量回填"""
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import Integer, create_engine, inspect, text
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from app.config import DATABASE_URL
@@ -39,9 +39,22 @@ _MIGRATION_COLUMNS = [
 ]
 
 # 列类型放宽：仅 MySQL 执行 MODIFY（SQLite 不强制 VARCHAR 长度，无需处理）。
-# (table, column, 目标长度, 完整列 DDL)——当前列长度更短时才执行，幂等。
+# (table, column, 目标长度, 完整列 DDL)——当前列长度更短时执行，幂等。
 _MIGRATION_ALTERTYPES = [
     ("guests", "id_number", 120, "VARCHAR(120) NOT NULL DEFAULT ''"),  # 证件号密文（enc1: ~69 字符）
+]
+
+# 金额列改型（INT → DECIMAL(12,2)，保留到分）：仅 MySQL 执行 MODIFY，存量整数数据自动保值。
+# 幂等守卫用「反射类型仍是整型才改」——不能复用上面 _MIGRATION_ALTERTYPES 的 .length 判断
+# （MySQL 反射出的 INTEGER 类型对象没有 .length 属性，会 AttributeError）；改完反射出
+# DECIMAL 不再命中 isinstance(Integer)，重复启动直接跳过。SQLite 无 MODIFY，靠类型亲和
+# 按实存值返回（模型层 Numeric(asdecimal=False) 读出即 float），测试库无需改列。
+_MIGRATION_ALTERTYPES_NUMERIC = [
+    ("room_types", "base_price", "DECIMAL(12,2) NOT NULL DEFAULT 0"),
+    ("room_types", "hourly_price", "DECIMAL(12,2) NOT NULL DEFAULT 0"),
+    ("reservations", "rate", "DECIMAL(12,2) NOT NULL DEFAULT 0"),
+    ("folio_items", "amount", "DECIMAL(12,2) NOT NULL DEFAULT 0"),
+    ("payments", "amount", "DECIMAL(12,2) NOT NULL DEFAULT 0"),
 ]
 
 
@@ -61,6 +74,12 @@ def run_db_migrations() -> None:
                     continue
                 col = next((c for c in insp.get_columns(table) if c["name"] == column), None)
                 if col and (col["type"].length or 0) < target_len:
+                    conn.execute(text(f"ALTER TABLE {table} MODIFY {column} {ddl}"))
+            for table, column, ddl in _MIGRATION_ALTERTYPES_NUMERIC:
+                if not insp.has_table(table):
+                    continue
+                col = next((c for c in insp.get_columns(table) if c["name"] == column), None)
+                if col and isinstance(col["type"], Integer):
                     conn.execute(text(f"ALTER TABLE {table} MODIFY {column} {ddl}"))
 
 

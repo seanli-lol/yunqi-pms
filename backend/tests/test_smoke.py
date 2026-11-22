@@ -295,7 +295,7 @@ def test_hourly_booking_flow():
     assert r.status_code == 400
     # 账目：钟点房费 4 × 45 = 180
     folio = client.get(f"/api/reservations/{res['id']}/folio", headers=h).json()
-    assert folio["items"][0]["description"] == "钟点房费 · 4 小时 × ¥45"
+    assert folio["items"][0]["description"] == "钟点房费 · 4 小时 × ¥45.00"
     assert folio["total_charge"] == 180
     # 入住 → 退房
     r = client.post(f"/api/reservations/{res['id']}/check-in", headers=h,
@@ -1260,3 +1260,113 @@ def test_pii_field_encryption_and_masking():
     salt, digest = u.password_hash.split("$", 1)
     assert len(salt) == 32 and len(digest) == 64
     assert "123456" not in u.password_hash
+
+
+def test_decimal_amounts():
+    """金额支持到分：房价/房费/收款两位小数全链路 + 入参规整到分 + 日志金额格式"""
+    from datetime import date, timedelta
+
+    from app.routers.auth import _login_attempts
+
+    _login_attempts.clear()
+    tok = _headers(_login("zhouqi", hotel_id=1)["token"])
+    cin = date.today().isoformat()
+    cout = (date.today() + timedelta(days=2)).isoformat()
+
+    types = client.get("/api/room-types", headers=tok).json()
+
+    # 房型价格支持小数：新建 288.6 / 钟点 45.5 → 读回一致
+    r = client.post("/api/room-types", headers=tok, json={
+        "name": "小数价房型", "base_price": 288.6, "hourly_price": 45.5})
+    assert r.status_code == 200, r.text
+    assert r.json()["base_price"] == 288.6 and r.json()["hourly_price"] == 45.5
+
+    # 建订：单价 299.99 × 2 晚 = 599.98（协议价带小数）
+    t = next(x for x in types if x["name"] == "双床房")
+    av = client.get(
+        f"/api/rooms/available?room_type_id={t['id']}&check_in={cin}&check_out={cout}"
+        f"&include_dirty=1&allow_prev_guest=1", headers=tok).json()
+    idle = [x for x in av if x["status"] in ("vacant_clean", "vacant_dirty")]
+    assert idle, "双床房无可用空房"
+    room = idle[0]
+    r = client.post("/api/reservations", headers=tok, json={
+        "guest_name": "小数客", "check_in": cin, "check_out": cout,
+        "room_id": room["id"], "rate": 299.99, "status": "confirmed"})
+    assert r.status_code == 200, r.text
+    res = r.json()
+    assert res["rate"] == 299.99
+    assert res["balance_due"] == 599.98
+    folio = client.get(f"/api/reservations/{res['id']}/folio", headers=tok).json()
+    assert folio["items"][0]["description"] == "房费 · 2 晚 × ¥299.99"
+    assert folio["total_charge"] == 599.98
+
+    # 入住实收小数 100.55 → 余额 499.43
+    r = client.post(f"/api/reservations/{res['id']}/check-in", headers=tok,
+                    json={"room_id": room["id"], "amount_received": 100.55,
+                          "payment_method": "wechat"})
+    assert r.status_code == 200, r.text
+    folio = client.get(f"/api/reservations/{res['id']}/folio", headers=tok).json()
+    assert folio["total_paid"] == 100.55
+    assert folio["balance_due"] == 499.43
+
+    # 入参 10.005 规整到 10.01（half-up 到分）：加收杂费
+    r = client.post(f"/api/reservations/{res['id']}/folio-items", headers=tok,
+                    json={"category": "other", "description": "洗衣费", "amount": 10.005})
+    assert r.status_code == 200, r.text
+    folio = client.get(f"/api/reservations/{res['id']}/folio", headers=tok).json()
+    assert folio["items"][-1]["amount"] == 10.01
+    assert folio["total_charge"] == 609.99  # 599.98 + 10.01
+
+    # 未结清退房 → 409（余额带分值）
+    r = client.post(f"/api/reservations/{res['id']}/check-out", headers=tok,
+                    json={"payments": []})
+    assert r.status_code == 409
+    assert r.json()["detail"]["balance_due"] == 509.44  # 609.99 - 100.55
+
+    # 随退房收款 509.44 结清
+    r = client.post(f"/api/reservations/{res['id']}/check-out", headers=tok, json={
+        "payments": [{"method": "cash", "amount": 509.44}]})
+    assert r.status_code == 200, r.text
+    assert r.json()["balance_due"] == 0
+    folio = client.get(f"/api/reservations/{res['id']}/folio", headers=tok).json()
+    assert folio["total_paid"] == 609.99
+
+    # 更正实收（已退房可操作）：目标 700.50 → 补收 90.51；再改回 609.99 → 整笔冲减 90.51
+    r = client.patch(f"/api/reservations/{res['id']}/paid-total", headers=tok,
+                     json={"amount": 700.5, "method": "cash"})
+    assert r.status_code == 200, r.text
+    folio = client.get(f"/api/reservations/{res['id']}/folio", headers=tok).json()
+    assert folio["total_paid"] == 700.5
+    assert folio["balance_due"] == -90.51  # 超付（负余额原样返回）
+    r = client.patch(f"/api/reservations/{res['id']}/paid-total", headers=tok,
+                     json={"amount": 609.99, "method": "cash"})
+    assert r.status_code == 200, r.text
+    folio = client.get(f"/api/reservations/{res['id']}/folio", headers=tok).json()
+    assert folio["total_paid"] == 609.99
+
+    # 日志金额统一两位小数格式
+    logs = client.get(f"/api/reservations/{res['id']}/logs", headers=tok).json()
+    summaries = [x["summary"] for x in logs]
+    assert any("入住实收 ¥100.55" in s for s in summaries)
+    assert any("收款 ¥509.44" in s for s in summaries)
+    assert any("更正实收 ¥609.99→¥700.50（补收 ¥90.51" in s for s in summaries)
+    assert any("更正实收 ¥700.50→¥609.99（冲减 ¥90.51，无退款凭证）" in s for s in summaries)
+
+    # 钟点房：单价 45.5 × 4 小时 = 182.00（显式传协议价放行）
+    t2 = next(x for x in types if x["name"] == "大床房")
+    av2 = client.get(
+        f"/api/rooms/available?room_type_id={t2['id']}&check_in={cin}&check_out={cout}"
+        f"&include_dirty=1&allow_prev_guest=1", headers=tok).json()
+    idle2 = [x for x in av2 if x["status"] in ("vacant_clean", "vacant_dirty")]
+    assert idle2, "大床房无可用空房"
+    room2 = idle2[0]
+    r = client.post("/api/reservations", headers=tok, json={
+        "guest_name": "小数钟点客", "check_in": cin, "check_out": cout,
+        "room_id": room2["id"], "stay_type": "hourly", "hours": 4, "rate": 45.5,
+        "status": "confirmed"})
+    assert r.status_code == 200, r.text
+    res2 = r.json()
+    assert res2["rate"] == 45.5
+    folio2 = client.get(f"/api/reservations/{res2['id']}/folio", headers=tok).json()
+    assert folio2["items"][0]["description"] == "钟点房费 · 4 小时 × ¥45.50"
+    assert folio2["total_charge"] == 182.0

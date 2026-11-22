@@ -118,7 +118,7 @@ export default function Dashboard() {
                     {x.guest_name}
                     {x.vip_level && <Badge color="purple" >{x.vip_level}</Badge>}
                   </span>
-                  <span className="list-sub">{x.code} · {x.room_type_name} · {x.check_in.slice(5)} – {x.check_out.slice(5)} · ¥{x.rate}</span>
+                  <span className="list-sub">{x.code} · {x.room_type_name} · {x.check_in.slice(5)} – {x.check_out.slice(5)} · {fmtMoney(x.rate)}</span>
                 </span>
                 <span className="list-side">
                   <button className="btn btn-primary btn-sm" onClick={() => nav('/front-desk')}>办理入住</button>

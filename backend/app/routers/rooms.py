@@ -5,8 +5,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.db import get_db
-from app.deps import (dates_overlap, free_rooms, get_current_user, log_op,
-                      resolve_hotel_id)
+from app.deps import (dates_overlap, fmt_money, free_rooms, get_current_user,
+                      log_op, money, resolve_hotel_id)
 from app.models import Channel, Guest, Hotel, Reservation, Room, RoomType
 from app.schemas import RoomBody, RoomOut, RoomPatch, RoomTypeBody, RoomTypeOut
 
@@ -33,9 +33,9 @@ def create_room_type(body: RoomTypeBody, hotel_id: int | None = None,
                  hourly_price=body.hourly_price, capacity=body.capacity, description=body.description)
     db.add(t)
     db.flush()
-    price_tag = f" · 钟点 ¥{t.hourly_price}/小时" if t.hourly_price else ""
+    price_tag = f" · 钟点 ¥{fmt_money(t.hourly_price)}/小时" if t.hourly_price else ""
     log_op(db, hid, user, "room_type_create", "room_type", t.id,
-           f"新增房型「{t.name}」¥{t.base_price}/晚{price_tag}")
+           f"新增房型「{t.name}」¥{fmt_money(t.base_price)}/晚{price_tag}")
     db.commit()
     return RoomTypeOut(id=t.id, name=t.name, base_price=t.base_price,
                        hourly_price=t.hourly_price, capacity=t.capacity,
@@ -226,7 +226,7 @@ def rooms_board(
     channels = {c.id: c for c in db.query(Channel).filter(Channel.hotel_id == hid).all()}
     guests = {g.id: g for g in db.query(Guest).filter(Guest.hotel_id == hid).all()}
 
-    def totals(res_id: int) -> tuple[int, int]:
+    def totals(res_id: int) -> tuple[float, float]:
         from app.deps import folio_totals
         return folio_totals(db, res_id)
 
@@ -261,7 +261,7 @@ def rooms_board(
             "hours": res.hours,
             "items_total": items_total,
             "paid_total": paid_total,
-            "balance_due": max(0, items_total - paid_total),
+            "balance_due": max(0.0, money(items_total - paid_total)),
             "col_start": col_start,
             "nights": span,
             # 提前退房截断标记（False = 正常占满原订区间）

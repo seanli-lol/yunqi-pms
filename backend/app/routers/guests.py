@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.db import get_db
-from app.deps import get_current_user, log_op, resolve_hotel_id
+from app.deps import get_current_user, log_op, money, resolve_hotel_id
 from app.models import Guest, Reservation, Room, User
 from app.schemas import GuestBody, GuestDetail, GuestOut, GuestUpdateBody
 from app.security import decrypt_field, encrypt_field, mask_id_number
@@ -59,7 +59,7 @@ def list_guests(q: str | None = None, vip: str | None = None,
         out.append(GuestOut(
             id=g.id, name=g.name, phone=g.phone, id_number=decrypt_field(g.id_number),
             vip_level=g.vip_level, notes=g.notes,
-            stay_count=len(stays), total_spend=spend,
+            stay_count=len(stays), total_spend=money(spend),
             last_stay=last.isoformat() if last else None,
         ))
     if q:
@@ -85,7 +85,7 @@ def guest_detail(guest_id: int, user: User = Depends(get_current_user), db: Sess
     history = []
     spend = 0
     for r in stays:
-        amount = ((r.check_out - r.check_in).days) * r.rate
+        amount = money(((r.check_out - r.check_in).days) * r.rate)
         spend += amount
         room_no = rooms.get(r.room_id, "—") if r.room_id else "未分配"
         history.append({
@@ -99,7 +99,7 @@ def guest_detail(guest_id: int, user: User = Depends(get_current_user), db: Sess
     return GuestDetail(
         id=g.id, name=g.name, phone=g.phone, id_number=decrypt_field(g.id_number),
         vip_level=g.vip_level, notes=g.notes,
-        stay_count=len(stays), total_spend=spend,
+        stay_count=len(stays), total_spend=money(spend),
         last_stay=history[0]["check_in"] if history else None,
         history=history,
     )

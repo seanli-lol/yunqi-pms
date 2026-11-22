@@ -1,7 +1,7 @@
 /* 共享业务弹层：入住向导（前台工作台 / 房态盘预订详情共用）+ 延住 */
 import { useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { api, addDaysIso, fmtMoney, md, usePayMethods, type Reservation, type Room } from './api'
+import { api, addDaysIso, fmtMoney, md, moneyInputText, round2, usePayMethods, type Reservation, type Room } from './api'
 import { Dialog, Drawer, Field } from './ui'
 
 /** 入住选房：放宽后可用（脏房/前客未退）与不可用（维修）的标记 */
@@ -65,9 +65,9 @@ export function CheckInDialog({ res, busy, drawer = false, onClose, onConfirm }:
       <div className="form-row mt-24">
         <Field label="实收金额（整单总额）">
           <input
-            className="input" inputMode="numeric" placeholder="0"
+            className="input" inputMode="decimal" placeholder="0"
             value={amount}
-            onChange={e => setAmount(e.target.value.replace(/[^\d]/g, ''))}
+            onChange={e => setAmount(moneyInputText(e.target.value))}
           />
         </Field>
         <Field label="收款方式">
@@ -86,13 +86,13 @@ export function CheckInDialog({ res, busy, drawer = false, onClose, onConfirm }:
   if (drawer) {
     return (
       <Drawer open passthrough onClose={onClose} title={`办理入住 · ${res.guest_name}`}
-        sub={`${res.code} · ${res.room_type_name} · ${md(res.check_in)} – ${md(res.check_out)} · 共 ${res.nights} 晚 · ¥${res.rate}/晚`}
+        sub={`${res.code} · ${res.room_type_name} · ${md(res.check_in)} – ${md(res.check_out)} · 共 ${res.nights} 晚 · ${fmtMoney(res.rate)}/晚`}
         foot={
           <>
             <button className="btn btn-ghost" onClick={onClose}>取消</button>
             <button
               className="btn btn-primary" disabled={busy || roomId === null}
-              onClick={() => onConfirm({ room_id: roomId!, amount_received: Math.max(0, Math.round(Number(amount) || 0)), payment_method: method }, '入住成功，房态转为在住')}
+              onClick={() => onConfirm({ room_id: roomId!, amount_received: Math.max(0, round2(Number(amount) || 0)), payment_method: method }, '入住成功，房态转为在住')}
             >确认入住</button>
           </>
         }
@@ -105,14 +105,14 @@ export function CheckInDialog({ res, busy, drawer = false, onClose, onConfirm }:
     <Dialog
       open onClose={onClose} wide
       title={`办理入住 · ${res.guest_name}`}
-      sub={`${res.code} · ${res.room_type_name} · ${md(res.check_in)} – ${md(res.check_out)} · 共 ${res.nights} 晚 · ¥${res.rate}/晚`}
+      sub={`${res.code} · ${res.room_type_name} · ${md(res.check_in)} – ${md(res.check_out)} · 共 ${res.nights} 晚 · ${fmtMoney(res.rate)}/晚`}
       foot={
         <>
           <span className="hint" style={{ marginRight: 'auto' }}>操作人：当前登录账号 · 入住将记录到预订日志</span>
           <button className="btn btn-ghost" onClick={onClose}>取消</button>
           <button
             className="btn btn-primary" disabled={busy || roomId === null}
-            onClick={() => onConfirm({ room_id: roomId!, amount_received: Math.max(0, Math.round(Number(amount) || 0)), payment_method: method }, '入住成功，房态转为在住')}
+            onClick={() => onConfirm({ room_id: roomId!, amount_received: Math.max(0, round2(Number(amount) || 0)), payment_method: method }, '入住成功，房态转为在住')}
           >确认入住</button>
         </>
       }
@@ -139,9 +139,9 @@ export function ExtendDialog({ res, busy, drawer = false, onClose, onConfirm }: 
   const h = Math.max(0, Math.round(Number(hours) || 0))
   const units = hourly ? h : n
   const unitLabel = hourly ? '小时' : '晚'
-  const total = Math.max(0, Math.round(Number(totalText) || 0))
-  const rate = units > 0 ? Math.round(total / units) : 0
-  const amount = rate * units
+  const total = Math.max(0, round2(Number(totalText) || 0))
+  const rate = units > 0 ? round2(total / units) : 0
+  const amount = round2(rate * units)
   // 提交体按预订类型裁剪：普通预订不携带 hours，钟点预订不携带 nights（后端按类型校验）
   const body = hourly ? { nights: 0, hours: h, rate } : { nights: n, hours: 0, rate }
   const newOut = addDaysIso(res.check_out, n)
@@ -151,8 +151,8 @@ export function ExtendDialog({ res, busy, drawer = false, onClose, onConfirm }: 
 
   /** 改数量：按当前折合单价重算总价 */
   const onUnitsChange = (nextUnits: number) => {
-    const u = (units > 0 ? Math.round(total / units) : 0) || res.rate
-    setTotalText(String(Math.max(0, nextUnits) * u))
+    const u = (units > 0 ? round2(total / units) : 0) || res.rate
+    setTotalText(String(round2(Math.max(0, nextUnits) * u)))
   }
 
   const fields = (
@@ -178,14 +178,14 @@ export function ExtendDialog({ res, busy, drawer = false, onClose, onConfirm }: 
       )}
       <Field
         label="延住总价（整单，元）"
-        hint={`折合 ¥${rate}/${unitLabel}（${units} ${unitLabel}）· 本次应收 ¥${amount.toLocaleString()}；改数量时按折合单价自动重算。`}
+        hint={`折合 ${fmtMoney(rate)}/${unitLabel}（${units} ${unitLabel}）· 本次应收 ${fmtMoney(amount)}；改数量时按折合单价自动重算。`}
       >
-        <input className="input" inputMode="numeric" value={totalText}
-               onChange={e => setTotalText(e.target.value.replace(/[^\d]/g, ''))} />
+        <input className="input" inputMode="decimal" value={totalText}
+               onChange={e => setTotalText(moneyInputText(e.target.value))} />
       </Field>
       <p className="hint">
-        本次应收：<b>¥{amount.toLocaleString()}</b>
-        {hourly ? `（${h} 小时 × ¥${rate}，延住后共 ${res.hours + h} 小时）` : `（${n} 晚 × ¥${rate}，新离店 ${md(newOut)}）`}
+        本次应收：<b>{fmtMoney(amount)}</b>
+        {hourly ? `（${h} 小时 × ${fmtMoney(rate)}，延住后共 ${res.hours + h} 小时）` : `（${n} 晚 × ${fmtMoney(rate)}，新离店 ${md(newOut)}）`}
       </p>
     </>
   )
@@ -195,8 +195,8 @@ export function ExtendDialog({ res, busy, drawer = false, onClose, onConfirm }: 
       <Drawer open passthrough onClose={onClose}
         title={`延住 · ${res.guest_name}`}
         sub={hourly
-          ? `${res.code} · 钟点 ${res.hours} 小时 · ¥${res.rate}/小时`
-          : `${res.code} · ${res.room_number ?? ''} · 现 ${md(res.check_in)} – ${md(res.check_out)} · ¥${res.rate}/晚`}
+          ? `${res.code} · 钟点 ${res.hours} 小时 · ${fmtMoney(res.rate)}/小时`
+          : `${res.code} · ${res.room_number ?? ''} · 现 ${md(res.check_in)} – ${md(res.check_out)} · ${fmtMoney(res.rate)}/晚`}
         foot={
           <>
             <button className="btn btn-ghost" onClick={onClose}>取消</button>
@@ -213,8 +213,8 @@ export function ExtendDialog({ res, busy, drawer = false, onClose, onConfirm }: 
       open onClose={onClose}
       title={`延住 · ${res.guest_name}`}
       sub={hourly
-        ? `${res.code} · 钟点 ${res.hours} 小时 · ¥${res.rate}/小时`
-        : `${res.code} · ${res.room_number ?? ''} · 现 ${md(res.check_in)} – ${md(res.check_out)} · ¥${res.rate}/晚`}
+        ? `${res.code} · 钟点 ${res.hours} 小时 · ${fmtMoney(res.rate)}/小时`
+        : `${res.code} · ${res.room_number ?? ''} · 现 ${md(res.check_in)} – ${md(res.check_out)} · ${fmtMoney(res.rate)}/晚`}
       foot={
         <>
           <span className="hint" style={{ marginRight: 'auto' }}>应收将追加到账单，不改原房费</span>

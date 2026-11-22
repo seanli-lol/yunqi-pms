@@ -6,7 +6,7 @@ from sqlalchemy import func as sa_func
 from sqlalchemy.orm import Session
 
 from app.db import get_db
-from app.deps import get_current_user, resolve_hotel_id
+from app.deps import get_current_user, money, resolve_hotel_id
 from app.models import (Channel, FolioItem, Guest, OperationLog,
                         Payment, Reservation, Room, RoomType)
 
@@ -58,7 +58,12 @@ def _charges(db: Session, hotel_id: int, frm: date, to: date):
             slot["other"] += x.amount
             other_total += x.amount
         slot["revenue"] += x.amount
-    return per_day, room_total, other_total
+    # 聚合出口统一规整到分（金额已是 DECIMAL(12,2)，此处兜浮点累加尾差）
+    for slot in per_day.values():
+        slot["revenue"] = money(slot["revenue"])
+        slot["room"] = money(slot["room"])
+        slot["other"] = money(slot["other"])
+    return per_day, money(room_total), money(other_total)
 
 
 @router.get("/reports/summary")
@@ -73,11 +78,11 @@ def reports_summary(from_date: str | None = None, to_date: str | None = None,
     sold = _sold_nights(db, hid, frm, to + timedelta(days=1))
     per_day, room_total, other_total = _charges(db, hid, frm, to)
     occupancy = round(sold / available * 100, 1) if available else 0
-    adr = round(room_total / sold) if sold else 0
-    revpar = round(room_total / available) if available else 0
+    adr = round(room_total / sold, 2) if sold else 0
+    revpar = round(room_total / available, 2) if available else 0
     return {
         "occupancy": occupancy, "adr": adr, "revpar": revpar,
-        "revenue_total": room_total + other_total,
+        "revenue_total": money(room_total + other_total),
         "revenue_room": room_total, "revenue_other": other_total,
         "days": days, "rooms": total_rooms,
     }
@@ -146,8 +151,8 @@ def reports_room_types(from_date: str | None = None, to_date: str | None = None,
         out.append({
             "room_type_id": t.id, "name": t.name, "rooms": rooms,
             "occupancy": round(sold / available * 100, 1) if available else 0,
-            "adr": round(revenue / sold) if sold else 0,
-            "revenue": revenue,
+            "adr": round(revenue / sold, 2) if sold else 0,
+            "revenue": money(revenue),
         })
     return out
 
@@ -233,7 +238,7 @@ def dashboard(hotel_id: int | None = None,
         bal = balance_of(db, r.id)
         if bal > 0:
             unpaid.append({"reservation_id": r.id, "balance": bal})
-    unpaid_amount = sum(x["balance"] for x in unpaid)
+    unpaid_amount = money(sum(x["balance"] for x in unpaid))
 
     # 抵店列表（前 4 条）与离店列表（前 3 条）
     guests = {g.id: g for g in db.query(Guest).filter(Guest.hotel_id == hid).all()}
@@ -258,7 +263,7 @@ def dashboard(hotel_id: int | None = None,
             "rate": r.rate,
             "status": r.status,
             "channel_name": ch.name if ch else "",
-            "balance_due": max(0, _bal(db, r.id)),
+            "balance_due": max(0.0, _bal(db, r.id)),
         }
 
     arrival_items = [res_brief(r) for r in arrivals[:4]]
@@ -266,7 +271,7 @@ def dashboard(hotel_id: int | None = None,
     departure_items = []
     for r in departure_list[:3]:
         b = res_brief(r)
-        b["balance_due"] = max(0, _bal(db, r.id))
+        b["balance_due"] = max(0.0, _bal(db, r.id))
         departure_items.append(b)
 
     return {

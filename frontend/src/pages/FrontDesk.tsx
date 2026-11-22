@@ -77,7 +77,7 @@ export default function FrontDesk() {
                     <span className="avatar sm">{r.guest_name.charAt(0)}</span>
                     <span className="list-main">
                       <span className="list-title">{r.guest_name} {r.vip_level && <Badge color="purple">{r.vip_level}</Badge>}</span>
-                      <span className="list-sub">{r.code} · {r.room_type_name} · {md(r.check_in)} – {md(r.check_out)} · ¥{r.rate}</span>
+                      <span className="list-sub">{r.code} · {r.room_type_name} · {md(r.check_in)} – {md(r.check_out)} · {fmtMoney(r.rate)}</span>
                     </span>
                     <span className="list-side">
                       {r.status === 'pending' && <Badge color="orange">待确认</Badge>}

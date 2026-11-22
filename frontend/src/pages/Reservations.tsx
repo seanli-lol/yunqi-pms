@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useLocation } from 'react-router-dom'
 import {
-  api, addDaysIso, fmtMoney, maskPhone, md, todayIso, RES_STATUS_LABEL,
+  api, addDaysIso, fmtMoney, maskPhone, md, moneyInputText, round2, todayIso, RES_STATUS_LABEL,
   type Channel, type Reservation, type RoomType,
 } from '../api'
 import { ConfirmDialog, Dialog, Field, PageHead, Segmented, Spinner, useToast, RES_STATUS_BADGE } from '../ui'
@@ -220,15 +220,15 @@ function NewReservationDialog({ open, onClose, channels, types, onSubmit, onDone
   // 房型 / 天数变化时按基准价带出总价（用户未手改前保持跟随）
   useEffect(() => {
     if (!totalTouched && type) {
-      setTotalText(String((stayType === 'hourly' ? (type.hourly_price || 0) * hours : type.base_price * nights)))
+      setTotalText(String(round2(stayType === 'hourly' ? (type.hourly_price || 0) * hours : type.base_price * nights)))
     }
   }, [type, nights, hours, stayType, totalTouched])
 
   const units = stayType === 'hourly' ? hours : nights
   const unitLabel = stayType === 'hourly' ? '小时' : '晚'
-  const total = Math.max(0, Math.round(Number(totalText) || 0))
-  const unitPrice = units > 0 ? Math.round(total / units) : 0
-  const finalTotal = unitPrice * units
+  const total = Math.max(0, round2(Number(totalText) || 0))
+  const unitPrice = units > 0 ? round2(total / units) : 0
+  const finalTotal = round2(unitPrice * units)
 
   /** 改天数：离店日与总额（按折合单价）一起重算 */
   const onNightsChange = (v: string) => {
@@ -236,8 +236,8 @@ function NewReservationDialog({ open, onClose, channels, types, onSubmit, onDone
     setNightsText(digits)
     const n = Math.max(1, Math.round(Number(digits) || 1))
     setCout(addDaysIso(cin, n))
-    const u = (units > 0 ? Math.round(total / units) : 0) || (type?.base_price ?? 0)
-    setTotalText(String(n * u))
+    const u = (units > 0 ? round2(total / units) : 0) || (type?.base_price ?? 0)
+    setTotalText(String(round2(n * u)))
     setTotalTouched(true)
   }
   /** 改离店日期：反推天数 */
@@ -245,8 +245,8 @@ function NewReservationDialog({ open, onClose, channels, types, onSubmit, onDone
     setCout(value)
     const n = Math.max(1, Math.round((new Date(value).getTime() - new Date(cin).getTime()) / 86400000) || 1)
     setNightsText(String(n))
-    const u = (units > 0 ? Math.round(total / units) : 0) || (type?.base_price ?? 0)
-    setTotalText(String(n * u))
+    const u = (units > 0 ? round2(total / units) : 0) || (type?.base_price ?? 0)
+    setTotalText(String(round2(n * u)))
     setTotalTouched(true)
   }
 
@@ -293,7 +293,7 @@ function NewReservationDialog({ open, onClose, channels, types, onSubmit, onDone
           if (!t || !(t.hourly_price > 0)) setStayType('normal')
         }}>
           <option value="">请选择房型</option>
-          {types.map(t => <option key={t.id} value={t.id}>{t.name} · ¥{t.base_price}/晚 · {t.room_count} 间</option>)}
+          {types.map(t => <option key={t.id} value={t.id}>{t.name} · {fmtMoney(t.base_price)}/晚 · {t.room_count} 间</option>)}
         </select>
       </Field>
       {hourlyAvail && (
@@ -302,7 +302,7 @@ function NewReservationDialog({ open, onClose, channels, types, onSubmit, onDone
             <button className={stayType === 'normal' ? 'active' : ''} onClick={() => setStayType('normal')}>整晚</button>
             <button className={stayType === 'hourly' ? 'active' : ''} onClick={() => setStayType('hourly')}>钟点</button>
           </div>
-          <span className="hint">钟点价 ¥{type!.hourly_price}/小时；钟点房按入住日占整日，时长 {hours} 小时。</span>
+          <span className="hint">钟点价 {fmtMoney(type!.hourly_price)}/小时；钟点房按入住日占整日，时长 {hours} 小时。</span>
         </Field>
       )}
       {hourlyAvail && stayType === 'hourly' && (
@@ -328,18 +328,18 @@ function NewReservationDialog({ open, onClose, channels, types, onSubmit, onDone
         </Field>
         <Field
           label="协议总价（整单，元）"
-          hint={type ? `折合 ¥${unitPrice}/${unitLabel}（${units} ${unitLabel}）· 最终应收 ¥${finalTotal.toLocaleString()}；改天数时按折合单价自动重算。` : '请先选择房型。'}
+          hint={type ? `折合 ${fmtMoney(unitPrice)}/${unitLabel}（${units} ${unitLabel}）· 最终应收 ${fmtMoney(finalTotal)}；改天数时按折合单价自动重算。` : '请先选择房型。'}
         >
           <input
-            className="input" inputMode="numeric" value={totalText} placeholder="0"
-            onChange={e => { setTotalText(e.target.value.replace(/[^\d]/g, '')); setTotalTouched(true) }}
+            className="input" inputMode="decimal" value={totalText} placeholder="0"
+            onChange={e => { setTotalText(moneyInputText(e.target.value)); setTotalTouched(true) }}
           />
         </Field>
       </div>
       <p className="hint">
         {stayType === 'hourly' && hourlyAvail
-          ? `钟点房费 ¥${finalTotal.toLocaleString()}（${hours} 小时 × ¥${unitPrice}）· 按入住日占用整天，创建后将自动预留空净房。`
-          : type ? `共 ${nights} 晚 · 折合 ¥${unitPrice}/晚 · 应收 ¥${finalTotal.toLocaleString()} · 预订后将自动预留空净房，入住时可改派。` : '请选择房型与日期。'}
+          ? `钟点房费 ${fmtMoney(finalTotal)}（${hours} 小时 × ${fmtMoney(unitPrice)}）· 按入住日占用整天，创建后将自动预留空净房。`
+          : type ? `共 ${nights} 晚 · 折合 ${fmtMoney(unitPrice)}/晚 · 应收 ${fmtMoney(finalTotal)} · 预订后将自动预留空净房，入住时可改派。` : '请选择房型与日期。'}
       </p>
       <div className="form-row mt-16">
         <Field label="来源">

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { api, fmtMoney, maskPhone, type Channel, type Hotel, type PayMethod, type Room, type RoomType, type UserRow } from '../api'
+import { api, fmtMoney, maskPhone, round2, type Channel, type Hotel, type PayMethod, type Room, type RoomType, type UserRow } from '../api'
 import { useAuth } from '../auth'
 import { Badge, ConfirmDialog, Dialog, Field, PageHead, Segmented, Spinner, useToast } from '../ui'
 
@@ -532,11 +532,11 @@ function TypesTab() {
   }
 
   const submit = () => {
-    const price = Number(fPrice)
+    const price = round2(Number(fPrice))
     if (!fName.trim() || !price) { toast('请填写名称与价格'); return }
     const body = {
       name: fName, base_price: price,
-      hourly_price: fHourly === '' ? 0 : Math.max(0, Number(fHourly) || 0),
+      hourly_price: fHourly === '' ? 0 : Math.max(0, round2(Number(fHourly) || 0)),
       capacity: fCap, description: fDesc,
     }
     if (editing === 'new') mut.mutate({ method: 'post', path: '/api/room-types', body })
@@ -590,15 +590,15 @@ function TypesTab() {
       >
         <Field label="房型名称" required><input className="input" value={fName} onChange={e => setFName(e.target.value)} placeholder="如：商务大床房" /></Field>
         <div className="form-row">
-          <Field label="基准价" required hint="整晚价格（元/晚）。">
-            <input className="input" type="number" value={fPrice} onChange={e => setFPrice(e.target.value)} placeholder="每晚价格" />
+          <Field label="基准价" required hint="整晚价格（元/晚），支持到分。">
+            <input className="input" type="number" min="0" step="0.01" value={fPrice} onChange={e => setFPrice(e.target.value)} placeholder="每晚价格" />
           </Field>
           <Field label="可住人数">
             <select className="select" value={fCap} onChange={e => setFCap(Number(e.target.value))}><option value={2}>2 人</option><option value={3}>3 人</option><option value={4}>4 人</option></select>
           </Field>
         </div>
-        <Field label="钟点价（元/小时，选填）" hint="填写后该房型支持钟点房，开单时可按小时计价；留空表示不支持钟点房。">
-          <input className="input" type="number" value={fHourly} onChange={e => setFHourly(e.target.value)} placeholder="如 45" />
+        <Field label="钟点价（元/小时，选填）" hint="填写后该房型支持钟点房，开单时可按小时计价；留空表示不支持钟点房。支持到分。">
+          <input className="input" type="number" min="0" step="0.01" value={fHourly} onChange={e => setFHourly(e.target.value)} placeholder="如 45.5" />
         </Field>
         <Field label="说明"><textarea className="input" rows={2} value={fDesc} onChange={e => setFDesc(e.target.value)} placeholder="床型、景观、设施等" /></Field>
       </Dialog>
