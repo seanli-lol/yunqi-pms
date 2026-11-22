@@ -10,6 +10,8 @@
 [![MySQL](https://img.shields.io/badge/MySQL-8.4-4479A1?logo=mysql&logoColor=white)](docker-compose.yml)
 [![Docker](https://img.shields.io/badge/deploy-docker%20compose-2496ED?logo=docker&logoColor=white)](#方式一docker-一键部署推荐)
 
+![房态盘 · 日历时间轴](docs/rooms-light.png)
+
 </div>
 
 ---
@@ -68,6 +70,8 @@
 | 后端 | Python 3.14 · FastAPI · SQLAlchemy 2.0 · MySQL 8.4（PyMySQL 驱动，无 Docker 缺省回落 SQLite）· PyJWT（密码 PBKDF2） |
 | 前端 | Vite 6 · React 18 · TypeScript · Tailwind CSS v4 · React Router 6 · TanStack Query 5 · Recharts · lucide-react |
 | 部署 | Docker Compose 三容器（MySQL + FastAPI + nginx），一键构建、健康检查、自动建库种子 |
+
+![深色主题](docs/rooms-dark.png)
 
 ## 快速开始
 
