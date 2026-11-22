@@ -34,7 +34,9 @@ def _load_env_file() -> None:
 _load_env_file()
 
 DB_PATH = os.environ.get("YUNQI_DB", os.path.join(BASE_DIR, "pms.db"))
-DATABASE_URL = f"sqlite:///{DB_PATH}"
+# 数据库连接：优先 YUNQI_DATABASE_URL（如 docker-compose 起的 MySQL），缺省回落本地 SQLite
+# 示例：mysql+pymysql://yunqi:yunqi123456@127.0.0.1:3306/yunqi_pms?charset=utf8mb4
+DATABASE_URL = os.environ.get("YUNQI_DATABASE_URL") or f"sqlite:///{DB_PATH}"
 
 # 开发用密钥；生产环境请通过环境变量覆盖
 JWT_SECRET = os.environ.get("YUNQI_JWT_SECRET", "yunqi-pms-dev-secret-2026")

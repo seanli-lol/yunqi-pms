@@ -6,7 +6,7 @@
 
 | 端 | 技术 |
 |---|---|
-| 后端 | Python 3.10+ · FastAPI · SQLAlchemy 2.0 · SQLite · JWT（PyJWT + PBKDF2） |
+| 后端 | Python 3.10+ · FastAPI · SQLAlchemy 2.0 · MySQL 8.4（docker-compose 跑库，无 Docker 缺省回落 SQLite）· JWT（PyJWT + PBKDF2） |
 | 前端 | Vite · React 18 · TypeScript · Tailwind CSS v4 · React Router · TanStack Query · Recharts · Lucide |
 
 ## 功能总览
@@ -82,6 +82,6 @@ frontend/src/
 
 ## 生产部署提示（超出演示范围）
 
-- SQLite 适合单店/演示；多店并发请切换 PostgreSQL（仅改 `DATABASE_URL`）
+- 数据库用 MySQL 8.4（`docker compose up -d` 起库，连接串走 `YUNQI_DATABASE_URL`）；不写该变量时缺省回落本地 SQLite
 - `JWT_SECRET` 通过环境变量覆盖；PBKDF2 迭代次数可按需提升
 - 建议启用 HTTPS、增加账号首次登录改密、备份策略

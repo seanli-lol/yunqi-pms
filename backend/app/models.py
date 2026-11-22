@@ -2,9 +2,16 @@
 from datetime import date, datetime
 
 from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, String, UniqueConstraint
+from sqlalchemy.dialects.mysql import DATETIME as MYSQL_DATETIME
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db import Base
+
+# 时间列统一用 DateTimeMS：MySQL 下渲染 DATETIME(6)（保留微秒）。⚠️ 不能用裸 DATETIME(0)——
+# MySQL 对小数秒是四舍五入，`expires_at = now` 可能被舍到下一秒，登出后同一秒内刷新会
+# 逃过过期判断掉进轮换宽限分支返回 200（SQLite 存全精度微秒无此问题）。
+# 注意 SQLAlchemy 通用 DateTime 的首个位置参数是 timezone 不是精度，必须走 with_variant。
+DateTimeMS = DateTime().with_variant(MYSQL_DATETIME(fsp=6), "mysql")
 
 
 class Hotel(Base):
@@ -16,7 +23,7 @@ class Hotel(Base):
     address: Mapped[str] = mapped_column(String(120), default="")
     contact_name: Mapped[str] = mapped_column(String(40), default="")
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    created_at: Mapped[datetime] = mapped_column(DateTimeMS, default=datetime.now)
 
 
 class User(Base):
@@ -29,8 +36,8 @@ class User(Base):
     name: Mapped[str] = mapped_column(String(40))
     role: Mapped[str] = mapped_column(String(20))  # platform_admin / admin / receptionist / housekeeper
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
-    last_login_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTimeMS, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTimeMS, default=datetime.now)
 
 
 class RefreshToken(Base):
@@ -40,9 +47,9 @@ class RefreshToken(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
     token_hash: Mapped[str] = mapped_column(String(64), unique=True)
-    expires_at: Mapped[datetime] = mapped_column(DateTime)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
-    revoked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTimeMS)
+    created_at: Mapped[datetime] = mapped_column(DateTimeMS, default=datetime.now)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTimeMS, nullable=True)
 
 
 class Channel(Base):
@@ -111,7 +118,7 @@ class Guest(Base):
     id_number: Mapped[str] = mapped_column(String(40), default="")
     vip_level: Mapped[str] = mapped_column(String(20), default="")
     notes: Mapped[str] = mapped_column(String(200), default="")
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    created_at: Mapped[datetime] = mapped_column(DateTimeMS, default=datetime.now)
 
 
 class Reservation(Base):
@@ -136,7 +143,7 @@ class Reservation(Base):
     hours: Mapped[int] = mapped_column(Integer, default=0)
     notes: Mapped[str] = mapped_column(String(200), default="")
     created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    created_at: Mapped[datetime] = mapped_column(DateTimeMS, default=datetime.now)
 
 
 class FolioItem(Base):
@@ -150,7 +157,7 @@ class FolioItem(Base):
     description: Mapped[str] = mapped_column(String(120), default="")
     amount: Mapped[int] = mapped_column(Integer, default=0)
     created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    created_at: Mapped[datetime] = mapped_column(DateTimeMS, default=datetime.now)
 
 
 class Payment(Base):
@@ -164,7 +171,7 @@ class Payment(Base):
     amount: Mapped[int] = mapped_column(Integer, default=0)
     remark: Mapped[str] = mapped_column(String(120), default="")  # 收款备注（选填，＋收款弹层录入）
     created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    created_at: Mapped[datetime] = mapped_column(DateTimeMS, default=datetime.now)
 
 
 class OperationLog(Base):
@@ -179,4 +186,4 @@ class OperationLog(Base):
     object_type: Mapped[str] = mapped_column(String(30), default="")  # reservation / room / payment / task
     object_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     summary: Mapped[str] = mapped_column(String(200), default="")
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    created_at: Mapped[datetime] = mapped_column(DateTimeMS, default=datetime.now)

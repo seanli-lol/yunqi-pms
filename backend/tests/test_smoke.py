@@ -2,7 +2,11 @@
 import os
 import tempfile
 
-os.environ["YUNQI_DB"] = os.path.join(tempfile.mkdtemp(), "test-pms.db")
+# 测试库默认走临时 SQLite 文件；shell 里 export YUNQI_DATABASE_URL 可让全套冒烟直打 MySQL
+# （跑前需先 drop/create 独立 *_test 空库——测试假定空库起步，重跑会撞种子幂等）
+os.environ.setdefault(
+    "YUNQI_DATABASE_URL", f"sqlite:///{os.path.join(tempfile.mkdtemp(), 'test-pms.db')}"
+)
 # 冒烟测试默认不要求滑块验证码（验证码专项用例里用 captcha.set_enabled 单独开关）
 os.environ["YUNQI_CAPTCHA"] = "off"
 

@@ -5,7 +5,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import FRONTEND_ORIGINS
-from app.db import Base, SessionLocal, engine, run_sqlite_migrations
+from app.db import Base, SessionLocal, engine, run_db_migrations
 from app.models import Hotel
 from app.routers import auth, channels, guests, hotels, reports, reservations, rooms
 from app.routers import payment_methods
@@ -16,7 +16,7 @@ from app.seed import ensure_seed
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     Base.metadata.create_all(bind=engine)
-    run_sqlite_migrations()
+    run_db_migrations()
     db = SessionLocal()
     try:
         ensure_seed(db)
