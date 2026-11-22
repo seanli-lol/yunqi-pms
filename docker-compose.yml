@@ -4,7 +4,7 @@
 #   停止：docker compose down         # 数据保留在 named volume mysql-data 里
 #   清库：docker compose down -v      # 连数据卷一起删，下次启动后端重新种子
 #
-# 后端连接参数在 backend/.env（默认值与本文件一致，起好库后写一行 DB_ENGINE=mysql 即可直连）：
+# 后端连接参数在 backend/.env（无默认值，DB_ENGINE=mysql 时五项必须全部显式配置；示例与本文件一致）：
 #   DB_ENGINE=mysql
 #   DB_HOST=127.0.0.1
 #   DB_PORT=3306

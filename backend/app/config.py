@@ -39,18 +39,38 @@ _load_env_file()
 DB_ENGINE = os.environ.get("DB_ENGINE", "sqlite").lower()
 # sqlite 专用：库文件路径（删掉该文件会重建演示数据）
 DB_PATH = os.environ.get("DB_PATH", os.path.join(BASE_DIR, "pms.db"))
-# mysql 连接参数（默认值与 docker-compose.yml 一致：起好库后 .env 写 DB_ENGINE=mysql 即可直连）
-DB_HOST = os.environ.get("DB_HOST", "127.0.0.1")
-DB_PORT = int(os.environ.get("DB_PORT", "3306"))
-DB_USER = os.environ.get("DB_USER", "pms")
-DB_PASSWORD = os.environ.get("DB_PASSWORD", "pms123456")
-DB_NAME = os.environ.get("DB_NAME", "pms")
+# mysql 连接参数：**无默认值**——DB_ENGINE=mysql 时五项必须全部显式配置，缺一启动即报错
+DB_HOST = os.environ.get("DB_HOST")
+DB_PORT = os.environ.get("DB_PORT")
+DB_USER = os.environ.get("DB_USER")
+DB_PASSWORD = os.environ.get("DB_PASSWORD")
+DB_NAME = os.environ.get("DB_NAME")
 
 
 def _database_url() -> str:
-    """按引擎拼连接串。密码经 URL 编码（含 @ : / 等特殊字符也能连）；MySQL 全程 utf8mb4。"""
+    """按引擎拼连接串。密码经 URL 编码（含 @ : / 等特殊字符也能连）；MySQL 全程 utf8mb4。
+
+    DB_ENGINE=mysql 时连接参数不允许静默取默认值——缺失项直接列出并终止启动。
+    """
     if DB_ENGINE != "mysql":
         return f"sqlite:///{DB_PATH}"
+    missing = [
+        key
+        for key, value in (
+            ("DB_HOST", DB_HOST),
+            ("DB_PORT", DB_PORT),
+            ("DB_USER", DB_USER),
+            ("DB_PASSWORD", DB_PASSWORD),
+            ("DB_NAME", DB_NAME),
+        )
+        if not value
+    ]
+    if missing:
+        raise RuntimeError(
+            "DB_ENGINE=mysql 需要显式配置数据库连接参数，当前缺失："
+            + "、".join(missing)
+            + "（在 backend/.env 里补齐，参考 .env.example 的 MySQL 段）"
+        )
     return (
         f"mysql+pymysql://{quote_plus(DB_USER)}:{quote_plus(DB_PASSWORD)}"
         f"@{DB_HOST}:{DB_PORT}/{DB_NAME}?charset=utf8mb4"
