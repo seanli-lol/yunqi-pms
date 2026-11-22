@@ -838,30 +838,34 @@ export default function Rooms() {
                         )
                       })}
                       {/* 当日入住当日退（钟点房/当日往返，不限笔数）：聚合为格角「退房」角标，悬停/点按看明细并可编辑 */}
-                      {layout.deps.map(({ col, list }) => (
-                        <button
-                          key={`dep-${col}`} type="button" className="cal-dep"
-                          style={{ gridColumn: `${col + 2} / span 1` }}
-                          aria-label={`${md(bd.day_list[col]?.date ?? '')} 已退 ${list.length} 笔，悬停或点击查看`}
-                          onMouseEnter={(e) => openDep(room.number, col, list, e.currentTarget)}
-                          onMouseLeave={hideDepSoon}
-                          onClick={(e) => {
-                            e.stopPropagation()
-                            // 预订抽屉开着：先完成开单；表单抽屉开着：忽略（与方块点击守卫同口径）
-                            if (booking !== null) { toast('正在开单，请先提交或关闭右侧预订抽屉'); return }
-                            if (formDrawerOpen()) return
-                            // 单笔聚合：跳过浮卡直接开订单详情（多笔才需要浮卡列表消歧）
-                            if (list.length === 1) { closeDep(); setDetailRes({ id: list[0].id } as Reservation); return }
-                            toggleDep(room.number, col, list, e.currentTarget)
-                          }}
-                        >
-                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                            <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
-                            <path d="m16 17 5-5-5-5" />
-                            <path d="M21 12H9" />
-                          </svg>
-                        </button>
-                      ))}
+                      {layout.deps.map(({ col, list }) => {
+                        // 同列有真方块（欠/超徽章钉在方块右上角）→ 角标让位到右下角，避免盖住欠/超
+                        const hasBlock = layout.lanes.some(({ b, span }) => b.col_start <= col && col < b.col_start + span)
+                        return (
+                          <button
+                            key={`dep-${col}`} type="button" className={`cal-dep${hasBlock ? ' yield' : ''}`}
+                            style={{ gridColumn: `${col + 2} / span 1` }}
+                            aria-label={`${md(bd.day_list[col]?.date ?? '')} 已退 ${list.length} 笔，悬停或点击查看`}
+                            onMouseEnter={(e) => openDep(room.number, col, list, e.currentTarget)}
+                            onMouseLeave={hideDepSoon}
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              // 预订抽屉开着：先完成开单；表单抽屉开着：忽略（与方块点击守卫同口径）
+                              if (booking !== null) { toast('正在开单，请先提交或关闭右侧预订抽屉'); return }
+                              if (formDrawerOpen()) return
+                              // 单笔聚合：跳过浮卡直接开订单详情（多笔才需要浮卡列表消歧）
+                              if (list.length === 1) { closeDep(); setDetailRes({ id: list[0].id } as Reservation); return }
+                              toggleDep(room.number, col, list, e.currentTarget)
+                            }}
+                          >
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                              <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+                              <path d="m16 17 5-5-5-5" />
+                              <path d="M21 12H9" />
+                            </svg>
+                          </button>
+                        )
+                      })}
                     </>
                   )}
                   {calSel && calSel.roomId === room.id && (
@@ -880,7 +884,7 @@ export default function Rooms() {
         </div>
       </div>
           <p className="hint mt-16 cal-legend">
-            图例：<Badge color="blue">在住</Badge> <Badge color="orange">未来抵店</Badge> <Badge color="red">欠</Badge> 在住/已离店未结清 · <Badge color="purple">超</Badge> 实付超过应收（多收待退）· 灰块 = 已离店（离店日格子只压左 1/3，当天下午起腾空，空白即可售，含当日钟点房）· 格子左上角<b style={{ color: 'var(--text-primary)' }}>退房图标</b> = 当日有客人退房，悬停看明细、<b>点按展开详情并可编辑</b>（更正实收 / 撤销退房）·
+            图例：<Badge color="blue">在住</Badge> <Badge color="orange">未来抵店</Badge> <Badge color="red">欠</Badge> 在住/已离店未结清 · <Badge color="purple">超</Badge> 实付超过应收（多收待退）· 灰块 = 已离店（离店日格子只压左 1/3，当天下午起腾空，空白即可售，含当日钟点房）· 格子右上角<b style={{ color: 'var(--text-primary)' }}>退房图标</b> = 当日有客人退房，悬停看明细、<b>点按展开详情并可编辑</b>（更正实收 / 撤销退房；同列有方块时让位到右下角）·
             方块最前端竖条颜色 = 预订来源（可在「设置 → 来源渠道」配置）。<b>拖动方块换房/改期（冲突自动回弹）· 点击空白格直接开单 · 房号旁「设净/设脏」一键切换房态</b>。
           </p>
         </div>

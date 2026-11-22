@@ -982,8 +982,8 @@ textarea.input { height: auto; padding: 12px 14px; resize: vertical; }
 }
 /* ── 同房重叠预订：分轨 + 退房角标（与 design/prototype/rooms.html 同源，评审定稿）──
    真方块（在住/未来/多晚存根）同列最多重叠 2 笔 → 上下各一轨，行高恒定；
-   当日入住当日退的历史（钟点房/当日往返，不限笔数）不画灰块，聚合为格子左上角
-   「退房」角标，悬停/点按弹出明细卡（行可展开，含详情/更正实收/撤销退房）；
+   当日入住当日退的历史（钟点房/当日往返，不限笔数）不画灰块，聚合为格子右上角
+   「退房」角标（同列有真方块时让位右下角），悬停/点按弹出明细卡（行可点开详情抽屉）；
    存根截断后右侧空白即可售（原「可售」虚纹已退役） */
 .cal-block.lane-1, .cal-block.lane-2 {
   flex-direction: row; align-items: center; gap: 4px;
@@ -994,18 +994,20 @@ textarea.input { height: auto; padding: 12px 14px; resize: vertical; }
 /* 轨带 20px 高：「欠/超」徽章缩小适配 */
 .cal-block.lane-1 .owe, .cal-block.lane-2 .owe,
 .cal-block.lane-1 .over, .cal-block.lane-2 .over { top: 2px; right: 2px; padding: 1px 4px; font-size: 9px; }
-/* 退房角标：格子左上角虚线框 + 「退房」图标；z 高于方块（同日有在住方块时钉在其左上角） */
+/* 退房角标：格子右上角实线框 + 「退房」图标；实线 + 不透明底保证清晰（压在方块上也不透底）；
+   z 高于方块。同列有真方块时加 .yield 让位到右下角——欠/超徽章钉在方块右上角，不能被盖住 */
 .cal-dep {
-  grid-row: 1; align-self: start; justify-self: start;
-  height: 22px; width: 30px; margin: 3px 0 0 6px; padding: 0;
-  border: 1px dashed var(--hairline); border-radius: 6px;
-  background: transparent; cursor: pointer;
+  grid-row: 1; align-self: start; justify-self: end;
+  height: 22px; width: 30px; margin: 3px 6px 0 0; padding: 0;
+  border: 1px solid var(--text-secondary); border-radius: 6px;
+  background: var(--bg); cursor: pointer;
   display: flex; align-items: center; justify-content: center;
-  color: var(--text-tertiary);
+  color: var(--text-secondary);
   z-index: 2; transition: border-color var(--dur) var(--ease), color var(--dur) var(--ease);
 }
 .cal-dep svg { display: block; width: 16px; height: 16px; }
-.cal-dep:hover { border-color: var(--text-secondary); color: var(--text-secondary); }
+.cal-dep:hover { border-color: var(--text-primary); color: var(--text-primary); }
+.cal-dep.yield { align-self: end; margin: 0 6px 3px 0; }
 /* 退房明细浮卡：fixed 定位挂 body（portal），不进 .cal-scroll——避免被横向滚动容器裁剪 */
 .dep-pop {
   position: fixed; z-index: 90; min-width: 280px; max-width: 340px;
