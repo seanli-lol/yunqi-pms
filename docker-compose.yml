@@ -1,17 +1,19 @@
-# 云栖 PMS · MySQL 8.4 数据库（仅数据库服务；后端 uvicorn / 前端 vite 仍在本地跑）
+# 云栖 PMS · 全栈部署（MySQL 8.4 + FastAPI 后端 + nginx 前端）
 #
-#   启动：docker compose up -d        # 等 `docker compose ps` 显示 healthy
-#   停止：docker compose down         # 数据保留在 named volume mysql-data 里
-#   清库：docker compose down -v      # 连数据卷一起删，下次启动后端重新种子
+#   部署：docker compose up -d --build   # 首次部署与更新代码后都跑这条；等 `docker compose ps` 全部 healthy
+#   访问：http://<服务器IP>:8080          # nginx 统一入口，/api 同源反代到 backend:8000
+#   停止：docker compose down            # 数据保留在 named volume mysql-data 里
+#   清库：docker compose down -v         # 连数据卷一起删，下次启动重新种子（改库名/账号后必须 -v 重建卷）
 #
-# 后端连接参数在 backend/.env（无默认值，DB_ENGINE=mysql 时五项必须全部显式配置；示例与本文件一致）：
-#   DB_ENGINE=mysql
-#   DB_HOST=127.0.0.1
-#   DB_PORT=3306
-#   DB_USER=pms
-#   DB_PASSWORD=pms123456
-#   DB_NAME=pms
-# 若本机 3306 已被占用：把 ports 改成 "3307:3306"，并同步改 .env 里的 DB_PORT。
+# 本地开发（后端 uvicorn / 前端 vite 仍在宿主机跑）：
+#   docker compose up -d mysql           # 只起数据库，backend/.env 连 127.0.0.1:3306
+#
+# 生产必须覆盖的变量（写在本文件同目录的 .env 里，compose 自动读取并注入容器）：
+#   JWT_SECRET=<强随机值>                # 有 dev 默认值，生产必须换
+#   DATA_SECRET_KEY=<强随机值>           # 证件号加密密钥：一旦有数据上盘，此后【不可更换】（换钥=密文全废）
+#   CAPTCHA=on                           # 缺省 on；本地演示/自动化可临时 off
+#   PMS_PORT=8080                        # 门户端口
+#   DB_USER/DB_PASSWORD/DB_NAME          # 与 mysql 服务的建库账号同源；首次建卷后改值需 down -v
 
 services:
   mysql:
@@ -20,11 +22,12 @@ services:
     restart: unless-stopped
     environment:
       MYSQL_ROOT_PASSWORD: pms123456
-      MYSQL_DATABASE: pms
-      MYSQL_USER: pms
-      MYSQL_PASSWORD: pms123456
+      MYSQL_DATABASE: ${DB_NAME:-pms}
+      MYSQL_USER: ${DB_USER:-pms}
+      MYSQL_PASSWORD: ${DB_PASSWORD:-pms123456}
+      TZ: Asia/Shanghai
     ports:
-      - "3306:3306"
+      - "127.0.0.1:3306:3306"          # 只绑本机回环：本地开发连得上，服务器上不暴露公网
     volumes:
       - mysql-data:/var/lib/mysql
     command:
@@ -36,6 +39,44 @@ services:
       timeout: 3s
       retries: 30
       start_period: 15s
+
+  backend:
+    build: ./backend
+    container_name: pms-backend
+    restart: unless-stopped
+    environment:
+      DB_ENGINE: mysql
+      DB_HOST: mysql                   # compose 网络里的数据库服务名
+      DB_PORT: 3306
+      DB_USER: ${DB_USER:-pms}
+      DB_PASSWORD: ${DB_PASSWORD:-pms123456}
+      DB_NAME: ${DB_NAME:-pms}
+      JWT_SECRET: ${JWT_SECRET:-pms-dev-secret-2026}
+      DATA_SECRET_KEY: ${DATA_SECRET_KEY:-pms-dev-data-key-2026}
+      CAPTCHA: ${CAPTCHA:-on}
+      TZ: Asia/Shanghai                # 后端 datetime.now() 的「今天」按本地时区，容器缺省 UTC 会错位
+    depends_on:
+      mysql:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=3)\""]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 25s                # lifespan 建表/迁移/种子需要几秒
+    # 调试需从宿主机直连后端时，临时放开：
+    # ports:
+    #   - "127.0.0.1:8000:8000"
+
+  frontend:
+    build: ./frontend
+    container_name: pms-frontend
+    restart: unless-stopped
+    ports:
+      - "${PMS_PORT:-8080}:80"
+    depends_on:
+      backend:
+        condition: service_healthy
 
 volumes:
   mysql-data:

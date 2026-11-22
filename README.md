@@ -49,6 +49,22 @@ npm run dev
 
 其他员工：`chenlu`（前台）、`zhanggf`（客房部）、`xumin`/`wufeng`（莫干山店）。
 
+## Docker 一键部署（服务器）
+
+```bash
+git clone <本仓库> && cd my-hotel-pms
+
+# 生产建议：仓库根目录建 .env 覆盖密钥（compose 自动读取并注入容器）
+#   JWT_SECRET=<强随机值>
+#   DATA_SECRET_KEY=<强随机值>     # 证件号加密密钥：一旦有数据上盘，此后【不可更换】
+docker compose up -d --build      # 起 MySQL + 后端 + 前端(nginx) 三容器，等 docker compose ps 全部 healthy
+```
+
+- 访问 `http://<服务器IP>:8080`（端口用 `PMS_PORT` 覆盖）；更新代码后重复 `docker compose up -d --build`
+- 登录验证码默认开启（`CAPTCHA=on`）；首次启动自动建库 + 灌入演示数据（lifespan 幂等，重启容器不重复）
+- 数据在 named volume `mysql-data`；清库重来 `docker compose down -v`
+- MySQL 只绑定宿主机 `127.0.0.1:3306` 不暴露公网；本地开发仍用 `docker compose up -d mysql` 只起库，后端/前端照旧在宿主机跑
+
 ## 测试
 
 ```bash
@@ -80,8 +96,8 @@ frontend/src/
   api.ts           # fetch 封装（自动注入 JWT 与 hotel_id 上下文）
 ```
 
-## 生产部署提示（超出演示范围）
+## 生产部署提示
 
-- 数据库用 MySQL 8.4（`docker compose up -d` 起库，`.env` 里写 `DB_ENGINE=mysql` 直连，连接参数 `DB_HOST/DB_PORT/DB_USER/DB_PASSWORD/DB_NAME` 可覆盖）；不配置时缺省回落本地 SQLite
-- `JWT_SECRET` 通过环境变量覆盖；PBKDF2 迭代次数可按需提升
+- 容器化全栈部署见上文「Docker 一键部署」；无 Docker 本地跑时数据库缺省回落本地 SQLite
+- `JWT_SECRET` / `DATA_SECRET_KEY` 通过根目录 `.env`（compose 插值）或环境变量覆盖；PBKDF2 迭代次数可按需提升
 - 建议启用 HTTPS、增加账号首次登录改密、备份策略
