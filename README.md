@@ -82,6 +82,6 @@ frontend/src/
 
 ## 生产部署提示（超出演示范围）
 
-- 数据库用 MySQL 8.4（`docker compose up -d` 起库，连接串走 `YUNQI_DATABASE_URL`）；不写该变量时缺省回落本地 SQLite
+- 数据库用 MySQL 8.4（`docker compose up -d` 起库，`.env` 里写 `DB_ENGINE=mysql` 直连，连接参数 `DB_HOST/DB_PORT/DB_USER/DB_PASSWORD/DB_NAME` 可覆盖）；不配置时缺省回落本地 SQLite
 - `JWT_SECRET` 通过环境变量覆盖；PBKDF2 迭代次数可按需提升
 - 建议启用 HTTPS、增加账号首次登录改密、备份策略

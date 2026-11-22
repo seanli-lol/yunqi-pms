@@ -4,20 +4,25 @@
 #   停止：docker compose down         # 数据保留在 named volume mysql-data 里
 #   清库：docker compose down -v      # 连数据卷一起删，下次启动后端重新种子
 #
-# 后端连接串在 backend/.env：
-#   YUNQI_DATABASE_URL=mysql+pymysql://yunqi:yunqi123456@127.0.0.1:3306/yunqi_pms?charset=utf8mb4
-# 若本机 3306 已被占用：把 ports 改成 "3307:3306"，并同步改 .env 里的端口。
+# 后端连接参数在 backend/.env（默认值与本文件一致，起好库后写一行 DB_ENGINE=mysql 即可直连）：
+#   DB_ENGINE=mysql
+#   DB_HOST=127.0.0.1
+#   DB_PORT=3306
+#   DB_USER=pms
+#   DB_PASSWORD=pms123456
+#   DB_NAME=pms
+# 若本机 3306 已被占用：把 ports 改成 "3307:3306"，并同步改 .env 里的 DB_PORT。
 
 services:
   mysql:
     image: mysql:8.4
-    container_name: yunqi-mysql
+    container_name: pms-mysql
     restart: unless-stopped
     environment:
-      MYSQL_ROOT_PASSWORD: yunqi123456
-      MYSQL_DATABASE: yunqi_pms
-      MYSQL_USER: yunqi
-      MYSQL_PASSWORD: yunqi123456
+      MYSQL_ROOT_PASSWORD: pms123456
+      MYSQL_DATABASE: pms
+      MYSQL_USER: pms
+      MYSQL_PASSWORD: pms123456
     ports:
       - "3306:3306"
     volumes:

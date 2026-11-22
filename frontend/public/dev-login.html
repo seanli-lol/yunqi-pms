@@ -5,7 +5,7 @@
 <script>
 // 开发辅助：/?username=zhouqi&hotel_id=1 → 走真实登录接口 → 写入 localStorage → 跳转目标页
 // 主题：加 &theme=dark / &theme=light / &theme=system 可预置外观（截图与自动化用）
-// ⚠️ 登录已启用滑块验证码：自动化前请用 YUNQI_CAPTCHA=off 启动后端，否则登录会被拒绝
+// ⚠️ 登录已启用滑块验证码：自动化前请用 CAPTCHA=off 启动后端，否则登录会被拒绝
 const q = new URLSearchParams(location.search)
 const username = q.get('username') || 'zhouqi'
 const hotelId = q.get('hotel_id') ? Number(q.get('hotel_id')) : null
