@@ -171,6 +171,9 @@ class RoomBody(BaseModel):
 
 class RoomPatch(BaseModel):
     status: Literal["vacant_clean", "vacant_dirty", "occupied", "maintenance"] | None = None
+    room_number: str | None = None
+    floor: int | None = None
+    room_type_id: int | None = None
     notes: str | None = None
 
 

@@ -552,6 +552,12 @@ function RoomsTab() {
   const [nrNo, setNrNo] = useState('')
   const [nrFloor, setNrFloor] = useState(2)
   const [nrType, setNrType] = useState<number | null>(null)
+  const [editOpen, setEditOpen] = useState(false)
+  const [editing, setEditing] = useState<Room | null>(null)
+  const [edNo, setEdNo] = useState('')
+  const [edFloor, setEdFloor] = useState(1)
+  const [edType, setEdType] = useState<number | null>(null)
+  const [edNotes, setEdNotes] = useState('')
   const types = useQuery({ queryKey: ['room-types'], queryFn: () => api.get<RoomType[]>('/api/room-types') })
   const rooms = useQuery({ queryKey: ['rooms'], queryFn: () => api.get<Room[]>('/api/rooms') })
   const statusMut = useMutation({
@@ -564,6 +570,19 @@ function RoomsTab() {
     onSuccess: () => { toast('客房已创建，初始房态为空净'); setAddOpen(false); qc.invalidateQueries({ queryKey: ['rooms'] }) },
     onError: (e: any) => toast(e.message ?? '创建失败'),
   })
+  const editMut = useMutation({
+    mutationFn: (p: { id: number; body: any }) => api.patch(`/api/rooms/${p.id}`, p.body),
+    onSuccess: () => { toast('客房信息已更新'); setEditOpen(false); qc.invalidateQueries({ queryKey: ['rooms'] }) },
+    onError: (e: any) => toast(e.message ?? '保存失败'),
+  })
+  const openEdit = (r: Room) => {
+    setEditing(r)
+    setEdNo(r.room_number)
+    setEdFloor(r.floor)
+    setEdType(r.room_type_id)
+    setEdNotes(r.notes || '')
+    setEditOpen(true)
+  }
 
   return (
     <>
@@ -608,6 +627,7 @@ function RoomsTab() {
                           <option value="vacant_dirty">空脏</option>
                         </select>
                       )}
+                      <button className="btn btn-quiet btn-sm" style={{ marginLeft: 6 }} onClick={() => openEdit(r)}>编辑</button>
                     </td>
                   </tr>
                 ))}
@@ -640,6 +660,38 @@ function RoomsTab() {
             {(types.data ?? []).map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
           </select>
         </Field>
+      </Dialog>
+
+      <Dialog
+        open={editOpen} onClose={() => setEditOpen(false)} title="编辑客房"
+        foot={
+          <>
+            <button className="btn btn-ghost" onClick={() => setEditOpen(false)}>取消</button>
+            <button className="btn btn-primary" disabled={editMut.isPending} onClick={() => {
+              if (!editing) return
+              if (!edNo.trim()) { toast('请填写房号'); return }
+              if (!edType) { toast('请选择房型'); return }
+              editMut.mutate({ id: editing.id, body: {
+                room_number: edNo.trim(), floor: edFloor, room_type_id: edType, notes: edNotes,
+              } })
+            }}>保存修改</button>
+          </>
+        }
+      >
+        <div className="form-row">
+          <Field label="房号" required><input className="input" value={edNo} onChange={e => setEdNo(e.target.value)} placeholder="如 509" /></Field>
+          <Field label="楼层" required><input className="input" type="number" value={edFloor} onChange={e => setEdFloor(Number(e.target.value))} /></Field>
+        </div>
+        <Field label="房型" required>
+          <select className="select" value={edType ?? ''} onChange={e => setEdType(Number(e.target.value))}>
+            <option value="">请选择房型</option>
+            {(types.data ?? []).map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+          </select>
+        </Field>
+        <Field label="备注">
+          <textarea className="input" rows={2} value={edNotes} onChange={e => setEdNotes(e.target.value)} placeholder="选填，如 空调检修，预计 11/20 恢复" />
+        </Field>
+        <p className="hint mt-8">房号需全店唯一，不可与现有客房重复；修改保存后即时生效。</p>
       </Dialog>
     </>
   )

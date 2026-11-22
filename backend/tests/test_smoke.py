@@ -1069,3 +1069,49 @@ def test_delete_payment():
     pid2 = client.get(f"/api/reservations/{rid2}/folio", headers=h).json()["payments"][0]["id"]
     r = client.delete(f"/api/reservations/{rid2}/payments/{pid2}", headers=h)
     assert r.status_code == 400
+
+
+def test_room_edit_and_duplicate_guard():
+    from app.routers.auth import _login_attempts
+    _login_attempts.clear()  # 测试共用 client IP，避免触发每分钟 10 次的登录限流
+    tok = _login("wanglin", hotel_id=1)["token"]
+    h = _headers(tok)
+    types = client.get("/api/room-types", headers=h).json()
+    assert len(types) >= 2
+    r = client.post("/api/rooms", headers=h, json={"room_number": "9901", "floor": 9, "room_type_id": types[0]["id"]})
+    assert r.status_code == 200, r.text
+    room = r.json()
+    r = client.post("/api/rooms", headers=h, json={"room_number": "9902", "floor": 9, "room_type_id": types[0]["id"]})
+    assert r.status_code == 200, r.text
+
+    # 编辑：房号/楼层/房型/备注一次改齐
+    other_type = next(t for t in types if t["id"] != types[0]["id"])
+    r = client.patch(f"/api/rooms/{room['id']}", headers=h, json={
+        "room_number": "9903", "floor": 3, "room_type_id": other_type["id"], "notes": "空调检修"})
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert (data["room_number"], data["floor"], data["room_type_id"], data["notes"]) == \
+        ("9903", 3, other_type["id"], "空调检修")
+
+    # 房号撞同店其他客房 → 400；提交自身原房号（排除自身）→ 200 不打日志
+    r = client.patch(f"/api/rooms/{room['id']}", headers=h, json={"room_number": "9902"})
+    assert r.status_code == 400
+    r = client.patch(f"/api/rooms/{room['id']}", headers=h, json={"room_number": "9903"})
+    assert r.status_code == 200
+
+    # 空房号 → 400；房型不存在 → 400
+    r = client.patch(f"/api/rooms/{room['id']}", headers=h, json={"room_number": "  "})
+    assert r.status_code == 400
+    r = client.patch(f"/api/rooms/{room['id']}", headers=h, json={"room_type_id": 999999})
+    assert r.status_code == 400
+
+    # 纯房态切换口径不变（操作列下拉走 status-only PATCH）
+    r = client.patch(f"/api/rooms/{room['id']}", headers=h, json={"status": "vacant_dirty"})
+    assert r.status_code == 200 and r.json()["status"] == "vacant_dirty"
+
+    # 跨店隔离：莫干山店员工改西湖店客房 → 404
+    hotels = client.get("/api/hotels", headers=_headers(_login("admin")["token"])).json()
+    mogan = next(x["id"] for x in hotels if "莫干山店" in x["name"])
+    tok2 = _login("xumin", hotel_id=mogan)["token"]
+    r = client.patch(f"/api/rooms/{room['id']}", headers=_headers(tok2), json={"notes": "跨店"})
+    assert r.status_code == 404

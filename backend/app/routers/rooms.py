@@ -108,7 +108,9 @@ def patch_room(room_id: int, body: RoomPatch, user: User = Depends(get_current_u
     r = db.get(Room, room_id)
     if not r or (user.role != "platform_admin" and r.hotel_id != user.hotel_id):
         raise HTTPException(404, "客房不存在")
+    # 局部更新口径：null = 不改；纯房态切换沿用 room_status 日志（操作列下拉），客房信息编辑记 room_update
     changed = []
+    info_changed = False
     status_labels = {"vacant_clean": "空净", "vacant_dirty": "空脏", "maintenance": "维修"}
     if body.status and body.status != r.status:
         if body.status == "occupied":
@@ -117,10 +119,39 @@ def patch_room(room_id: int, body: RoomPatch, user: User = Depends(get_current_u
             raise HTTPException(400, "该房有在住客人，请先办理退房再调整房态")
         r.status = body.status
         changed.append(f"房态→{status_labels.get(body.status, body.status)}")
-    if body.notes is not None:
+    if body.room_number is not None:
+        new_no = body.room_number.strip()
+        if not new_no:
+            raise HTTPException(400, "房号不能为空")
+        if new_no != r.room_number:
+            if db.query(Room).filter(Room.hotel_id == r.hotel_id, Room.room_number == new_no,
+                                     Room.id != r.id).first():
+                raise HTTPException(400, "房号已存在")
+            changed.append(f"房号 {r.room_number}→{new_no}")
+            r.room_number = new_no
+            info_changed = True
+    if body.floor is not None and body.floor != r.floor:
+        changed.append(f"楼层 {r.floor}→{body.floor}")
+        r.floor = body.floor
+        info_changed = True
+    if body.room_type_id is not None and body.room_type_id != r.room_type_id:
+        t = db.get(RoomType, body.room_type_id)
+        if not t or t.hotel_id != r.hotel_id:
+            raise HTTPException(400, "房型不存在")
+        cur = db.get(RoomType, r.room_type_id)
+        changed.append(f"房型 {cur.name}→{t.name}")
+        r.room_type_id = t.id
+        info_changed = True
+    if body.notes is not None and body.notes != r.notes:
         r.notes = body.notes
-    log_op(db, r.hotel_id, user, "room_status", "room", r.id,
-           f"客房 {r.room_number} {' · '.join(changed) or '更新备注'}")
+        changed.append("更新备注")
+        info_changed = True
+    if not changed:  # 无实际变化不打日志
+        t = db.get(RoomType, r.room_type_id)
+        return RoomOut(id=r.id, room_number=r.room_number, floor=r.floor, status=r.status,
+                       notes=r.notes, room_type_id=t.id, room_type_name=t.name, base_price=t.base_price)
+    log_op(db, r.hotel_id, user, "room_update" if info_changed else "room_status", "room", r.id,
+           f"客房 {r.room_number} {' · '.join(changed)}")
     db.commit()
     t = db.get(RoomType, r.room_type_id)
     return RoomOut(id=r.id, room_number=r.room_number, floor=r.floor, status=r.status,
