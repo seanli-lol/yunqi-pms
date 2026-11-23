@@ -168,10 +168,13 @@ export default function Rooms() {
   const toast = useToast()
   const qc = useQueryClient()
   const calRef = useRef<HTMLDivElement>(null)
-  /** 日历滚动容器（.cal-scroll）：用于测「板顶到视口顶」的距离，算固定高度 */
+  /** 板体横向滚动容器（.cal-scroll）：滚到位时把位移同步给表头层（表头在它外面） */
   const calScrollRef = useRef<HTMLDivElement>(null)
-  /** 日历板高度（px）：占满首屏剩余空间，让日期表头在板内固定（null = 未测量，用 CSS 兜底） */
-  const [boardH, setBoardH] = useState<number | null>(null)
+  /** 日期表头层（.cal-head-wrap）与其内 .cal：横滚同步 + sticky 吸附态 */
+  const calHeadRef = useRef<HTMLDivElement>(null)
+  const headCalRef = useRef<HTMLDivElement>(null)
+  /** 表头左上角日期区间格：横滚时反向补偿，钉在左缘（对应板体 sticky 的房号列） */
+  const headCornerRef = useRef<HTMLDivElement>(null)
   const dragRef = useRef<DragState | null>(null)
   /** 刚完成拖动的门闩：松手后浏览器补发的 click 需要吞掉，避免误开弹层 */
   const justDraggedRef = useRef(false)
@@ -221,37 +224,57 @@ export default function Rooms() {
     staleTime: 10_000,
   })
 
-  /* 日历板高度：占满首屏剩余空间，让日期表头在板内固定——滚到最下面也能看见是哪一天。
-     口径 = 视口高 − 盘面顶部 − 盘面下方实际内容（图例块 + main 底部内边距，实测而非猜）。
-     为什么必须把「下方内容」扣干净：表头的 sticky 只相对 .cal-scroll 这个滚动容器生效，
-     页面只要还能再滚一段，表头就会被页面带走——盘面高度必须让整页刚好一屏。
-     依赖 board.data：首帧还在 Spinner 分支、.cal-scroll 尚未挂载（ref 为 null），
-     只依赖 view 会让 effect 永不重跑 → 内联高度一直不生效。 */
+  /* 日期表头钉在页面上：表头层（.cal-head-wrap）在横向滚动容器**之外**，
+     所以 sticky 相对页面生效——页面照常纵向滚动，滚到表头贴住顶栏下沿才停住。
+     （表头留在 .cal-scroll 里不行：容器带 overflow-x 后自身即滚动容器，内部 sticky 只相对它解析。）
+     两件同步工作：
+     ① 板体横滚 → 表头层整体平移同一位移（两层同宽同 grid，逐列天然对齐）；
+        左上角日期区间格反向补偿，钉在左缘（对应板体 sticky left 的房号列）；
+     ② 页面纵滚 → 表头贴住顶栏下沿时给 .is-stuck（去上圆角、加轻阴影），离开即撤。
+     依赖 board.data：首帧还在 Spinner 分支、两层都未挂载（ref 为 null），
+     只依赖 view 会让 effect 永不重跑 → 同步逻辑一直没绑上（38e30d3 踩过同类坑）。 */
   useEffect(() => {
     if (view !== 'cal' || !board.data) return
-    const measure = () => {
-      const el = calScrollRef.current
-      if (!el) return
-      // 页面已滚过板顶时 rect.top 为负：夹到 0，让板正好填满视口
-      const top = Math.max(0, el.getBoundingClientRect().top)
-      // 盘面下方的内容（图例 + 间距）高度——与外层容器高度无关，可直接量
-      const wrap = el.parentElement
-      const below = wrap
-        ? Math.max(0, wrap.getBoundingClientRect().bottom - el.getBoundingClientRect().bottom)
-        : 0
-      // main 底部内边距（桌面 72 / 移动 96，移动端已含底栏让位），不扣会让页面多出可滚高度
-      const main = document.querySelector('main.main')
-      const padBottom = main ? parseFloat(getComputedStyle(main).paddingBottom) || 0 : 0
-      const h = Math.floor(window.innerHeight - top - below - padBottom)
-      // 太矮（横向滚动条 + 一两行房）时给下限，宁可整页滚也不要把板压扁
-      setBoardH(Math.max(240, h))
+    const sc = calScrollRef.current
+    const wrap = calHeadRef.current
+    const headCal = headCalRef.current
+    const corner = headCornerRef.current
+    if (!sc || !wrap || !headCal) return
+
+    const syncX = () => {
+      const x = sc.scrollLeft
+      // 先对齐宽度：Windows/Linux 的经典滚动条占 15px，板体内容盒比表头层窄 → 同为 1fr 解析出的列宽不同。
+      // 只在实测差 >1px 时才反写（macOS overlay 滚动条下等宽，不写 → 保留 CSS 原值，避免取整抖动）。
+      // 用 offsetWidth：布局尺寸，不受上面的 transform 影响。
+      const bodyCal = sc.firstElementChild as HTMLElement | null
+      if (bodyCal) {
+        const bw = bodyCal.offsetWidth
+        const hw = headCal.offsetWidth
+        const want = Math.abs(bw - hw) > 1 ? `${bw}px` : ''
+        if (headCal.style.width !== want) headCal.style.width = want
+      }
+      headCal.style.transform = x ? `translate3d(${-x}px, 0, 0)` : ''
+      if (corner) corner.style.transform = x ? `translate3d(${x}px, 0, 0)` : ''
     }
-    // 等一帧让布局（字体/表头）稳定后再量
-    const raf = requestAnimationFrame(measure)
-    window.addEventListener('resize', measure)
+    const syncStuck = () => {
+      // 吸附线 = 顶栏高度（<768px 顶栏 display:none，实测而非写死 56）
+      const topbar = document.querySelector('.topbar') as HTMLElement | null
+      const top = topbar && getComputedStyle(topbar).display !== 'none' ? topbar.offsetHeight : 0
+      wrap.classList.toggle('is-stuck', wrap.getBoundingClientRect().top <= top + 0.5)
+    }
+    syncX()
+    syncStuck()
+    sc.addEventListener('scroll', syncX, { passive: true })
+    window.addEventListener('scroll', syncStuck, { passive: true })
+    window.addEventListener('resize', syncX)
+    window.addEventListener('resize', syncStuck)
     return () => {
-      cancelAnimationFrame(raf)
-      window.removeEventListener('resize', measure)
+      sc.removeEventListener('scroll', syncX)
+      window.removeEventListener('scroll', syncStuck)
+      window.removeEventListener('resize', syncX)
+      window.removeEventListener('resize', syncStuck)
+      headCal.style.transform = ''
+      if (corner) corner.style.transform = ''
     }
   }, [view, board.data])
 
@@ -374,12 +397,14 @@ export default function Rooms() {
   })
 
   /** 日历实际几何：宽屏下日期列被 1fr 拉伸（房态盘去留白后铺满主区），
-      列号换算必须实测 .cal-lab/.cal-h 宽度——写死 88/150 会错列。每次实时取 rect，滚动后不能缓存。 */
+      列号换算必须实测 .cal-lab/.cal-h 宽度——写死 88/150 会错列。每次实时取 rect，滚动后不能缓存。
+      注意 .cal-h 现在在表头层（.cal-head-wrap）里，不在板体 .cal 内——两层同宽同 grid，
+      取表头的格子宽度与板体逐列等宽；left/labW 仍量板体（点击落在板体行上）。 */
   const calGeom = () => {
     const cal = calRef.current
     if (!cal) return null
     const lab = cal.querySelector('.cal-lab') as HTMLElement | null
-    const head = cal.querySelector('.cal-h') as HTMLElement | null
+    const head = headCalRef.current?.querySelector('.cal-h') as HTMLElement | null
     return {
       left: cal.getBoundingClientRect().left,
       labW: lab?.offsetWidth || LAB_W,
@@ -868,16 +893,16 @@ export default function Rooms() {
 
       {view === 'cal' ? (
         <div>
-      {/* 日历板：固定高度的内部滚动区——日期表头（.cal-head）在板内 sticky 固定，
-          滚到最下面也能看见是哪一天；页面本身不再被几十行房撑长 */}
-      <div
-        className="cal-scroll"
-        ref={calScrollRef}
-        style={boardH != null ? { height: boardH } : undefined}
-      >
-        <div className="cal" ref={calRef}>
+      {/* 日历板拆成两层：
+          ① .cal-head-wrap = 日期表头，**在横向滚动容器外面**，所以 sticky 相对页面生效——
+             页面照常纵向滚动（一行不少），滚到表头贴住顶栏下沿才停住；
+          ② .cal-scroll = 板体，只横向滚动（不再自带纵向滚动、不再内联高度）。
+          两层同宽同 grid-template-columns，1fr 逐列解析一致；横滚位移由 JS 同步给表头。 */}
+      <div className="cal-board">
+      <div className="cal-head-wrap" ref={calHeadRef}>
+        <div className="cal" ref={headCalRef}>
           <div className="cal-row cal-head">
-            <div className="cal-corner">
+            <div className="cal-corner" ref={headCornerRef}>
               <span className="t">{md(bd.start)} – {md(bd.day_list[bd.day_list.length - 1].date)}</span>
               <span className="d">14 天 · 今天 {md(todayIso())} 周{bd.day_list[bd.day_list.length - 1].weekday}</span>
             </div>
@@ -888,6 +913,10 @@ export default function Rooms() {
               </div>
             ))}
           </div>
+        </div>
+      </div>
+      <div className="cal-scroll" ref={calScrollRef}>
+        <div className="cal" ref={calRef}>
           <div className="cal-row cal-remain">
             <div className="rl">可售余量</div>
             {bd.remain.map((n, i) => <div key={i} className="rc"><b>{n}</b>间</div>)}
@@ -1043,6 +1072,7 @@ export default function Rooms() {
             </div>
           ))}
         </div>
+      </div>
       </div>
           <p className="hint mt-16 cal-legend">
             图例：<Badge color="blue">在住</Badge> <Badge color="orange">未来抵店</Badge> <Badge color="red">欠</Badge> 在住/已离店未结清 · <Badge color="purple">超</Badge> 实付超过应收（多收待退）· 灰块 = 已离店（离店日格子只压左 1/3，当天下午起腾空，空白即可售，含当日钟点房）· 格子右上角<b style={{ color: 'var(--text-primary)' }}>退房图标</b> = 当日有客人退房，悬停看明细、<b>点按展开详情并可编辑</b>（更正实收 / 撤销退房；同列有方块时让位到右下角）·

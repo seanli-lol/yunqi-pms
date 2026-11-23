@@ -868,13 +868,32 @@ textarea.input { height: auto; padding: 12px 14px; resize: vertical; }
 .cal-src-legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12.5px; color: var(--text-secondary); align-items: center; }
 .cal-src-legend span { display: inline-flex; align-items: center; gap: 6px; }
 .cal-src-legend i { width: 5px; height: 14px; border-radius: 3px; }
-/* 日历板＝自带纵向滚动的区域（高度由 Rooms.tsx 实测首屏剩余空间后内联设置）。
-   为什么必须自带纵向滚动：只写 overflow-x:auto 时浏览器把容器当「两个方向都可能滚」，
-   .cal-head 的 position:sticky 就只相对这个容器解析——而容器高度由内容撑开、自身永不滚动，
-   于是表头跟着页面一起滚走（实测滚到底表头停在视口外 top:-383px），滚到下面看不到日期。 */
+/* 日历＝「表头层」+「板体」两层上下拼成一张卡：
+   .cal-head-wrap 是日期表头，**在横向滚动容器外面**，sticky 因此相对页面生效——
+   页面照常纵向滚动（一行房都不少），滚到表头贴住顶栏下沿才停住。
+   表头若留在 .cal-scroll 里，容器一旦带 overflow-x 就成了滚动容器，内部 sticky 只相对它解析，
+   而它高度由内容撑开、自身永不纵向滚动 → 表头跟着页面滚走（38e30d3 的踩坑）。
+   纵向滚动回页面后不再需要内联高度，板体的几十行房重新参与正常文档流。 */
+.cal-head-wrap {
+  position: sticky; top: 0; z-index: 3;
+  overflow: hidden; background: var(--bg);
+  border: 1px solid var(--hairline-soft); border-bottom: 0;
+  border-radius: var(--radius-card) var(--radius-card) 0 0;
+}
+/* 桌面有顶栏（56px，sticky z-index 35）：表头要停在它下沿而不是被它压住；
+   窄屏顶栏 display:none，直接贴视口顶 */
+@media (min-width: 768px) {
+  .cal-head-wrap { top: 56px; }
+}
+/* 吸附态由 Rooms.tsx 的 syncStuck 切换：离开板顶后去掉上圆角、补一条轻阴影，
+   让「表头已脱离卡片」这件事看得出来；未吸附时保持与板体拼接的直角 */
+.cal-head-wrap.is-stuck { border-radius: 0; box-shadow: var(--shadow-hover); }
 .cal-scroll {
-  overflow: auto; -webkit-overflow-scrolling: touch;
-  border: 1px solid var(--hairline-soft); border-radius: var(--radius-card);
+  /* 只横向滚动（纵向交给页面）：overflow-y 保持 visible 的语义不要去接
+     ——这里必须写 overflow-x 单轴，写 overflow: auto 会把纵向也吃掉 */
+  overflow-x: auto; overflow-y: hidden; -webkit-overflow-scrolling: touch;
+  border: 1px solid var(--hairline-soft); border-top: 0;
+  border-radius: 0 0 var(--radius-card) var(--radius-card);
   background: var(--bg); box-shadow: var(--shadow-card);
 }
 /* 列宽用 minmax：窄屏保持 88px（横向滚动），宽屏由 1fr 均分填满主区不留白条。
@@ -885,12 +904,13 @@ textarea.input { height: auto; padding: 12px 14px; resize: vertical; }
   --cal-cell: calc((100cqw - 150px) / 14);
 }
 .cal-row { display: grid; grid-template-columns: 150px repeat(14, minmax(88px, 1fr)); }
-/* 日期表头在板内固定：板内纵滚时始终可见（可售余量行随之下滚，不参与固定）。
-   左上角「日期区间」格同时钉住左侧：板内横滚到最右时它不能被推走（房号列 .cal-lab 也是 sticky left），
-   否则表头左侧会空出一块、与下方房号列错位。 */
-.cal-head { position: sticky; top: 0; z-index: 3; background: var(--bg); border-bottom: 1px solid var(--hairline-soft); }
+/* 表头行本身不再 sticky（已经由外层 .cal-head-wrap 承担固定），只保留底色与下边框 */
+.cal-head { background: var(--bg); border-bottom: 1px solid var(--hairline-soft); }
+/* 左上角「日期区间」格：表头横滚位移由 JS 整体平移后，它再做反向补偿钉在左缘
+   （对应板体 sticky left 的房号列；否则横滚到最右时表头左侧会空出一块、与房号列错位）。
+   用 transform 而非 sticky left：表头层外层 overflow:hidden，sticky 在这里没有滚动容器可依附 */
 .cal-corner {
-  position: sticky; left: 0; z-index: 4; background: var(--bg);
+  position: relative; z-index: 4; background: var(--bg);
   padding: 10px 14px; display: flex; flex-direction: column; justify-content: center; gap: 2px;
   border-right: 1px solid var(--hairline-soft);
 }
@@ -1172,7 +1192,11 @@ textarea.input { height: auto; padding: 12px 14px; resize: vertical; }
   .main-bleed .cal-legend,
   /* 单日网格不需要额外宽度：卡片与筛选栏同一起始线，不贴边 */
   .main-bleed .board { padding-inline: 20px; }
-  /* 日历贴边后卡片感会失效：去掉圆角/左右边框/阴影，只留上下发丝线当原生看板 */
+  /* 日历贴边后卡片感会失效：去掉圆角/左右边框/阴影，只留上下发丝线当原生看板
+     （表头层与板体拆成两层，两处都要改，否则贴边时左右各留一条 1px 边框）。
+     注意 .is-stuck 的阴影要单独补回：下面这条 box-shadow:none 在源顺序上晚于它，会把它压掉 */
+  .main-bleed .cal-head-wrap { border-radius: 0; border-left: 0; border-right: 0; box-shadow: none; }
+  .main-bleed .cal-head-wrap.is-stuck { box-shadow: var(--shadow-hover); }
   .main-bleed .cal-scroll { border-radius: 0; border-left: 0; border-right: 0; box-shadow: none; }
 }
 
