@@ -38,9 +38,9 @@
     <false/>
 
     <key>StandardOutPath</key>
-    <string>/Users/yourname/Backups/yunqi-pms/pull.log</string>
+    <string>/path/to/yunqi-pms/backups/pull.log</string>
     <key>StandardErrorPath</key>
-    <string>/Users/yourname/Backups/yunqi-pms/pull.log</string>
+    <string>/path/to/yunqi-pms/backups/pull.log</string>
 
     <key>EnvironmentVariables</key>
     <dict>

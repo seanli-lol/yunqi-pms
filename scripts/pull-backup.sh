@@ -8,21 +8,24 @@
 #       rsync 只下载缺失/变更的文件，重复跑不会重复传输。
 #
 # 用法：
-#   手动   ~/bin/pms-pull-backup.sh
+#   手动   ./scripts/pull-backup.sh
 #   定时   由 launchd 调起（见 ~/Library/LaunchAgents/com.yunqi.pms.backup-pull.plist）
 #
 # 可调环境变量：
-#   PULL_DEST   本地存放目录（默认 ~/Backups/yunqi-pms）
+#   PULL_DEST   本地存放目录（默认 <仓库根>/backups，已被 .gitignore 忽略）
 #   KEEP_DAYS   本地保留天数（默认 30 天，比服务器 14 天更久——异地留底要长一些）
 #   SSH_KEY / SSH_PORT / SSH_USER / SSH_HOST  连接参数
 set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 SSH_KEY="${SSH_KEY:-$HOME/.ssh/pms_deploy}"
 SSH_PORT="${SSH_PORT:-22}"
 SSH_USER="${SSH_USER:-deploy}"
 SSH_HOST="${SSH_HOST:-YOUR_SERVER_IP}"
 REMOTE_DIR="${REMOTE_DIR:-/home/deploy/backups}"
-PULL_DEST="${PULL_DEST:-$HOME/Backups/yunqi-pms}"
+PULL_DEST="${PULL_DEST:-$REPO_DIR/backups}"
 KEEP_DAYS="${KEEP_DAYS:-30}"
 
 log() { printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"; }
