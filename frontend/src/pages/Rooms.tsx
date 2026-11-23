@@ -2015,10 +2015,11 @@ function BookDrawer({ open, lines, channels, busy, onClose, onChangeLines, onSub
   const [channelId, setChannelId] = useState<number | null>(null)
   /** 钟点仅在恰好 1 行时可用：多房按整晚处理，避免多房×钟点的组合复杂度 */
   const [stayType, setStayType] = useState<'normal' | 'hourly'>('normal')
-  const [hours, setHours] = useState(4)
+  /** 钟点时长默认 3 小时 */
+  const [hours, setHours] = useState(3)
 
   useEffect(() => {
-    if (open) { setName(''); setPhone(''); setChannelId(null); setStayType('normal'); setHours(4) }
+    if (open) { setName(''); setPhone(''); setChannelId(null); setStayType('normal'); setHours(3) }
   }, [open])
 
   // 来源没有「未指定」选项：下拉框必显示第一项（设置里的第一个渠道，通常为美团），

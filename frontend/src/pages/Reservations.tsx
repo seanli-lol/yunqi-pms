@@ -192,7 +192,8 @@ function NewReservationDialog({ open, onClose, channels, types, onSubmit, onDone
   const [notes, setNotes] = useState('')
   /** 整晚 / 钟点（所选房型支持钟点时可选） */
   const [stayType, setStayType] = useState<'normal' | 'hourly'>('normal')
-  const [hours, setHours] = useState(4)
+  /** 钟点时长默认 3 小时 */
+  const [hours, setHours] = useState(3)
   /** 协议总价（整单）：单价由总额按天数折算后提交 */
   const [totalText, setTotalText] = useState('')
 
@@ -204,7 +205,7 @@ function NewReservationDialog({ open, onClose, channels, types, onSubmit, onDone
 
   useEffect(() => {
     if (open) {
-      setName(''); setPhone(''); setChannelId(null); setNotes(''); setStayType('normal'); setHours(4)
+      setName(''); setPhone(''); setChannelId(null); setNotes(''); setStayType('normal'); setHours(3)
       setCin(todayIso()); setCout(addDaysIso(todayIso(), 1))
       setNightsText('1'); setTotalText(''); setTotalTouched(false)
     }
