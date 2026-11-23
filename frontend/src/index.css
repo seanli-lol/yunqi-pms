@@ -1040,6 +1040,44 @@ textarea.input { height: auto; padding: 12px 14px; resize: vertical; }
 /* 轨带 20px 高：「欠/超」徽章缩小适配 */
 .cal-block.lane-1 .owe, .cal-block.lane-2 .owe,
 .cal-block.lane-1 .over, .cal-block.lane-2 .over { top: 2px; right: 2px; padding: 1px 4px; font-size: 9px; }
+/* 钟点房：右上角钟表图标（替代原「· 钟点」文字）。第二行改为「渠道 · 时长」，超宽省略 */
+/* 右侧内边距 8→5px：移动端列宽压到 82px 时，「美团 · 3 小时」(61px) 才装得进 59px 内宽。
+   标记都是绝对定位，不吃这 3px（.g 的 17/34px 行内留白仍然盖住时钟与徽章） */
+.cal-block.hourly { padding-right: 5px; }
+.cal-block.hourly .g { padding-right: 17px; }   /* 默认只给时钟让位（13px + 间距） */
+/* 有「欠/超」徽章时（徽章排在同一条上、钉在时钟左侧）再让出徽章宽度 */
+.cal-block.hourly.has-badge .g { padding-right: 34px; }
+.cal-block.hourly .s { overflow: hidden; text-overflow: ellipsis; }
+.cal-hour {
+  position: absolute; right: 3px; top: 3px;
+  display: flex; align-items: center; justify-content: center;
+  color: currentColor; opacity: .72;
+  pointer-events: none; /* 图标只做标记，点击/拖动仍由方块接收 */
+}
+.cal-hour svg { display: block; }
+/* 「欠/超」与时钟同一行、钉在它左侧并缩号到 9px —— 86px 窄格放不下两者都全尺寸；
+   右下的位置则留给同列的「退房」角标，四个标记各占一角不互相盖 */
+.cal-block.hourly .owe, .cal-block.hourly .over {
+  top: 3px; bottom: auto; right: 19px;
+  font-size: 9px; line-height: 1; padding: 1.5px 3.5px; border-radius: 4px;
+}
+/* 同列有退房角标（.has-dep）：角标缩成 18px 迷你号钉右下，第二行右侧留出它的位置。
+   实测 86px 格里整尺寸角标（30×22）会压住第二行的省略号，迷你号只吃掉 20px 文字宽度，
+   而「渠道 · 时长」本就超宽会省略——牺牲最小的一项。分轨轨带横排，靠后面的 lane 规则复位 */
+.cal-block.hourly.has-dep .s { padding-right: 20px; }
+/* 分轨 20px 轨带：整条只有一行（.g 与 .s 横排），钟表缩到 10px 垂直居中，
+   徽章回到图标左侧——轨带没有第二行可让，第一行的留白改挂在方块自身 */
+.cal-block.lane-1 .cal-hour, .cal-block.lane-2 .cal-hour {
+  top: 50%; right: 3px; transform: translateY(-50%); opacity: .78;
+}
+.cal-block.lane-1 .cal-hour svg, .cal-block.lane-2 .cal-hour svg { width: 10px; height: 10px; }
+.cal-block.lane-1.hourly, .cal-block.lane-2.hourly { padding-right: 16px; }
+/* 轨带里两行是横排的同一行，撤销上面的行内留白（否则会在 g/s 之间挤出一道空隙） */
+.cal-block.lane-1.hourly .g, .cal-block.lane-2.hourly .g,
+.cal-block.lane-1.hourly .s, .cal-block.lane-2.hourly .s { padding-right: 0; }
+/* 轨带中也复位徽章对第一行的影响（轨带横排单行，徽章直接回右上） */
+.cal-block.lane-1.hourly .owe, .cal-block.lane-1.hourly .over,
+.cal-block.lane-2.hourly .owe, .cal-block.lane-2.hourly .over { top: 2px; bottom: auto; right: 16px; }
 /* 退房角标：格子右上角实线框 + 「退房」图标；实线 + 不透明底保证清晰（压在方块上也不透底）；
    z 高于方块。同列有真方块时加 .yield 让位到右下角——欠/超徽章钉在方块右上角，不能被盖住 */
 .cal-dep {
@@ -1054,6 +1092,15 @@ textarea.input { height: auto; padding: 12px 14px; resize: vertical; }
 .cal-dep svg { display: block; width: 16px; height: 16px; }
 .cal-dep:hover { border-color: var(--text-primary); color: var(--text-primary); }
 .cal-dep.yield { align-self: end; margin: 0 6px 3px 0; }
+/* 同列是「在住钟点房」：右上角被时钟占住、「欠/超」钉在时钟左侧，退房角标只能落到右下角。
+   但 86px 窄格里第二行文案正好在右下——角标沿用整尺寸会把省略号盖住，故缩成 18px 小角标
+   （左侧 5px 来源色条 + 13px 内边距本就是死区，塞得下） */
+.cal-dep.yield.dep-mini {
+  align-self: end; justify-self: end;
+  width: 18px; height: 18px; margin: 0 4px 4px 0;
+  border-radius: 5px;
+}
+.cal-dep.dep-mini svg { width: 11px; height: 11px; }
 /* 退房明细浮卡：fixed 定位挂 body（portal），不进 .cal-scroll——避免被横向滚动容器裁剪 */
 .dep-pop {
   position: fixed; z-index: 90; min-width: 280px; max-width: 340px;

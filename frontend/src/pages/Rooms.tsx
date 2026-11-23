@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ChevronRight, X } from 'lucide-react'
+import { ChevronRight, Clock, X } from 'lucide-react'
 import {
   api, addDaysIso, fmtMoney, maskPhone, md, mdt, moneyInputText, payMethodLabel, round2, todayIso,
   ROOM_STATUS_LABEL, OP_ACTION_LABEL, OP_ACTION_COLOR,
@@ -958,6 +958,10 @@ export default function Rooms() {
               <div className="cal-row"><div className="cal-group">{g.name} · {g.rooms[0]?.floor}F<span className="c">{g.rooms.length} 间</span></div></div>
               {g.rooms.map(room => {
                 const layout = layoutRoomBlocks(room.blocks)
+                // 同列是否已有在住钟点方块：决定退房角标要不要缩成迷你号（86px 窄格放不下整尺寸）
+                const liveHourlyAt = (col: number) => layout.lanes.some(({ b, span }) =>
+                  b.col_start <= col && col < b.col_start + span
+                  && b.stay_type === 'hourly' && b.status !== 'checked_out')
                 return (
                 <div
                   key={room.id}
@@ -1010,6 +1014,14 @@ export default function Rooms() {
                         const cls = b.status === 'checked_in' ? 'stay'
                           : b.status === 'checked_out' ? 'past' : 'future'
                         const hourly = b.stay_type === 'hourly'
+                        // 钟点房用右上角钟表图标表达（不再写「· 钟点」文字）；退房后图标撤掉，
+                        // 该格回到既有「提前退房」角标（当日退的钟点房本来就走 layout.deps，不画方块）
+                        const hourlyLive = hourly && b.status !== 'checked_out'
+                        // 欠/超徽章（与下面的渲染条件同口径）：钟点方块要按它给姓名让出额外宽度
+                        const hasBadge = (b.status === 'checked_in' || b.status === 'checked_out') && b.balance_due > 0
+                          || b.paid_total > b.items_total
+                        // 本列还有已退房角标 → 第二行右侧给它让位（角标同时缩成迷你号）
+                        const colHasDep = layout.deps.some(d => d.col >= b.col_start && d.col < b.col_start + span)
                         const chained = !!b.chain?.length
                         // lane 已在 layoutRoomBlocks 里映射好：0=整行无类，1/2=上下轨 lane-1/lane-2
                         const laneCls = lane > 0 ? ` lane-${lane}` : ''
@@ -1019,7 +1031,7 @@ export default function Rooms() {
                         return (
                           <div
                             key={b.id}
-                            className={`cal-block ${cls}${hourly ? ' hourly' : ''}${b.truncated && b.stub_cut ? ' truncated' : ''}${laneCls}${chained ? ' chain' : ''}`}
+                            className={`cal-block ${cls}${hourlyLive ? ' hourly' : ''}${hourlyLive && hasBadge ? ' has-badge' : ''}${hourlyLive && colHasDep ? ' has-dep' : ''}${b.truncated && b.stub_cut ? ' truncated' : ''}${laneCls}${chained ? ' chain' : ''}`}
                             data-res-id={b.id}
                             style={{ gridColumn: `${b.col_start + 2} / span ${span}`, ['--src' as any]: b.channel_color }}
                             title={chainTitle ?? (b.truncated ? `${b.guest_name} · 已离店（${b.check_in.slice(5).replace('-', '/')} 入住，原订至 ${b.check_out.slice(5).replace('-', '/')}，实际已提前退房）` : undefined)}
@@ -1048,8 +1060,23 @@ export default function Rooms() {
                               setDetailRes({ id: b.id } as Reservation)
                             }}
                           >
-                            <span className="g">{b.guest_name}{hourly ? ' · 钟点' : ''}</span>
-                            <span className="s">{hourly ? `${b.hours ?? 0} 小时` : b.channel_name}</span>
+                            <span className="g">{b.guest_name}{hourly && !hourlyLive ? ' · 钟点' : ''}</span>
+                            <span className="s">
+                              {hourlyLive
+                                // 本列还有退房角标占着右下角：86px 格里放不下「渠道 · 时长」+ 角标，
+                                // 退化成旧格式「N 小时」（渠道颜色仍由左侧竖条表达）
+                                ? (colHasDep
+                                    ? `${b.hours ?? 0} 小时`
+                                    : `${b.channel_name}${b.channel_name ? ' · ' : ''}${b.hours ?? 0} 小时`)
+                                : hourly ? `${b.hours ?? 0} 小时` : b.channel_name}
+                            </span>
+                            {/* 钟点房：右上角钟表图标（代替「· 钟点」文字）；退房后不显示，
+                                改由该格既有的「退房」角标表达提前退房 */}
+                            {hourlyLive && (
+                              <span className="cal-hour" title={`钟点房 · ${b.hours ?? 0} 小时`} aria-label={`钟点房 ${b.hours ?? 0} 小时`}>
+                                <Clock size={13} strokeWidth={2.2} />
+                              </span>
+                            )}
                             {(b.status === 'checked_in' || b.status === 'checked_out') && b.balance_due > 0 && <span className="owe">欠</span>}
                             {/* 超付（实付>应收，不限状态）——「欠」的互斥对位：超付时后端已把 balance_due 钳 0，欠徽章不会同显 */}
                             {b.paid_total > b.items_total && (
@@ -1060,11 +1087,14 @@ export default function Rooms() {
                       })}
                       {/* 当日入住当日退（钟点房/当日往返，不限笔数）：聚合为格角「退房」角标，悬停/点按看明细并可编辑 */}
                       {layout.deps.map(({ col, list }) => {
-                        // 同列有真方块（欠/超徽章钉在方块右上角）→ 角标让位到右下角，避免盖住欠/超
+                        // 同列有真方块（欠/超徽章在方块右上一带）→ 角标让位到右下角，避免盖住欠/超
                         const hasBlock = layout.lanes.some(({ b, span }) => b.col_start <= col && col < b.col_start + span)
+                        // 同列那块还是在住钟点房 → 右上角有钟表、右下角有第二行文字，整尺寸角标会压住文字，
+                        // 缩成 18px 迷你号（方块上的 .has-dep 已为其让出第二行右侧）
+                        const mini = liveHourlyAt(col)
                         return (
                           <button
-                            key={`dep-${col}`} type="button" className={`cal-dep${hasBlock ? ' yield' : ''}`}
+                            key={`dep-${col}`} type="button" className={`cal-dep${hasBlock ? ' yield' : ''}${mini ? ' dep-mini' : ''}`}
                             style={{ gridColumn: `${col + 2} / span 1` }}
                             aria-label={`${md(bd.day_list[col]?.date ?? '')} 已退 ${list.length} 笔，悬停或点击查看`}
                             onMouseEnter={(e) => openDep(room.number, col, list, e.currentTarget)}
@@ -1106,7 +1136,7 @@ export default function Rooms() {
       </div>
       </div>
           <p className="hint mt-16 cal-legend">
-            图例：<Badge color="blue">在住</Badge> <Badge color="orange">未来抵店</Badge> <Badge color="red">欠</Badge> 在住/已离店未结清 · <Badge color="purple">超</Badge> 实付超过应收（多收待退）· 灰块 = 已离店（离店日格子只压左 1/3，当天下午起腾空，空白即可售，含当日钟点房）· 格子右上角<b style={{ color: 'var(--text-primary)' }}>退房图标</b> = 当日有客人退房，悬停看明细、<b>点按展开详情并可编辑</b>（更正实收 / 撤销退房；同列有方块时让位到右下角）·
+            图例：<Badge color="blue">在住</Badge> <Badge color="orange">未来抵店</Badge> <Badge color="red">欠</Badge> 在住/已离店未结清 · <Badge color="purple">超</Badge> 实付超过应收（多收待退）· 灰块 = 已离店（离店日格子只压左 1/3，当天下午起腾空，空白即可售，含当日钟点房）· 方块右上角<b style={{ color: 'var(--text-primary)' }}>钟表图标</b> = 钟点房（时长见方块第二行「渠道 · 时长」，退房后不再显示、改显格子右上角退房图标）· 格子右上角<b style={{ color: 'var(--text-primary)' }}>退房图标</b> = 当日有客人退房，悬停看明细、<b>点按展开详情并可编辑</b>（更正实收 / 撤销退房；同列有方块时让位到右下角）·
             方块最前端竖条颜色 = 预订来源（可在「设置 → 来源渠道」配置）。<b>拖动方块换房/改期（冲突自动回弹）· 点击空白格直接开单 · 房号旁「设净/设脏」一键切换房态</b>。
             <b>同一客人同房首尾相接的多笔预订自动合并为一笔订单</b>（新开单直接并入原单；存量逐笔单点长条看明细并可「合并为一笔」，合并后与普通多晚订单完全一致，点开即订单详情）。
           </p>
