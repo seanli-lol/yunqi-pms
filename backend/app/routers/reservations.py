@@ -10,7 +10,7 @@ from app.deps import (balance_of, blocking_ids, fmt_money, free_rooms,
 from app.models import (Channel, FolioItem, Guest, OperationLog,
                         Payment, Reservation, Room, RoomType, User)
 from app.schemas import (CheckInBody, CheckOutBody, ExtendBody, FolioItemBody,
-                         PaidTotalBody, PaymentBody, RegistrationBody,
+                         MergeChainBody, PaidTotalBody, PaymentBody, RegistrationBody,
                          ReservationBody, ReservationOut, ReservationPatch)
 from app.routers.payment_methods import assert_method_usable, pay_method_label
 from app.security import decrypt_field, encrypt_field
@@ -25,7 +25,18 @@ def _remark_suffix(remark: str) -> str:
 
 
 # ---------- 序列化 ----------
-def res_out(db: Session, r: Reservation) -> ReservationOut:
+def room_charge_total_of(db: Session, res_id: int) -> float:
+    """房费合计（Σ category='room_charge' 账目）——合并/分段计价订单的收入口径。
+
+    连住合并（自动并入 / 手动 merge-chain）之后房费分多行、单价也不同，
+    rate × nights 不再等于应收，前端展示与编辑初值都必须取这个值。"""
+    rows = (db.query(FolioItem)
+            .filter(FolioItem.reservation_id == res_id, FolioItem.category == "room_charge")
+            .all())
+    return money(sum(x.amount for x in rows))
+
+
+def res_out(db: Session, r: Reservation, *, merged: bool = False) -> ReservationOut:
     guest = db.get(Guest, r.guest_id)
     rt = db.get(RoomType, r.room_type_id)
     room = db.get(Room, r.room_id) if r.room_id else None
@@ -53,6 +64,8 @@ def res_out(db: Session, r: Reservation) -> ReservationOut:
         rate=r.rate, stay_type=r.stay_type, hours=r.hours,
         notes=r.notes,
         balance_due=max(0.0, balance_of(db, r.id)),
+        room_charge_total=room_charge_total_of(db, r.id),
+        merged=merged,
         operator_name=op.name if op else None,
         created_at=r.created_at,
     )
@@ -69,20 +82,28 @@ def gen_code(db: Session, check_in: date) -> str:
 
 
 def recalc_room_charge(db: Session, r: Reservation) -> None:
-    """按当前房价与住期重算首条房费账目（延住追加行不参与，沿用既有边界）。"""
-    fee = (db.query(FolioItem)
-           .filter(FolioItem.reservation_id == r.id, FolioItem.category == "room_charge")
-           .order_by(FolioItem.id)
-           .first())
-    if not fee:
+    """按当前房价与住期重算房费账目，并把多条房费行收拢为一条。
+
+    连住合并（自动并入 / 手动 merge-chain）与延住都会让一笔订单挂多条 room_charge：
+    拖动改期或编辑总额若只重算首条，会与追加行叠加产生双重计费（旧已知边界）。
+    这里按「新 rate × 晚数/小时数」重写首条并删除其余房费行——改期后的整单房费
+    只有一条按新口径计的账目；杂费（category='other'）与收款不受影响。"""
+    fees = (db.query(FolioItem)
+            .filter(FolioItem.reservation_id == r.id, FolioItem.category == "room_charge")
+            .order_by(FolioItem.id)
+            .all())
+    if not fees:
         return
+    first, extra = fees[0], fees[1:]
     if r.stay_type == "hourly":
-        fee.amount = money(r.hours * r.rate)
-        fee.description = f"钟点房费 · {r.hours} 小时 × ¥{fmt_money(r.rate)}"
+        first.amount = money(r.hours * r.rate)
+        first.description = f"钟点房费 · {r.hours} 小时 × ¥{fmt_money(r.rate)}"
     else:
         nights = (r.check_out - r.check_in).days
-        fee.amount = money(nights * r.rate)
-        fee.description = f"房费 · {nights} 晚 × ¥{fmt_money(r.rate)}"
+        first.amount = money(nights * r.rate)
+        first.description = f"房费 · {nights} 晚 × ¥{fmt_money(r.rate)}"
+    for x in extra:
+        db.delete(x)
 
 
 def upsert_guest(db: Session, hotel_id: int, name: str, phone: str, id_number: str) -> Guest:
@@ -107,6 +128,92 @@ def upsert_guest(db: Session, hotel_id: int, name: str, phone: str, id_number: s
         if id_number and not g.id_number:
             g.id_number = encrypt_field(id_number.strip())
     return g
+
+
+def _notes_append(old: str, new: str) -> str:
+    """连住并入时合并备注：追加不重复的片段，截到列宽 200。"""
+    old = (old or "").strip()
+    new = (new or "").strip()
+    if not new or new in old:
+        return old
+    joined = f"{old}；{new}" if old else new
+    return joined[:200]
+
+
+def join_chain_target(db: Session, *, hotel_id: int, guest_id: int,
+                      channel_id: int | None, room_id: int | None,
+                      room_type_id: int, check_in: date, check_out: date) -> Reservation | None:
+    """找可并入的连住订单（开单自动并入的判定核心）。
+
+    条件全部满足才并入：同店、同客人、同来源、同一笔住法（整晚）、状态仍在
+    pending/confirmed/checked_in、且日期严格首尾相接（本单接在它后面，或本单接在它前面）。
+    已退房 / 已取消 / 钟点房一律不参与（历史账目口径不动、钟点按小时计不按夜连片）。
+    房间：指定房号要求同房号；按房型预订要求同房型且该房在新增夜次无冲突（冲突则返回 None
+    让调用方正常新建——不能因为「想并」而忽略占房校验）。"""
+    candidates = (db.query(Reservation)
+                  .filter(Reservation.hotel_id == hotel_id,
+                          Reservation.guest_id == guest_id,
+                          Reservation.stay_type == "normal",
+                          Reservation.status.in_(["pending", "confirmed", "checked_in"]))
+                  .all())
+    best = None
+    for c in candidates:
+        if (c.channel_id or None) != (channel_id or None):
+            continue
+        if c.check_out == check_in:      # 接在它后面（最常见：按晚续开下一晚）
+            extend_in, extend_out = c.check_out, check_out
+        elif c.check_in == check_out and c.status != "checked_in":
+            # 接在它前面（补开更早的一晚）；已在住的单只能往后延，往前插会破坏已办入住的住期
+            extend_in, extend_out = check_in, c.check_in
+        else:
+            continue
+        if room_id is not None:
+            if c.room_id != room_id:
+                continue
+        else:
+            if c.room_type_id != room_type_id:
+                continue
+            # 冲突口径对齐规则 3a：在住单按「延住」算——只按未到店预订计冲突
+            # （include_checked_in=False）；未到店的单照常全量校验（在住也算占房）
+            if c.room_id is not None and blocking_ids(
+                    db, hotel_id, c.room_id, extend_in, extend_out,
+                    exclude=c.id, include_checked_in=(c.status != "checked_in")):
+                continue
+        # 同客同房命中多个（前后各一笔）时优先「接在后面」——续住语义更常见
+        rank = 0 if c.check_out == check_in else 1
+        if best is None or rank < best[0]:
+            best = (rank, c)
+    return best[1] if best else None
+
+
+def absorb_into_chain(db: Session, target: Reservation, body: ReservationBody,
+                      rate: float, nights: int, user: User) -> Reservation:
+    """把本次开单并入连住目标订单：扩展住期 + 追加一条房费行（原房费行不动）。
+
+    价格口径：新晚数按本单自己的 rate 追加「续住房费 · N 晚 × ¥X」，不篡改已开价格
+    （相邻两晚房价不同也照并，整单应收 = 两段相加）。
+    已入住的订单按延住口径写「延住房费」，状态与房态都不动。"""
+    appending = target.check_out == body.check_in      # True=接在后面（续住）
+    was_checked_in = target.status == "checked_in"
+    if appending:
+        target.check_out = body.check_out
+    else:
+        # 只可能是「接在前面」（补开更早的一晚）——join_chain_target 已排除在住单的前插
+        target.check_in = body.check_in
+    desc_prefix = "延住房费" if was_checked_in else "续住房费"
+    amount = money(nights * rate)
+    db.add(FolioItem(hotel_id=target.hotel_id, reservation_id=target.id,
+                     category="room_charge",
+                     description=f"{desc_prefix} · {nights} 晚 × ¥{fmt_money(rate)}",
+                     amount=amount, created_by=user.id))
+    target.notes = _notes_append(target.notes, body.notes)
+    db.flush()
+    g = db.get(Guest, target.guest_id)
+    span = f"{body.check_in:%m/%d}–{body.check_out:%m/%d}"
+    log_op(db, target.hotel_id, user, "reservation_merge", "reservation", target.id,
+           f"连住并入 {g.name if g else ''} · {target.code}：{span} {nights} 晚 × ¥{fmt_money(rate)}"
+           f"（应收 ¥{fmt_money(amount)}，{'延住' if was_checked_in else '续住'}，原房费保留）")
+    return target
 
 
 # ---------- 列表 ----------
@@ -177,22 +284,21 @@ def create_reservation(body: ReservationBody, hotel_id: int | None = None,
             raise HTTPException(400, "客房不存在")
         if room.status == "maintenance":
             raise HTTPException(400, f"{room.room_number} 维修中，不可预订")
+        # 冲突校验必须留在并入判定之前：并入只会延伸本客自己的相邻单，
+        # 新增夜次若被别人占着仍要 409（不能被「想并」绕过占房校验）
         if blocking_ids(db, hid, room.id, check_in, check_out):
             raise HTTPException(409, f"{room.room_number} 所选时段已被占用")
         rt = db.get(RoomType, room.room_type_id)
         rate = body.rate if body.rate is not None else rt.base_price
         room_type_id = rt.id
     else:
-        # 按房型预订：校验可售数量
+        # 按房型预订：先解析房型与价格；可售数量校验放到「合并不成立」之后
+        # （客人自己刚订的相邻单会占住该房，先做可售校验会把自己挡住误报满房）
         if not body.room_type_id:
             raise HTTPException(400, "请选择房型或指定房号")
         rt = db.get(RoomType, body.room_type_id)
         if not rt or rt.hotel_id != hid:
             raise HTTPException(400, "房型不存在")
-        free = free_rooms(db, hid, rt.id, check_in, check_out)
-        if not free:
-            raise HTTPException(409, "所选房型该时段已满房")
-        room = free[0]  # 预留空净房；入住时允许改派
         rate = body.rate if body.rate is not None else rt.base_price
         room_type_id = rt.id
 
@@ -212,6 +318,27 @@ def create_reservation(body: ReservationBody, hotel_id: int | None = None,
             raise HTTPException(400, "来源渠道不存在")
 
     guest = upsert_guest(db, hid, body.guest_name, body.guest_phone, body.guest_id_number)
+
+    # 连住自动并入：同客 / 同来源 / 同房（或同房型）/ 日期首尾相接 且仍在预订或已入住 →
+    # 不新建订单，直接扩原单住期并追加一条房费（原房费保留，价格不同也照并）。
+    # 钟点房不参与（按小时计不按夜连片），已退房/已取消不参与（历史账目口径不动）。
+    if body.stay_type == "normal":
+        target = join_chain_target(
+            db, hotel_id=hid, guest_id=guest.id, channel_id=body.channel_id,
+            room_id=room.id if room else None, room_type_id=room_type_id,
+            check_in=check_in, check_out=check_out)
+        if target is not None:
+            absorb_into_chain(db, target, body, rate, nights, user)
+            db.commit()
+            return res_out(db, target, merged=True)
+
+    if room is None:
+        # 按房型预订且没有可并入的连住单：此时再校验可售数量并预占空净房
+        free = free_rooms(db, hid, rt.id, check_in, check_out)
+        if not free:
+            raise HTTPException(409, "所选房型该时段已满房")
+        room = free[0]  # 预留空净房；入住时允许改派
+
     r = Reservation(
         hotel_id=hid,
         code=gen_code(db, check_in),
@@ -300,9 +427,8 @@ def move_reservation(res_id: int, body: ReservationPatch,
     if rate_changed:
         r.rate = body.rate
 
-    # 同步房费账目（按新晚数 / 新房价重算第一条房费）
-    # ⚠️ 已知边界：延住（POST /extend）追加的「延住房费」行不参与重算——若先延住再拖动改期，
-    # 首条房费按新晚数整体重算，叠加延住行会双重计费；前台应优先用延住入口调整在住住期。
+    # 同步房费账目：按新晚数 / 新房价重算，并把合并/延住留下的多条房费行收拢为一条
+    # （旧版只重算首条，叠加延住行会双重计费——已在 recalc_room_charge 内统一收拢）。
     # 钟点预订不按晚重算（账目 = 小时 × 单价，换房不影响）。
     if span_changed or rate_changed:
         recalc_room_charge(db, r)
@@ -740,6 +866,93 @@ def extend_reservation(res_id: int, body: ExtendBody,
            f"{'时长 ' + str(r.hours) + ' 小时' if r.stay_type == 'hourly' else '新离店 ' + format(r.check_out, '%m/%d')}")
     db.commit()
     return res_out(db, r)
+
+
+# ---------- 存量连住手动合并（把逐笔开的单并成一笔普通多晚订单） ----------
+@router.post("/merge-chain")
+def merge_chain(body: MergeChainBody,
+                user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """同一客人同房首尾相接的多笔并成一笔：保留最早那笔（订单号不变），
+    其余各笔的房费 / 收款 / 操作日志迁到存活单后删除。
+
+    这是给「历史上已逐笔开出的单」补一刀的入口——从此开单时 POST /api/reservations
+    会自动并入（见 join_chain_target），日常前台不需要手动调它。
+    已退房 / 已取消 / 钟点房 / 状态不一致 / 不相邻 一律 400（历史账目口径不动）。"""
+    ids = list(dict.fromkeys(body.ids))     # 去重保序
+    if len(ids) < 2:
+        raise HTTPException(400, "至少选择两笔预订才能合并")
+    rows: list[Reservation] = []
+    for rid in ids:
+        r = db.get(Reservation, rid)
+        if not r or (user.role != "platform_admin" and r.hotel_id != user.hotel_id):
+            raise HTTPException(404, "预订不存在")
+        rows.append(r)
+
+    hotel_id = rows[0].hotel_id
+    if any(r.hotel_id != hotel_id for r in rows):
+        raise HTTPException(400, "不同酒店的预订不可合并")
+    if any(r.stay_type != "normal" for r in rows):
+        raise HTTPException(400, "钟点房按小时计，不可与整晚订单合并")
+    if any(r.status not in ("pending", "confirmed", "checked_in") for r in rows):
+        raise HTTPException(400, "仅待确认 / 已确认 / 在住的预订可合并（已退房订单已结清，不可合并）")
+    if len({r.status for r in rows}) > 1:
+        raise HTTPException(400, "状态不一致的预订不可合并（请先统一为同一种状态）")
+    if len({r.guest_id for r in rows}) > 1:
+        raise HTTPException(400, "不同客人的预订不可合并")
+    if len({r.room_id for r in rows}) > 1:
+        raise HTTPException(400, "不同客房的预订不可合并")
+    if len({r.channel_id for r in rows}) > 1:
+        raise HTTPException(400, "来源不同的预订不可合并")
+    if len({r.room_type_id for r in rows}) > 1:
+        raise HTTPException(400, "房型不同的预订不可合并")
+
+    rows.sort(key=lambda x: (x.check_in, x.id))
+    for prev, nxt in zip(rows, rows[1:]):
+        if prev.check_out != nxt.check_in:
+            raise HTTPException(
+                400, f"预订不连续：{prev.check_out:%m/%d} 与 {nxt.check_in:%m/%d} 之间有断档")
+    # 在住单并进来时，房间必须确实在住着——否则整单变成在住却没客人（口径兜底）
+    if rows[0].status == "checked_in" and rows[0].room_id:
+        other_in = (db.query(Reservation)
+                    .filter(Reservation.hotel_id == hotel_id,
+                            Reservation.room_id == rows[0].room_id,
+                            Reservation.status == "checked_in",
+                            Reservation.id.notin_([r.id for r in rows]))
+                    .count())
+        if other_in:
+            raise HTTPException(400, "该房还有其他在住预订，请先处理后再合并")
+
+    keep, rest = rows[0], rows[1:]
+    keep.check_out = rows[-1].check_out
+    moved_paid = 0.0
+    moved_charge = 0.0
+    codes: list[str] = []
+    for r in rest:
+        codes.append(r.code)
+        moved_charge += room_charge_total_of(db, r.id)
+        for p in db.query(Payment).filter(Payment.reservation_id == r.id).all():
+            moved_paid += p.amount
+            p.reservation_id = keep.id
+        db.query(FolioItem).filter(FolioItem.reservation_id == r.id) \
+            .update({FolioItem.reservation_id: keep.id}, synchronize_session=False)
+        # 操作留痕跟着走：payment 类日志的 object_id 存的也是预订 id
+        db.query(OperationLog) \
+            .filter(OperationLog.hotel_id == hotel_id,
+                    OperationLog.object_id == r.id,
+                    OperationLog.object_type.in_(["reservation", "payment"])) \
+            .update({OperationLog.object_id: keep.id}, synchronize_session=False)
+        keep.notes = _notes_append(keep.notes, r.notes)
+        db.delete(r)
+    db.flush()
+
+    g = db.get(Guest, keep.guest_id)
+    log_op(db, hotel_id, user, "reservation_merge", "reservation", keep.id,
+           f"合并连住 {g.name if g else ''} · {keep.code}：并入 {'、'.join(codes)}，"
+           f"住期 {keep.check_in:%m/%d}–{keep.check_out:%m/%d}，"
+           f"房费合计 ¥{fmt_money(room_charge_total_of(db, keep.id))}（含并入 ¥{fmt_money(moved_charge)}）"
+           + (f"，迁移收款 ¥{fmt_money(moved_paid)}" if moved_paid > 0 else ""))
+    db.commit()
+    return res_out(db, keep, merged=True)
 
 
 # ---------- 预订操作日志（详情弹层展开区） ----------

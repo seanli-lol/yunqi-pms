@@ -260,6 +260,13 @@ class ExtendBody(BaseModel):
     rate: Money | None = None         # 应收单价（默认取预订当前 rate）
 
 
+class MergeChainBody(BaseModel):
+    """存量连住手动合并：把同一客人同房首尾相接的多笔并成一笔普通多晚订单。
+
+    保留最早那笔（订单号不变），其余各笔的房费 / 收款 / 操作日志迁到存活单后删除。"""
+    ids: list[int]
+
+
 class CheckInBody(BaseModel):
     room_id: int
     amount_received: Money = 0
@@ -310,6 +317,11 @@ class ReservationOut(BaseModel):
     hours: int
     notes: str
     balance_due: float
+    # 房费合计（Σ category='room_charge' 账目）：连住合并/分段计价后 ≠ rate × nights，
+    # 前端所有「房费」展示与「房价总额」初值一律取它，不要用单价乘晚数推算
+    room_charge_total: float = 0
+    # 仅创建响应的提示位：本次开单被并入已有连住订单（未新建订单）
+    merged: bool = False
     operator_name: str | None
     created_at: datetime
 

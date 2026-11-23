@@ -202,6 +202,11 @@ export interface Reservation {
   channel_id: number | null; channel_name: string | null; channel_color: string | null
   rate: number; stay_type: string; hours: number
   notes: string; balance_due: number
+  /** 房费合计（Σ room_charge 账目）：连住合并/分段计价后 ≠ rate × nights，
+      「房费」展示与「房价总额」初值一律取它 */
+  room_charge_total?: number
+  /** 仅创建响应：本次开单被并入已有连住订单（未新建订单） */
+  merged?: boolean
   operator_name: string | null; created_at: string
 }
 export interface OpLog { id: number; time: string; action: string; summary: string; operator: string }
@@ -326,6 +331,7 @@ export function usePayMethods() {
 export const OP_ACTION_LABEL: Record<string, string> = {
   reservation_create: '创建预订', reservation_confirm: '确认预订', reservation_cancel: '取消预订',
   reservation_move: '调整预订', reservation_extend: '延住', reservation_edit: '编辑登记',
+  reservation_merge: '连住并入',
   check_in: '办理入住', check_in_undo: '撤销入住', check_out: '退房结算', check_out_undo: '撤销退房',
   payment: '收款', payment_adjust: '更正实收', payment_delete: '删除收款', folio_add: '加收费用',
   room_status: '房态调整', room_create: '新增客房', room_update: '编辑客房', room_delete: '删除客房',
@@ -345,6 +351,7 @@ export const OP_ACTION_LABEL: Record<string, string> = {
 export const OP_ACTION_COLOR: Record<string, string> = {
   reservation_create: 'blue', reservation_confirm: 'green', reservation_cancel: 'red',
   reservation_move: 'blue', reservation_extend: 'purple', reservation_edit: 'blue',
+  reservation_merge: 'purple',
   check_in: 'green', check_in_undo: 'orange', check_out: 'gray', check_out_undo: 'orange',
   payment: 'green', payment_adjust: 'blue', payment_delete: 'red', folio_add: 'orange',
   room_status: 'gray', room_create: 'blue', room_update: 'blue', room_delete: 'red',

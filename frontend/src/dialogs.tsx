@@ -77,7 +77,8 @@ export function CheckInDialog({ res, busy, drawer = false, onClose, onConfirm }:
         </Field>
       </div>
       <p className="hint">
-        应收 {fmtMoney(res.balance_due)}（{res.stay_type === 'hourly' ? `钟点房费 ${fmtMoney(res.rate * res.hours)}` : `房费 ${fmtMoney(res.rate * res.nights)}（整单总价）`}）· 实收填本次入住整单总额 · 实收 0 = 到店后结清 · 免押金入住
+        {/* 房费取 room_charge_total：连住合并/分段计价后 ≠ 单价 × 晚数 */}
+        应收 {fmtMoney(res.balance_due)}（{res.stay_type === 'hourly' ? `钟点房费 ${fmtMoney(res.room_charge_total ?? res.rate * res.hours)}` : `房费 ${fmtMoney(res.room_charge_total ?? res.rate * res.nights)}（整单总价）`}）· 实收填本次入住整单总额 · 实收 0 = 到店后结清 · 免押金入住
       </p>
       <p className="hint">手机号：{res.guest_phone || '未留（到店补录）'} · 预订来源 {res.channel_name ?? '—'}</p>
     </>

@@ -1438,3 +1438,197 @@ def test_hourly_price_is_editable():
     })
     assert r.status_code == 400
     assert "未配置钟点价" in r.json()["detail"]
+
+
+def test_chain_merge():
+    """连住合并：开单自动并入 + 存量手动合并 + 房费行收拢（冒烟 25 项）。
+
+    自动并入：同客/同来源/同房/日期首尾相接 → 不新建订单，扩住期并追加房费（原价保留）。
+    守卫：不同客人 / 不同来源 / 有断档 / 钟点房 / 已退房 → 仍各自建单。
+    手动合并：保留最早那笔，房费/收款/日志迁移后删除其余；不连续、重复合并、已退房 → 400。
+    改期收拢：合并单拖动改期后 room_charge 只剩一条且 = 新 rate × 晚数（不双计）。"""
+    from datetime import date, timedelta
+
+    from app.routers.auth import _login_attempts
+
+    _login_attempts.clear()
+    h = _headers(_login("zhouqi", hotel_id=1)["token"])
+    d0 = date.today() + timedelta(days=40)          # 远离种子数据，避免撞占房
+    iso = lambda n: (d0 + timedelta(days=n)).isoformat()
+    types = {t["name"]: t for t in client.get("/api/room-types", headers=h).json()}
+    channels = {c["name"]: c["id"] for c in client.get("/api/channels", headers=h).json()}
+    mt = channels["美团"]
+
+    def free_room(type_id, cin, cout):
+        av = client.get(
+            f"/api/rooms/available?room_type_id={type_id}&check_in={cin}&check_out={cout}"
+            f"&include_dirty=1&allow_prev_guest=1", headers=h).json()
+        idle = [x for x in av if x["status"] in ("vacant_clean", "vacant_dirty")]
+        assert idle, "无可用空房"
+        return idle[0]
+
+    def book(name, cin, cout, room_id, rate=None, channel_id=None, stay_type="normal", hours=0):
+        body = {"guest_name": name, "check_in": cin, "check_out": cout,
+                "room_id": room_id, "status": "confirmed", "stay_type": stay_type}
+        if rate is not None:
+            body["rate"] = rate
+        if channel_id:
+            body["channel_id"] = channel_id
+        if hours:
+            body["hours"] = hours
+        return client.post("/api/reservations", headers=h, json=body)
+
+    def count(name):
+        rows = client.get(f"/api/reservations?q={name}", headers=h).json()
+        return [x for x in rows if x["guest_name"] == name]
+
+    # ---------- ① 自动并入（接在后面）：两晚不同价也照并 ----------
+    room = free_room(types["大床房"]["id"], iso(0), iso(1))
+    r1 = book("连住甲", iso(0), iso(1), room["id"], rate=150, channel_id=mt)
+    assert r1.status_code == 200, r1.text
+    first = r1.json()
+    assert first["merged"] is False and first["room_charge_total"] == 150.0
+    assert len(count("连住甲")) == 1
+
+    r2 = book("连住甲", iso(1), iso(2), room["id"], rate=180, channel_id=mt)
+    assert r2.status_code == 200, r2.text
+    merged = r2.json()
+    assert merged["merged"] is True
+    assert merged["id"] == first["id"]              # 没有新建订单，沿用它
+    assert merged["code"] == first["code"]
+    assert merged["check_out"] == iso(2)
+    assert merged["nights"] == 2
+    assert merged["room_charge_total"] == 330.0     # 150 + 180（两段原价相加）
+    assert len(count("连住甲")) == 1
+    folio = client.get(f"/api/reservations/{first['id']}/folio", headers=h).json()
+    descs = [x["description"] for x in folio["items"] if x["category"] == "room_charge"]
+    assert len(descs) == 2 and descs[0].startswith("房费") and descs[1].startswith("续住房费")
+    logs = client.get(f"/api/reservations/{first['id']}/logs", headers=h).json()
+    assert any(o["action"] == "reservation_merge" for o in logs)
+
+    # ---------- ② 已入住后开相邻一晚：按延住并入 ----------
+    # 入住有「入住日当天方可办理」门槛（规则 9）→ 在住场景必须用今天的日期
+    t0 = date.today()
+    t = lambda n: (t0 + timedelta(days=n)).isoformat()
+    room_b = free_room(types["大床房"]["id"], t(0), t(1))
+    rb = book("连住乙", t(0), t(1), room_b["id"], rate=200, channel_id=mt)
+    bid = rb.json()["id"]
+    r = client.post(f"/api/reservations/{bid}/check-in", headers=h,
+                    json={"room_id": room_b["id"], "amount_received": 200})
+    assert r.status_code == 200, r.text
+    rb2 = book("连住乙", t(1), t(2), room_b["id"], rate=200, channel_id=mt)
+    assert rb2.status_code == 200, rb2.text
+    assert rb2.json()["merged"] is True
+    assert rb2.json()["id"] == bid
+    assert rb2.json()["status"] == "checked_in"     # 不被降级
+    assert rb2.json()["check_out"] == t(2)
+    folio_b = client.get(f"/api/reservations/{bid}/folio", headers=h).json()
+    assert any(x["description"].startswith("延住房费") for x in folio_b["items"])
+    assert folio_b["total_charge"] == 400.0          # 200 + 200
+
+    # ---------- ③ 守卫：不同来源 / 不同客人 / 有断档 → 仍各自建单 ----------
+    room_c = free_room(types["大床房"]["id"], iso(0), iso(1))
+    c1 = book("连住丙", iso(0), iso(1), room_c["id"], rate=120, channel_id=mt).json()
+    c2 = book("连住丙", iso(1), iso(2), room_c["id"], rate=120,
+              channel_id=channels["携程"])
+    assert c2.status_code == 200 and c2.json()["merged"] is False
+    assert c2.json()["id"] != c1["id"]
+    c3 = book("连住丁", iso(2), iso(3), room_c["id"], rate=120, channel_id=mt)
+    assert c3.status_code == 200 and c3.json()["merged"] is False
+    # 有断档（iso(3)–iso(4) 与丙的 iso(0)–iso(2) 不接）
+    room_d = free_room(types["大床房"]["id"], iso(5), iso(6))
+    d1 = book("连住戊", iso(5), iso(6), room_d["id"], rate=120, channel_id=mt).json()
+    d2 = book("连住戊", iso(7), iso(8), room_d["id"], rate=120, channel_id=mt)
+    assert d2.status_code == 200 and d2.json()["merged"] is False
+    assert d2.json()["id"] != d1["id"]
+    # 钟点房不参与并入（同客同房相邻也不并）
+    room_e = free_room(types["大床房"]["id"], iso(10), iso(11))
+    e1 = book("连住己", iso(10), iso(11), room_e["id"], channel_id=mt,
+              stay_type="hourly", hours=2).json()
+    e2 = book("连住己", iso(11), iso(12), room_e["id"], channel_id=mt,
+              stay_type="hourly", hours=2)
+    assert e2.status_code == 200 and e2.json()["merged"] is False
+    assert e2.json()["id"] != e1["id"]
+    # 已退房的单不再吸收新人（历史账目口径不动）
+    room_f = free_room(types["双床房"]["id"], t(0), t(1))
+    f1 = book("连住庚", t(0), t(1), room_f["id"], rate=100, channel_id=mt).json()  # noqa: F841
+    r = client.post(f"/api/reservations/{f1['id']}/check-in", headers=h,
+                    json={"room_id": room_f["id"], "amount_received": 0})
+    assert r.status_code == 200, r.text
+    r = client.post(f"/api/reservations/{f1['id']}/check-out", headers=h,
+                    json={"force": True, "payments": []})
+    assert r.status_code == 200, r.text
+    f2_resp = book("连住庚", t(1), t(2), room_f["id"], rate=100, channel_id=mt)
+    assert f2_resp.status_code == 200, f2_resp.text
+    f2 = f2_resp.json()
+    assert f2["merged"] is False and f2["id"] != f1["id"]
+
+    # ---------- ④ 手动合并存量：逐笔三晚（PATCH 把日期错开，绕开自动并入） ----------
+    room_g = free_room(types["双床房"]["id"], iso(20), iso(21))
+    g1 = book("连住辛", iso(20), iso(21), room_g["id"], rate=110, channel_id=mt).json()
+    g2 = book("连住辛", iso(22), iso(23), room_g["id"], rate=110, channel_id=mt).json()
+    g3 = book("连住辛", iso(24), iso(25), room_g["id"], rate=140, channel_id=mt).json()
+    assert len({g1["id"], g2["id"], g3["id"]}) == 3
+    # 先给 g2 收一笔款，验证款项迁移
+    r = client.post(f"/api/reservations/{g2['id']}/payments", headers=h,
+                    json={"method": "cash", "amount": 50, "remark": "合并前预收"})
+    assert r.status_code == 200, r.text
+    # 改成首尾相接（PATCH 不触发自动并入）
+    r = client.patch(f"/api/reservations/{g1['id']}", headers=h,
+                     json={"check_in": iso(20), "check_out": iso(21)})
+    assert r.status_code == 200, r.text
+    r = client.patch(f"/api/reservations/{g2['id']}", headers=h,
+                     json={"check_in": iso(21), "check_out": iso(22)})
+    assert r.status_code == 200, r.text
+    r = client.patch(f"/api/reservations/{g3['id']}", headers=h,
+                     json={"check_in": iso(22), "check_out": iso(23)})
+    assert r.status_code == 200, r.text
+    # 断档守卫：只并前两笔 + 第三笔（工单 20–22 与 22–23 相邻，先验证不连续场景）
+    r = client.post("/api/reservations/merge-chain", headers=h,
+                    json={"ids": [g1["id"], g3["id"]]})
+    assert r.status_code == 400 and "不连续" in r.json()["detail"]
+    # 正常合并三笔
+    r = client.post("/api/reservations/merge-chain", headers=h,
+                    json={"ids": [g3["id"], g1["id"], g2["id"]]})   # 乱序传入也应正确排序
+    assert r.status_code == 200, r.text
+    keep = r.json()
+    assert keep["id"] == g1["id"] and keep["code"] == g1["code"]
+    assert keep["check_in"] == iso(20) and keep["check_out"] == iso(23)
+    assert keep["nights"] == 3
+    assert keep["room_charge_total"] == 360.0        # 110 + 110 + 140
+    assert keep["merged"] is True
+    folio = client.get(f"/api/reservations/{g1['id']}/folio", headers=h).json()
+    assert len([x for x in folio["items"] if x["category"] == "room_charge"]) == 3
+    assert folio["total_paid"] == 50.0               # 收款已迁到存活单
+    for gone in (g2, g3):
+        assert client.get(f"/api/reservations/{gone['id']}", headers=h).status_code == 404
+    logs = client.get(f"/api/reservations/{g1['id']}/logs", headers=h).json()
+    merge_logs = [o for o in logs if o["action"] == "reservation_merge"]
+    assert len(merge_logs) == 1 and g2["code"] in merge_logs[0]["summary"]
+    # 日志也迁移了：被并单的创建日志现在挂在存活单下
+    assert any("创建预订" in o["summary"] for o in logs)
+    assert any(o["action"] == "payment" for o in logs)
+    # 重复合并：只剩一笔 → 400
+    r = client.post("/api/reservations/merge-chain", headers=h,
+                    json={"ids": [g1["id"]]})
+    assert r.status_code == 400
+    # 已退房的链不可合并
+    assert client.post("/api/reservations/merge-chain", headers=h,
+                       json={"ids": [f1["id"], f2["id"]]}).status_code == 400
+
+    # ---------- ⑤ 合并单改期：房费行收拢为一条，不双计 ----------
+    r = client.patch(f"/api/reservations/{g1['id']}", headers=h,
+                     json={"check_in": iso(20), "check_out": iso(22)})
+    assert r.status_code == 200, r.text
+    folio = client.get(f"/api/reservations/{g1['id']}/folio", headers=h).json()
+    fees = [x for x in folio["items"] if x["category"] == "room_charge"]
+    assert len(fees) == 1, f"房费行应收拢为一条，实际 {len(fees)} 条"
+    assert fees[0]["amount"] == 220.0                # 2 晚 × 110（rate 未改）
+    assert folio["total_charge"] == 220.0
+
+    # ---------- ⑥ 跨店隔离：另一家店的员工看不到 / 合不了本店的单（404） ----------
+    hotels = client.get("/api/hotels", headers=_headers(_login("admin")["token"])).json()
+    mogan = next(x for x in hotels if "莫干山店" in x["name"])
+    h2 = _headers(_login("xumin", hotel_id=mogan["id"])["token"])
+    assert client.post("/api/reservations/merge-chain", headers=h2,
+                       json={"ids": [g1["id"], g2["id"]]}).status_code == 404

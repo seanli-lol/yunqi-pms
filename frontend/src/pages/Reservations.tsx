@@ -51,7 +51,13 @@ export default function Reservations() {
       if (p.method === 'patch') return api.patch(p.path, p.body)
       return api.post(p.path, p.body ?? {})
     },
-    onSuccess: (_d, p) => { if (p.label) toast(p.label); qc.invalidateQueries({ queryKey: ['reservations'] }) },
+    onSuccess: (data: any, p) => {
+      // 连住自动并入：本次开单没有新建订单，而是扩了该客人已有的相邻单
+      toast(data?.merged
+        ? `已并入该客人的连住订单 ${data.code}（${data.nights} 晚，房费合计 ${fmtMoney(data.room_charge_total ?? 0)}）`
+        : p.label)
+      qc.invalidateQueries({ queryKey: ['reservations'] })
+    },
     onError: (e: any) => toast(e.message ?? '操作失败'),
   })
 
@@ -112,7 +118,8 @@ export default function Reservations() {
                     <td data-label="房型">{r.room_type_name}{r.room_number ? ` · ${r.room_number}` : ''}{r.stay_type === 'hourly' && <span className="badge badge-purple" style={{ marginLeft: 4 }}>钟点 {r.hours}h</span>}</td>
                     <td data-label="入住 – 离店">{md(r.check_in)} – {md(r.check_out)}</td>
                     <td className="num" data-label="晚数">{r.nights}</td>
-                    <td className="num" data-label="房费">{fmtMoney(r.stay_type === 'hourly' ? r.rate * r.hours : r.rate * r.nights)}</td>
+                    {/* 房费取 room_charge_total（Σ 房费账目）：连住合并/分段计价后 ≠ 单价 × 晚数 */}
+                    <td className="num" data-label="房费">{fmtMoney(r.room_charge_total ?? (r.stay_type === 'hourly' ? r.rate * r.hours : r.rate * r.nights))}</td>
                     <td data-label="来源">
                       {r.channel_name && (
                         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>

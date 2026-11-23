@@ -127,6 +127,9 @@ interface DepInfo { roomNo: string; day: string; deps: CalBlock[]; anchor: HTMLE
 /** 连住合并长条的明细卡状态包（同客多笔首尾相接，逐笔打开订单详情抽屉） */
 interface ChainInfo { roomNo: string; parts: CalBlock[]; anchor: HTMLElement }
 
+/** 连住合并确认弹层：把浮卡里的多笔并成一笔普通多晚订单（后端保留最早那笔） */
+interface ChainMergeTarget { roomNo: string; parts: CalBlock[] }
+
 /** 日历房号列/日期列的设计基准宽度；宽屏下列宽被 CSS 1fr 拉伸，仅作兜底（见 calGeom） */
 const CELL = 88
 const LAB_W = 150
@@ -203,6 +206,8 @@ export default function Rooms() {
   // 连住合并长条明细卡（同一客人多笔首尾相接）：点长条钉住展开，点行逐笔开订单详情抽屉
   const [chain, setChain] = useState<ChainInfo | null>(null)
   const chainRef = useRef<HTMLDivElement | null>(null)
+  /** 连住合并确认（浮卡「合并为一笔」→ ConfirmDialog → POST /merge-chain） */
+  const [chainMerge, setChainMerge] = useState<ChainMergeTarget | null>(null)
   const [adjustRes, setAdjustRes] = useState<Reservation | null>(null)
   /** 订单详情抽屉：双 tab（详情/操作日志）+ 折叠账目 + 收款小弹层 */
   const [orderTab, setOrderTab] = useState<'detail' | 'logs'>('detail')
@@ -666,7 +671,13 @@ export default function Rooms() {
       return created
     },
     onSuccess: (rs) => {
-      toast(`已创建 ${rs.length} 间预订：${rs.map(r => `${r.room_number}(${md(r.check_in)}–${md(r.check_out)})`).join('、')}`)
+      // 连住自动并入：本次开单没有新建订单，而是扩了该客人已有的相邻单
+      const absorbed = rs.filter(r => r.merged)
+      const created = rs.filter(r => !r.merged)
+      const parts: string[] = []
+      if (created.length) parts.push(`已创建 ${created.length} 间预订：${created.map(r => `${r.room_number}(${md(r.check_in)}–${md(r.check_out)})`).join('、')}`)
+      absorbed.forEach(r => parts.push(`已并入连住订单 ${r.code}（${md(r.check_in)}–${md(r.check_out)} · ${r.nights} 晚）`))
+      toast(parts.join('；'))
       setBooking(null)
       invalidate()
     },
@@ -812,6 +823,20 @@ export default function Rooms() {
     onError: (e: any) => toast(e.message ?? '调整失败'),
   })
 
+  /* ---------- 连住合并（浮卡「合并为一笔」：多笔单晚 → 一笔普通多晚订单） ---------- */
+  const chainMergeMut = useMutation({
+    mutationFn: (ids: number[]) => api.post<Reservation>('/api/reservations/merge-chain', { ids }),
+    onSuccess: (keep) => {
+      toast(`已合并为一笔：${keep.code} · ${md(keep.check_in)}–${md(keep.check_out)} · 共 ${keep.nights} 晚`)
+      setChainMerge(null)
+      setChain(null)
+      invalidate()
+      // 合并后就是普通订单：直接开它的详情抽屉（与点多晚方块的行为一致）
+      setDetailRes({ id: keep.id } as Reservation)
+    },
+    onError: (e: any) => toast(e.message ?? '合并失败'),
+  })
+
   // 撤销弹层要展示真实已收金额：取账目接口的 total_paid（不能用房价推算）
   const undoFolio = useQuery({
     queryKey: ['folio', undoRes?.id],
@@ -862,6 +887,12 @@ export default function Rooms() {
     ? detailFolioData.items.filter(x => x.category !== 'room_charge')
     : []
   const orderOtherTotal = orderOtherItems.reduce((s, x) => s + x.amount, 0)
+  /* 分段计价（连住合并 / 合并后再延住）：房费合计 ≠ 单价 × 晚数 → 房卡副行提示，
+     单价只对其中一段成立，不能拿它乘整段晚数去讲价 */
+  const orderRateBased = detailR
+    ? round2(detailR.rate * (detailR.stay_type === 'hourly' ? detailR.hours : detailR.nights))
+    : 0
+  const orderSegmented = detailFolioData !== null && Math.abs(orderRoomCharge - orderRateBased) > 0.005
 
   /* ---------- 渲染 ---------- */
   if (board.isLoading || !board.data) return <Spinner />
@@ -1077,7 +1108,7 @@ export default function Rooms() {
           <p className="hint mt-16 cal-legend">
             图例：<Badge color="blue">在住</Badge> <Badge color="orange">未来抵店</Badge> <Badge color="red">欠</Badge> 在住/已离店未结清 · <Badge color="purple">超</Badge> 实付超过应收（多收待退）· 灰块 = 已离店（离店日格子只压左 1/3，当天下午起腾空，空白即可售，含当日钟点房）· 格子右上角<b style={{ color: 'var(--text-primary)' }}>退房图标</b> = 当日有客人退房，悬停看明细、<b>点按展开详情并可编辑</b>（更正实收 / 撤销退房；同列有方块时让位到右下角）·
             方块最前端竖条颜色 = 预订来源（可在「设置 → 来源渠道」配置）。<b>拖动方块换房/改期（冲突自动回弹）· 点击空白格直接开单 · 房号旁「设净/设脏」一键切换房态</b>。
-            <b>同一客人同房首尾相接的多笔预订自动连成一条长条</b>（点长条看逐笔明细）。
+            <b>同一客人同房首尾相接的多笔预订自动合并为一笔订单</b>（新开单直接并入原单；存量逐笔单点长条看明细并可「合并为一笔」，合并后与普通多晚订单完全一致，点开即订单详情）。
           </p>
         </div>
       ) : (
@@ -1330,7 +1361,10 @@ export default function Rooms() {
               </div>
               <div className="rc-sub">
                 {md(detailR.check_in)} – {md(detailR.check_out)} · {detailR.stay_type === 'hourly' ? `钟点 ${detailR.hours} 小时` : `共 ${detailR.nights} 晚`}
-                {' · '}{fmtMoney(detailR.rate)}{detailR.stay_type === 'hourly' ? ' / 小时' : ' / 晚'}
+                {orderSegmented
+                  // 分段计价（连住合并 / 合并后再延住）：单价只对一段成立，只报房费合计
+                  ? ` · 分段计价，房费合计 ${fmtMoney(orderRoomCharge)}`
+                  : <>{' · '}{fmtMoney(detailR.rate)}{detailR.stay_type === 'hourly' ? ' / 小时' : ' / 晚'}</>}
                 {' · '}{detailR.guest_name}{detailR.guest_phone ? ` · ${maskPhone(detailR.guest_phone)}` : ''}
                 {/* 提前退房：实住口径与日历灰块截断一致（actual < check_out 才算提前） */}
                 {detailR.status === 'checked_out' && detailR.actual_check_out && detailR.actual_check_out < detailR.check_out &&
@@ -1476,6 +1510,32 @@ export default function Rooms() {
         </ConfirmDialog>
       )}
 
+      {/* ---------- 连住合并确认（浮卡「合并为一笔」：保留最早那笔，其余并入后删除） ---------- */}
+      {chainMerge && (
+        <ConfirmDialog open onClose={() => setChainMerge(null)} busy={chainMergeMut.isPending}
+          title="合并为一笔" sub={`${chainMerge.roomNo} · ${chainMerge.parts[0].guest_name} · 共 ${chainMerge.parts.length} 笔`}
+          confirmText="确认合并"
+          onConfirm={() => chainMergeMut.mutate(chainMerge.parts.map(p => p.id))}>
+          <p className="confirm-msg">确定把这 {chainMerge.parts.length} 笔单晚并成一笔订单吗？</p>
+          <div className="info-row">
+            <span>住期</span>
+            <span>{md(chainMerge.parts[0].check_in)} – {md(chainMerge.parts[chainMerge.parts.length - 1].check_out)} · 共 {chainMerge.parts.length} 晚</span>
+          </div>
+          <div className="info-row">
+            <span>保留订单</span>
+            <span>{chainMerge.parts[0].code}（最早那笔）</span>
+          </div>
+          <div className="info-row">
+            <span>房费合计</span>
+            <span>{fmtMoney(chainMerge.parts.reduce((s, p) => s + p.items_total, 0))}（各段原价相加）</span>
+          </div>
+          <div className="danger-note">
+            其余 {chainMerge.parts.length - 1} 笔的房费、收款与操作日志将迁到保留单后删除，不可恢复；
+            合并后与普通多晚订单完全一致（点开即订单详情）。
+          </div>
+        </ConfirmDialog>
+      )}
+
       {/* ---------- 入住向导（预订详情内办理入住） ---------- */}
       {checkinRes && (
         <CheckInDialog
@@ -1583,7 +1643,24 @@ export default function Rooms() {
               </div>
             ))}
           </div>
-          <div className="chain-foot">共 {fmtMoney(chain.parts.reduce((s, d) => s + d.items_total, 0))} · 点任意一笔单独调整</div>
+          <div className="chain-foot">
+            <span className="m">
+              共 {fmtMoney(chain.parts.reduce((s, d) => s + d.items_total, 0))} · 点任意一笔单独调整
+            </span>
+            {chain.parts.every(d => d.status === 'pending' || d.status === 'confirmed' || d.status === 'checked_in') ? (
+              <button
+                type="button" className="btn-merge"
+                title="把这些逐笔开的单并成一笔普通多晚订单（保留最早那笔，其余并入后删除）"
+                onClick={() => {
+                  // 先收浮卡再开确认弹层：浮卡 z-index 90 高于 overlay 50，留着会盖住弹层正文
+                  setChainMerge({ roomNo: chain.roomNo, parts: chain.parts })
+                  setChain(null)
+                }}
+              >合并为一笔</button>
+            ) : (
+              <span className="muted">已退房订单不可合并</span>
+            )}
+          </div>
         </div>,
         document.body,
       )}
@@ -1676,8 +1753,14 @@ function EditDrawer({ res, channels, busy, onClose, onConfirm }: {
   const [name, setName] = useState(res.guest_name)
   const [phone, setPhone] = useState(res.guest_phone)
   const [nightsText, setNightsText] = useState(String(res.nights))
-  /** 房价总额（整单）；单价按天数折算后提交 */
-  const [totalText, setTotalText] = useState(String(round2(res.rate * (res.stay_type === 'hourly' ? res.hours : res.nights))))
+  /** 房价总额（整单）；单价按天数折算后提交。
+      初值取 room_charge_total（Σ 房费账目）——连住合并/分段计价后它 ≠ rate × nights，
+      用单价乘晚数会篡改已开价格 */
+  const baseTotal = res.room_charge_total ?? round2(res.rate * (res.stay_type === 'hourly' ? res.hours : res.nights))
+  const [totalText, setTotalText] = useState(String(round2(baseTotal)))
+  /** 用户没动过总额/天数就别提交 rate：无谓改价会触发房费行收拢（分段价被抹平） */
+  const [totalTouched, setTotalTouched] = useState(false)
+  const [nightsTouched, setNightsTouched] = useState(false)
   const [channelId, setChannelId] = useState<number | null>(res.channel_id)
   const [notes, setNotes] = useState(res.notes)
 
@@ -1693,6 +1776,7 @@ function EditDrawer({ res, channels, busy, onClose, onConfirm }: {
   const onNightsChange = (v: string) => {
     const digits = v.replace(/[^\d]/g, '')
     setNightsText(digits)
+    setNightsTouched(true)
     const n = Math.max(1, Math.round(Number(digits) || 1))
     const prevUnits = units || 1
     const prevUnit = round2(total / prevUnits) || res.rate
@@ -1726,7 +1810,9 @@ function EditDrawer({ res, channels, busy, onClose, onConfirm }: {
             onClick={() => onConfirm({
               guest_name: name, guest_phone: phone,
               ...(hourly ? {} : { nights }),
-              rate: unitPrice, channel_id: channelId, notes,
+              // 未改动天数与总额 → 不提交 rate（避免无谓改价把分段房费收拢成一条）
+              ...(totalTouched || nightsTouched ? { rate: unitPrice } : {}),
+              channel_id: channelId, notes,
             }, { amount: paidAmount, method })}
           >保存修改</button>
         </>
@@ -1752,11 +1838,11 @@ function EditDrawer({ res, channels, busy, onClose, onConfirm }: {
         )}
         <Field
           label="房价总额（整单，元）"
-          hint={`折合 ${fmtMoney(unitPrice)}/${unitLabel}（${units} ${unitLabel}）· 最终应收 ${fmtMoney(finalTotal)}。`}
+          hint={`折合 ${fmtMoney(unitPrice)}/${unitLabel}（${units} ${unitLabel}）· 最终应收 ${fmtMoney(finalTotal)}${res.room_charge_total != null && Math.abs(res.room_charge_total - round2(res.rate * units)) > 0.005 ? ' · 本单分段计价，改总额会把各段房费合并为按此额度整段重算' : ''}。`}
         >
           <input
             className="input" inputMode="decimal" value={totalText}
-            onChange={e => setTotalText(moneyInputText(e.target.value))}
+            onChange={e => { setTotalText(moneyInputText(e.target.value)); setTotalTouched(true) }}
           />
         </Field>
       </div>
@@ -1952,8 +2038,9 @@ function EditReservationDialog({ res, busy, onClose, onConfirm }: {
   const hourly = res.stay_type === 'hourly'
   const [checkIn, setCheckIn] = useState(res.check_in)
   const [nightsText, setNightsText] = useState(String(res.nights))
+  // 初值取房费合计（分段计价的合并单不能拿单价 × 晚数推算）
   const [totalText, setTotalText] = useState(
-    String(round2(res.rate * (hourly ? res.hours : res.nights))),
+    String(round2(res.room_charge_total ?? res.rate * (hourly ? res.hours : res.nights))),
   )
 
   const nights = Math.max(1, Math.round(Number(nightsText) || 1))
@@ -2006,7 +2093,7 @@ function EditReservationDialog({ res, busy, onClose, onConfirm }: {
       </div>
       <Field
         label="房价总额（整单，元）"
-        hint={`折合 ${fmtMoney(unitPrice)}/${unitLabel}（${units} ${unitLabel}）· 最终应收 ${fmtMoney(finalTotal)}。`}
+        hint={`折合 ${fmtMoney(unitPrice)}/${unitLabel}（${units} ${unitLabel}）· 最终应收 ${fmtMoney(finalTotal)}${res.room_charge_total != null && Math.abs(res.room_charge_total - round2(res.rate * (hourly ? res.hours : res.nights))) > 0.005 ? ' · 本单分段计价，改总额会把各段房费合并为按此额度整段重算' : ''}。`}
       >
         <input
           className="input" inputMode="decimal" value={totalText}
