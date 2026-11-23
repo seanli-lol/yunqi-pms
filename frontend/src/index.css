@@ -174,28 +174,21 @@ button { font-family: inherit; cursor: pointer; }
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }
 
-/* ========== 外壳 ========== */
-.app { display: grid; grid-template-columns: 232px minmax(0, 1fr); min-height: 100vh; }
-/* 内容列：顶栏 + main 的竖向容器。
-   .app 仍是「侧栏 | 内容」两列，内容列作为单个 grid item 自动落在第 2 列 ——
-   这样不必给 .app 加 grid-template-rows（否则 main 会被 auto-placement 挤进 232px 侧栏列）。
-   min-width:0 是承重墙：否则房态盘 .cal-scroll 的横向滚动会把整列撑破。 */
-.app-content { display: flex; flex-direction: column; min-width: 0; min-height: 100vh; }
-.sidebar {
-  position: sticky; top: 0; height: 100vh; overflow-y: auto;
-  background: var(--bg); border-right: 1px solid var(--hairline-soft);
-  display: flex; flex-direction: column; padding: 20px 12px 16px;
-}
-
-/* ---- 顶栏（身份 + 外观 + 退出） ----
-   z-index 35 必须夹在日历（.cal-head 3 / .cal-lab 2）与移动底栏（.tabbar 40）之间：
-   低于日历会被房态盘表头盖住，高于 40 会压住移动端底部导航。 */
+/* ========== 外壳 ==========
+   侧栏（232px）整列退场：导航折叠进顶栏左上角的「当前页」按钮，
+   内容区因此多出 232px —— 房态盘 1440 屏从约 11 天可见提升到 14 天全露。
+   顶栏 60px（原 56px）为品牌块 + 菜单按钮留出触屏命中区。 */
+.app { display: flex; flex-direction: column; min-height: 100vh; }
 .topbar {
   position: sticky; top: 0; z-index: 35; flex-shrink: 0;
-  height: 56px; padding: 0 20px;
-  display: flex; align-items: center; justify-content: flex-end; gap: 4px;
+  height: 60px; padding: 0 24px;
+  display: flex; align-items: center; justify-content: space-between; gap: 16px;
   background: var(--bg); border-bottom: 1px solid var(--hairline-soft);
 }
+.topbar-left, .topbar-right { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.topbar-right { gap: 4px; }
+.topbar-div { width: 1px; height: 22px; background: var(--hairline-soft); margin: 0 6px; flex-shrink: 0; }
+
 /* 图标按钮：44px 命中区（触屏最小目标），视觉留白由内边距吸收 */
 .topbar-icon {
   width: 44px; height: 44px; border: 0; border-radius: 50%;
@@ -213,96 +206,114 @@ a.topbar-icon:hover { text-decoration: none; }
 .topbar-icon.danger:hover { background: var(--danger-tint); color: var(--danger-deep); }
 .topbar-user {
   display: flex; align-items: center; gap: 8px;
-  max-width: 190px; margin-right: 6px; padding: 4px 10px 4px 4px;
-  border: 0; border-radius: var(--radius-pill); background: none;
-  color: var(--text-primary); font-family: inherit; font-size: 13.5px; font-weight: 600;
+  max-width: 190px; margin-right: 6px;
+  color: var(--text-primary); font-size: 13px; font-weight: 600;
   cursor: default;
 }
 .topbar-user .avatar { width: 30px; height: 30px; font-size: 13px; }
 .topbar-user .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.brand { display: flex; align-items: center; gap: 10px; padding: 4px 10px 18px; color: var(--text-primary); }
+
+.brand { display: flex; align-items: center; gap: 9px; flex-shrink: 0; color: var(--text-primary); }
+.brand:hover { text-decoration: none; }
 .brand-mark {
-  width: 34px; height: 34px; border-radius: 9px; flex-shrink: 0;
+  width: 32px; height: 32px; border-radius: 9px; flex-shrink: 0;
   background: linear-gradient(135deg, var(--accent), var(--accent-deep));
-  display: grid; place-items: center; color: var(--on-accent); font-size: 15px; font-weight: 600;
+  display: grid; place-items: center; color: var(--on-accent); font-size: 14.5px; font-weight: 600;
 }
-.brand-text { display: flex; flex-direction: column; line-height: 1.25; }
-.brand-name { font-size: 15px; font-weight: 600; letter-spacing: -0.01em; }
-.brand-sub  { font-size: 11.5px; color: var(--text-tertiary); }
-.nav { display: flex; flex-direction: column; gap: 2px; }
-.nav-label { font-size: 12px; color: var(--text-tertiary); padding: 14px 10px 6px; }
-.nav a {
-  display: flex; align-items: center; gap: 10px; padding: 9px 10px; border-radius: 10px;
-  color: var(--text-primary); font-size: 14px; font-weight: 500;
-  transition: background var(--dur) var(--ease);
+.brand-name {
+  font-size: 14.5px; font-weight: 600; letter-spacing: -0.01em;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.nav a:hover { background: var(--bg-secondary); }
-.nav a.active { background: var(--accent-tint); color: var(--accent-deep); }
-.nav a svg { width: 17px; height: 17px; flex-shrink: 0; }
-.sidebar-user {
-  margin-top: auto; display: flex; align-items: center; gap: 10px;
-  padding: 10px; border-radius: 12px; background: var(--bg-secondary);
+.brand-pms {
+  font-size: 12px; font-weight: 600; letter-spacing: .04em;
+  color: var(--text-secondary); border: 1px solid var(--hairline-soft);
+  border-radius: 5px; padding: 0 5px; line-height: 17px; margin-left: 2px; flex-shrink: 0;
 }
+
+/* ---- 左上角导航菜单：触发器 + 面板 ---- */
+.nav-menu { position: relative; }
+.nav-trigger {
+  height: 36px; padding: 0 9px 0 11px; display: flex; align-items: center; gap: 8px;
+  border: 1px solid var(--hairline-soft); border-radius: var(--radius-input);
+  background: var(--bg); color: var(--text-primary);
+  font-family: inherit; font-size: 13.5px; font-weight: 600; white-space: nowrap;
+  transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease);
+}
+.nav-trigger:hover { background: var(--bg-secondary); border-color: var(--hairline); }
+.nav-trigger[aria-expanded="true"] { background: var(--bg-secondary); border-color: var(--hairline); }
+.nav-trigger svg { color: var(--accent-deep); width: 17px; height: 17px; flex-shrink: 0; }
+.nav-trigger .chev {
+  width: 15px; height: 15px; color: var(--text-secondary); margin-left: 1px;
+  transition: transform var(--dur) var(--ease);
+}
+.nav-trigger[aria-expanded="true"] .chev { transform: rotate(180deg); }
+
+.menu-panel {
+  position: absolute; top: calc(100% + 10px); left: 0; z-index: 60;
+  width: 524px; max-width: calc(100vw - 36px);
+  background: var(--bg); border: 1px solid var(--hairline-soft);
+  border-radius: 16px; box-shadow: var(--shadow-pop); padding: 6px;
+  transform-origin: 12px 0; animation: panel-in .16s var(--ease);
+}
+@keyframes panel-in { from { opacity: 0; transform: translateY(-6px) scale(.985); } }
+.mp-head { display: flex; align-items: center; justify-content: space-between; padding: 8px 10px 4px; }
+.mp-head .t { font-size: 12.5px; color: var(--text-secondary); }
+.mp-head .k { font-size: 12px; color: var(--text-secondary); display: flex; align-items: center; gap: 5px; }
+.menu-panel kbd {
+  font-family: inherit; font-size: 12px; color: var(--text-secondary);
+  background: var(--bg-secondary); border: 1px solid var(--hairline);
+  border-bottom-width: 2px; border-radius: 5px; padding: 0 5px; line-height: 17px;
+}
+/* 平台管理员：门店切换收进菜单，顶栏不再被下拉框占位 */
+.mp-hotel {
+  display: flex; align-items: center; gap: 10px;
+  margin: 0 4px 4px; padding: 7px 8px;
+  background: var(--bg-secondary); border-radius: 10px;
+}
+.mp-hotel .l { font-size: 12.5px; color: var(--text-secondary); flex-shrink: 0; }
+.mp-hotel .select { flex: 1; min-width: 0; height: 30px; font-size: 13px; }
+.mp-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 6px; padding: 2px 4px; }
+.mp-label {
+  display: block; font-size: 12.5px; font-weight: 600; color: var(--text-secondary);
+  padding: 9px 10px 4px;
+}
+.mp-item {
+  display: grid; grid-template-columns: 18px minmax(0, 1fr); align-items: start;
+  gap: 10px; padding: 8px 10px; border-radius: 10px;
+  color: var(--text-primary); transition: background var(--dur) var(--ease);
+}
+.mp-item:hover { background: var(--row-hover); text-decoration: none; }
+.mp-item svg { width: 18px; height: 18px; margin-top: 1px; color: var(--text-secondary); flex-shrink: 0; }
+.mp-item .mp-title { display: flex; align-items: center; gap: 8px; }
+.mp-item .tt { font-size: 14px; font-weight: 600; letter-spacing: -0.005em; }
+.mp-item .dd { display: block; font-size: 12.5px; color: var(--text-secondary); margin-top: 2px; line-height: 1.5; }
+.mp-item.active { background: var(--accent-tint); }
+.mp-item.active svg, .mp-item.active .tt, .mp-item.active .dd { color: var(--accent-deep); }
+/* 待办计数：只在真的有活时出现，不做常驻徽章 */
+.mp-count {
+  font-size: 12px; font-weight: 600; line-height: 1; padding: 3px 7px;
+  border-radius: var(--radius-pill); white-space: nowrap; flex-shrink: 0;
+  background: var(--warning-tint); color: var(--warning-deep);
+}
+.mp-count.red { background: var(--danger-tint); color: var(--danger-deep); }
+.mp-foot { margin: 6px 4px 2px; padding-top: 6px; border-top: 1px solid var(--hairline-soft); }
+.mp-foot a {
+  display: grid; grid-template-columns: 18px minmax(0, 1fr) auto; align-items: center; gap: 10px;
+  padding: 10px; border-radius: 10px; color: var(--text-primary);
+  font-size: 14px; font-weight: 600; transition: background var(--dur) var(--ease);
+}
+.mp-foot a:hover { background: var(--row-hover); text-decoration: none; }
+.mp-foot a svg { width: 18px; height: 18px; color: var(--text-secondary); }
+.mp-foot a .chev { width: 15px; height: 15px; color: var(--text-secondary); }
+.mp-foot a.active { background: var(--accent-tint); color: var(--accent-deep); }
+.mp-foot a.active svg { color: var(--accent-deep); }
+
 .avatar {
   width: 34px; height: 34px; border-radius: 50%; flex-shrink: 0;
   background: var(--accent-tint); color: var(--accent-deep);
   display: grid; place-items: center; font-size: 14px; font-weight: 600;
 }
 .avatar.sm { width: 28px; height: 28px; font-size: 12px; }
-.user-name { font-size: 13.5px; font-weight: 600; line-height: 1.3; }
-.user-role { font-size: 12px; color: var(--text-tertiary); line-height: 1.3; }
-
-/* ---- 侧边栏收起（图标栏 + 悬停气泡，与原型 components.css 1:1） ----
-   ⚠️ 收起态的隐藏规则必须限定在 .sidebar 内：顶栏（.topbar）同样在 .app 下，
-   若写成 .app.rail .user-name 之类会连带把顶栏里的同名元素一起隐藏。 */
-.app { transition: grid-template-columns .25s var(--ease); }
-.app.rail { grid-template-columns: 68px minmax(0, 1fr); }
-.app.rail .sidebar { overflow: visible; }
-.app.rail .sidebar .brand { justify-content: center; padding: 4px 0 14px; }
-.app.rail .brand-text,
-.app.rail .sidebar .user-name,
-.app.rail .sidebar .user-role,
-.app.rail .sidebar-user .btn,
-.app.rail .sidebar .hotel-switch { display: none; }
-.app.rail .sidebar-user { justify-content: center; padding: 6px; }
-.app.rail .sidebar .nav-label {
-  display: block; font-size: 0; height: 1px; padding: 0; margin: 10px 6px 4px;
-  background: var(--hairline-soft);
-}
-.app.rail .sidebar .nav a {
-  font-size: 0; gap: 0; justify-content: center; padding: 9px 0; position: relative;
-}
-.sidebar-collapse {
-  display: flex; align-items: center; gap: 10px; width: 100%;
-  /* 侧栏尾部的用户块已移到顶栏：由收起按钮自己顶到底部 */
-  margin-top: auto; padding: 9px 10px;
-  border: none; background: none; cursor: pointer; border-radius: 10px;
-  color: var(--text-tertiary); font-size: 13.5px; font-weight: 500; text-align: left;
-  transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
-}
-.sidebar-collapse:hover { background: var(--bg-secondary); color: var(--text-primary); }
-.sidebar-collapse svg { width: 17px; height: 17px; flex-shrink: 0; transition: transform var(--dur) var(--ease); }
-.app.rail .sidebar-collapse { justify-content: center; }
-.app.rail .sidebar-collapse svg { transform: rotate(180deg); }
-.app.rail .sidebar-collapse span { display: none; }
-.app.rail [data-tip] { position: relative; }
-.app.rail [data-tip]::after {
-  content: attr(data-tip);
-  position: absolute; left: calc(100% + 12px); top: 50%;
-  transform: translateY(-50%) translateX(-4px);
-  background: var(--tooltip-bg); color: var(--tooltip-text);
-  font-size: 12px; line-height: 1; padding: 7px 10px; border-radius: 8px;
-  white-space: nowrap; opacity: 0; pointer-events: none; z-index: 60;
-  transition: opacity .18s var(--ease), transform .18s var(--ease);
-}
-.app.rail [data-tip]:hover::after,
-.app.rail [data-tip]:focus-visible::after {
-  opacity: 1; transform: translateY(-50%) translateX(0);
-}
-@media (prefers-reduced-motion: reduce) {
-  .app { transition: none; }
-  .sidebar-collapse svg { transition: none; }
-}
 
 .main {
   width: 100%; max-width: 1320px; margin: 0 auto;
@@ -880,10 +891,10 @@ textarea.input { height: auto; padding: 12px 14px; resize: vertical; }
   border: 1px solid var(--hairline-soft); border-bottom: 0;
   border-radius: var(--radius-card) var(--radius-card) 0 0;
 }
-/* 桌面有顶栏（56px，sticky z-index 35）：表头要停在它下沿而不是被它压住；
+/* 桌面有顶栏（60px，sticky z-index 35）：表头要停在它下沿而不是被它压住；
    窄屏顶栏 display:none，直接贴视口顶 */
 @media (min-width: 768px) {
-  .cal-head-wrap { top: 56px; }
+  .cal-head-wrap { top: 60px; }
 }
 /* 吸附态由 Rooms.tsx 的 syncStuck 切换：离开板顶后去掉上圆角、补一条轻阴影，
    让「表头已脱离卡片」这件事看得出来；未吸附时保持与板体拼接的直角 */
@@ -1156,11 +1167,8 @@ textarea.input { height: auto; padding: 12px 14px; resize: vertical; }
   .stats { grid-template-columns: repeat(2, 1fr); }
 }
 @media (max-width: 767px) {
-  .sidebar { display: none; }
-  .app { display: block; }
-  /* 窄屏隐藏顶栏：与页面标题抢高度，身份/外观/退出统一走底部「更多」面板 */
+  /* 窄屏隐藏顶栏：与页面标题抢高度，导航/身份/外观/退出统一走底部标签栏与「更多」面板 */
   .topbar { display: none; }
-  .app-content { min-height: 0; }
   .main { padding: 20px 16px 96px; }
   .page-title { font-size: 24px; }
   .tabbar { display: flex; }
