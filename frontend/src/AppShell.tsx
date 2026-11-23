@@ -1,8 +1,8 @@
-import { useEffect, useRef, useState } from 'react'
+import { Fragment, useEffect, useRef, useState } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import {
-  BedDouble, BellRing, CalendarDays, ChartColumn, ChevronDown, ChevronRight, Ellipsis,
+  BedDouble, BellRing, CalendarDays, ChartColumn,
   LayoutDashboard, LogOut, Monitor, Moon, ReceiptText, SlidersHorizontal, Sun, Users,
 } from 'lucide-react'
 import { api, type DashData, type Hotel } from './api'
@@ -10,13 +10,13 @@ import { Overlay } from './ui'
 import { useAuth } from './auth'
 import { useTheme, type ThemeMode } from './theme'
 
-/** 导航项：desc 是面板里的一句话用途说明（竖排侧栏没有这一栏，面板两栏布局放得下） */
+/** 导航项：desc 是 hover 提示（顶栏只有标题，说明不占版面） */
 type NavItem = {
   to: string
   label: string
   desc: string
   icon: typeof LayoutDashboard
-  /** 面板角标取 dashboard 的哪个字段，以及读数的量词（状态语义各家不同，不能一律「待办」） */
+  /** 角标取 dashboard 的哪个字段，以及读数的量词（状态语义各家不同，不能一律「待办」） */
   badge?: { field: 'arrivals_ready' | 'pending_confirm' | 'unpaid_count'; unit: string; danger?: boolean }
 }
 
@@ -35,13 +35,6 @@ const NAV_GROUPS: { group: string; items: NavItem[] }[] = [
     { to: '/guests', label: '客户', desc: '住客档案与历史', icon: Users },
     { to: '/reports', label: '经营报表', desc: '营收、出租率趋势', icon: ChartColumn },
   ]},
-]
-const NAV_FLAT = NAV_GROUPS.flatMap(g => g.items)
-
-const TABS = [
-  { to: '/', label: '仪表盘', icon: LayoutDashboard },
-  { to: '/rooms', label: '房态盘', icon: BedDouble },
-  { to: '/front-desk', label: '前台', icon: BellRing },
 ]
 
 /* ---- 主题：三态定义与图标 ---- */
@@ -109,22 +102,21 @@ function ThemePicker() {
   )
 }
 
-function MoreSheet({ open, onClose, roleLine }: { open: boolean; onClose: () => void; roleLine: string }) {
+/** 移动端「账号」面板：窄屏顶栏只留头像入口，账户 / 切店 / 外观 / 退出收在这里 */
+function AccountSheet({ open, onClose, roleLine, hotelSwitch }: {
+  open: boolean
+  onClose: () => void
+  roleLine: string
+  /** 平台管理员的门店切换（窄屏顶栏放不下下拉框，收进面板） */
+  hotelSwitch?: React.ReactNode
+}) {
   const { mode, setMode } = useTheme()
   const { user, logout } = useAuth()
   const nav = useNavigate()
-  const extras = [
-    { to: '/reservations', label: '预订管理', icon: CalendarDays },
-    { to: '/billing', label: '账务', icon: ReceiptText },
-    { to: '/guests', label: '客户档案', icon: Users },
-    { to: '/reports', label: '经营报表', icon: ChartColumn },
-    { to: '/settings', label: '设置', icon: SlidersHorizontal },
-  ]
   return (
-    <Overlay open={open} onClose={onClose} >
+    <Overlay open={open} onClose={onClose}>
       <div className="sheet-panel">
         <div className="sheet-handle" />
-        {/* 账户区：窄屏顶栏隐藏，身份信息落在这里 */}
         <div className="sheet-account">
           <span className="avatar">{user?.name?.charAt(0)}</span>
           <div>
@@ -132,13 +124,12 @@ function MoreSheet({ open, onClose, roleLine }: { open: boolean; onClose: () => 
             <div className="sheet-account-role">{roleLine}</div>
           </div>
         </div>
-        {extras.map(x => (
-          <NavLink key={x.to} to={x.to} className="sheet-link" onClick={onClose}>
-            <x.icon />
-            {x.label}
-            <ChevronRight className="chev" />
-          </NavLink>
-        ))}
+        {hotelSwitch && (
+          <label className="sheet-hotel">
+            <span className="k">门店</span>
+            {hotelSwitch}
+          </label>
+        )}
         {/* 移动端外观切换：与桌面端三态一致 */}
         <div className="theme-sheet">
           <span className="theme-sheet-label">外观</span>
@@ -157,7 +148,7 @@ function MoreSheet({ open, onClose, roleLine }: { open: boolean; onClose: () => 
             ))}
           </div>
         </div>
-        {/* 退出：窄屏此前没有任何退出入口（侧栏被隐藏），这里补上 */}
+        {/* 退出：窄屏没有独立入口，收在账号面板里 */}
         <button
           type="button"
           className="sheet-link sheet-danger"
@@ -172,11 +163,8 @@ function MoreSheet({ open, onClose, roleLine }: { open: boolean; onClose: () => 
 }
 
 export default function AppShell() {
-  const [moreOpen, setMoreOpen] = useState(false)
-  // 导航面板开合：侧栏整个退场后，全部导航（含系统设置）收在这一个入口里
-  const [menuOpen, setMenuOpen] = useState(false)
-  const menuWrap = useRef<HTMLDivElement>(null)
-  const triggerRef = useRef<HTMLButtonElement>(null)
+  const [accountOpen, setAccountOpen] = useState(false)
+  const navRef = useRef<HTMLElement>(null)
   const loc = useLocation()
   const nav = useNavigate()
   const { user, activeHotelName, activeHotelId, setActiveHotel, logout } = useAuth()
@@ -187,13 +175,12 @@ export default function AppShell() {
     queryFn: () => api.get<Hotel[]>('/api/hotels'),
     enabled: user?.role === 'platform_admin',
   })
-  // 待办计数与仪表盘共用 ['dashboard'] 缓存，但只在菜单打开时拉取：
-  // 侧栏时代外壳不发这次请求，现在也不该让每页浏览都打一次；
-  // 平台管理员首次登录尚未选店时没有业务上下文，请求会被后端拒（400），一并挡掉。
+  // 导航待办计数：与仪表盘共用 ['dashboard'] 缓存。
+  // 平台管理员首次登录尚未选店时没有业务上下文（后端 400），先挡掉。
   const dash = useQuery({
     queryKey: ['dashboard'],
     queryFn: () => api.get<DashData>('/api/dashboard'),
-    enabled: menuOpen && !!activeHotelId,
+    enabled: !!activeHotelId,
     staleTime: 30_000,
   })
 
@@ -203,38 +190,42 @@ export default function AppShell() {
       setActiveHotel(hotels.data[0].id, hotels.data[0].name)
     }
   }, [user, activeHotelId, hotels.data, setActiveHotel])
-  // 角色 + 去掉「云栖酒店 · 」前缀的门店名（顶栏 title 与更多面板共用同一口径）
+  // 角色 + 去掉「云栖酒店 · 」前缀的门店名（顶栏 title 与账号面板共用同一口径）。
+  // 平台管理员的账号名常就叫「平台管理员」，副行必须带上当前门店，否则两行完全重复。
   const roleLine = `${user?.role_label ?? ''}${
-    activeHotelName && user?.role !== 'platform_admin'
+    activeHotelName
       ? ` · ${activeHotelName.replace('云栖酒店 · ', '')}`
       : ''
   }`
 
-  // 点外部 / Esc 关闭导航面板；关闭后焦点回到触发按钮
+  // 顶栏实测高度写进 --topbar-h：房态盘日期表头的吸附线（sticky top）靠它对齐，
+  // 桌面 60px / 移动端两行高度不同，写死数值会在换布局时错位
   useEffect(() => {
-    if (!menuOpen) return
-    const onDown = (e: MouseEvent) => {
-      if (!menuWrap.current?.contains(e.target as Node)) setMenuOpen(false)
-    }
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape') return
-      setMenuOpen(false)
-      triggerRef.current?.focus()
-    }
-    document.addEventListener('mousedown', onDown)
-    document.addEventListener('keydown', onKey)
+    const el = document.querySelector<HTMLElement>('.topbar')
+    if (!el) return
+    const apply = () => document.documentElement.style.setProperty('--topbar-h', `${el.offsetHeight}px`)
+    apply()
+    const ro = new ResizeObserver(apply)
+    ro.observe(el)
+    window.addEventListener('resize', apply)
     return () => {
-      document.removeEventListener('mousedown', onDown)
-      document.removeEventListener('keydown', onKey)
+      ro.disconnect()
+      window.removeEventListener('resize', apply)
+      document.documentElement.style.removeProperty('--topbar-h')
     }
-  }, [menuOpen])
+  }, [])
 
-  // 路由变化即收起面板（点面板里的链接后不留在展开态）
-  useEffect(() => { setMenuOpen(false) }, [loc.pathname])
-
-  const current = NAV_FLAT.find(it => it.to === loc.pathname)
-    ?? (loc.pathname === '/settings' ? { label: '系统设置', icon: SlidersHorizontal } : null)
-  const CurrentIcon = current?.icon ?? LayoutDashboard
+  // 窄屏导航横向可滚：切页后把当前项滚到可见区中部（不做纵向滚动）
+  useEffect(() => {
+    const box = navRef.current
+    const item = box?.querySelector<HTMLElement>('a.active')
+    if (!box || !item) return
+    const br = box.getBoundingClientRect()
+    const ir = item.getBoundingClientRect()
+    if (ir.left >= br.left + 8 && ir.right <= br.right - 8) return
+    const delta = (ir.left - br.left) - (br.width - ir.width) / 2
+    box.scrollTo({ left: box.scrollLeft + delta, behavior: 'smooth' })
+  }, [loc.pathname])
 
   // 平台管理员切换酒店
   const onSwitchHotel = async (e: React.ChangeEvent<HTMLSelectElement>) => {
@@ -252,113 +243,82 @@ export default function AppShell() {
     return { n, unit: it.badge.unit, danger: it.badge.danger }
   }
 
+  // 门店下拉的 option：顶栏（桌面）与账号面板（窄屏）共用同一份
+  const hotelOptions = hotels.data?.length
+    ? hotels.data.map(h => <option key={h.id} value={h.id}>{h.name}</option>)
+    : [<option key="cur" value={activeHotelId ?? ''}>{activeHotelName ?? '选择酒店'}</option>]
+
   return (
     <div className="app">
       <header className="topbar">
-        <div className="topbar-left">
-          <a className="brand" href="/" aria-label={`${activeHotelName ?? '云栖酒店'}，返回仪表盘`}>
-            <span className="brand-mark" aria-hidden="true">云</span>
-            <span className="brand-name">{activeHotelName ?? '云栖酒店'}</span>
-            <span className="brand-pms">PMS</span>
-          </a>
+        <a className="brand" href="/" aria-label={`${activeHotelName ?? '云栖酒店'}，返回仪表盘`}>
+          <span className="brand-mark" aria-hidden="true">云</span>
+          <span className="brand-name">{activeHotelName ?? '云栖酒店'}</span>
+          <span className="brand-pms">PMS</span>
+        </a>
 
-          <span className="topbar-div" aria-hidden="true" />
+        <span className="topbar-div" aria-hidden="true" />
 
-          {/* 左上角：当前页即菜单入口 —— 位置指示与导航开关合一 */}
-          <div className="nav-menu" ref={menuWrap}>
-            <button
-              type="button"
-              ref={triggerRef}
-              className="nav-trigger"
-              aria-haspopup="true"
-              aria-expanded={menuOpen}
-              aria-controls="navPanel"
-              title="导航菜单"
-              onClick={() => setMenuOpen(o => !o)}
+        {/* 平台管理员专属：门店切换常驻顶栏，品牌名与业务上下文同步更新 */}
+        {user?.role === 'platform_admin' && (
+          <label className="topbar-hotel">
+            <select
+              className="select"
+              value={activeHotelId ?? ''}
+              onChange={onSwitchHotel}
+              aria-label="切换酒店"
             >
-              <CurrentIcon />
-              <span>{current?.label ?? '导航'}</span>
-              <ChevronDown className="chev" />
-            </button>
+              {hotelOptions}
+            </select>
+          </label>
+        )}
 
-            {menuOpen && (
-              <nav className="menu-panel" id="navPanel" aria-label="主导航">
-                <div className="mp-head">
-                  <span className="t">导航</span>
-                  <span className="k"><kbd>Esc</kbd> 关闭</span>
-                </div>
-
-                {/* 平台管理员专属：切店后顶栏品牌与业务上下文同步更新 */}
-                {user?.role === 'platform_admin' && (
-                  <div className="mp-hotel">
-                    <span className="l">门店</span>
-                    <select
-                      className="select"
-                      value={activeHotelId ?? ''}
-                      onChange={onSwitchHotel}
-                      aria-label="切换酒店"
-                    >
-                      {hotels.data?.length
-                        ? hotels.data.map(h => <option key={h.id} value={h.id}>{h.name}</option>)
-                        : <option value={activeHotelId ?? ''}>{activeHotelName ?? '选择酒店'}</option>}
-                    </select>
-                  </div>
-                )}
-
-                <div className="mp-cols">
-                  {NAV_GROUPS.map(g => (
-                    <div key={g.group}>
-                      <span className="mp-label">{g.group}</span>
-                      {g.items.map(it => {
-                        const badge = badgeOf(it)
-                        return (
-                          <NavLink
-                            key={it.to}
-                            to={it.to}
-                            end={it.to === '/'}
-                            className={({ isActive }) => `mp-item${isActive ? ' active' : ''}`}
-                          >
-                            <it.icon />
-                            <span>
-                              {/* 角标与标题同行：放到右侧独立列会把说明挤成两行 */}
-                              <span className="mp-title">
-                                <span className="tt">{it.label}</span>
-                                {badge && (
-                                  <span className={`mp-count${badge.danger ? ' red' : ''}`}>
-                                    {badge.n} {badge.unit}
-                                  </span>
-                                )}
-                              </span>
-                              <span className="dd">{it.desc}</span>
-                            </span>
-                          </NavLink>
-                        )
-                      })}
-                    </div>
-                  ))}
-                </div>
-
-                <div className="mp-foot">
+        {/* 全量导航一行铺开：不再折叠进下拉面板，跳转少一次点击 */}
+        <nav className="topnav" aria-label="主导航" ref={navRef}>
+          {NAV_GROUPS.map((g, gi) => (
+            <Fragment key={g.group}>
+              {gi > 0 && <span className="topnav-sep" aria-hidden="true" />}
+              {g.items.map(it => {
+                const badge = badgeOf(it)
+                return (
                   <NavLink
-                    to="/settings"
-                    className={({ isActive }) => (isActive ? 'active' : '')}
+                    key={it.to}
+                    to={it.to}
+                    end={it.to === '/'}
+                    title={it.desc}
+                    className={({ isActive }) => `tn-item${isActive ? ' active' : ''}`}
                   >
-                    <SlidersHorizontal />
-                    <span>系统设置</span>
-                    <ChevronRight className="chev" />
+                    <it.icon />
+                    <span>{it.label}</span>
+                    {badge && (
+                      <span
+                        className={`tn-count${badge.danger ? ' red' : ''}`}
+                        title={`${badge.n} ${badge.unit}`}
+                      >
+                        {badge.n}
+                      </span>
+                    )}
                   </NavLink>
-                </div>
-              </nav>
-            )}
-          </div>
-        </div>
+                )
+              })}
+            </Fragment>
+          ))}
+        </nav>
 
         <div className="topbar-right">
-          <ThemePicker />
           <span className="topbar-user" title={`${user?.name} · ${roleLine}`}>
             <span className="avatar">{user?.name?.charAt(0)}</span>
             <span className="name">{user?.name}</span>
           </span>
+          <NavLink
+            to="/settings"
+            className={({ isActive }) => `topbar-icon${isActive ? ' active' : ''}`}
+            title="系统设置"
+            aria-label="系统设置"
+          >
+            <SlidersHorizontal />
+          </NavLink>
+          <ThemePicker />
           <button
             type="button"
             className="topbar-icon danger"
@@ -368,6 +328,17 @@ export default function AppShell() {
           >
             <LogOut />
           </button>
+          {/* 移动端：头像 → 账号面板（外观/退出）；桌面端用上面的身份块与退出按钮 */}
+          <button
+            type="button"
+            className="topbar-acc"
+            title="账号与外观"
+            aria-label="账号与外观"
+            aria-haspopup="dialog"
+            onClick={() => setAccountOpen(true)}
+          >
+            <span className="avatar">{user?.name?.charAt(0)}</span>
+          </button>
         </div>
       </header>
 
@@ -376,19 +347,16 @@ export default function AppShell() {
         <Outlet />
       </main>
 
-      <nav className="tabbar" aria-label="移动端主导航">
-        {TABS.map(t => (
-          <NavLink key={t.to} to={t.to} end={t.to === '/'} className={({ isActive }) => isActive ? 'active' : ''}>
-            <t.icon />
-            {t.label}
-          </NavLink>
-        ))}
-        <button onClick={() => setMoreOpen(true)} className="tabbar-more">
-          <Ellipsis size={22} />
-          更多
-        </button>
-      </nav>
-      <MoreSheet open={moreOpen} onClose={() => setMoreOpen(false)} roleLine={roleLine} />
+      <AccountSheet
+        open={accountOpen}
+        onClose={() => setAccountOpen(false)}
+        roleLine={roleLine}
+        hotelSwitch={user?.role === 'platform_admin' ? (
+          <select className="select" value={activeHotelId ?? ''} onChange={onSwitchHotel} aria-label="切换酒店">
+            {hotelOptions}
+          </select>
+        ) : null}
+      />
     </div>
   )
 }

@@ -88,8 +88,7 @@
   --shadow-drag: 0 10px 30px rgba(0, 0, 0, .25);
   --shadow-piece: 0 2px 6px rgba(0, 0, 0, .35);
 
-  /* ---- 动效 ---- */
-  --ease: cubic-bezier(.25, .1, .25, 1);
+  /* ---- 动效 ---- */  --ease: cubic-bezier(.25, .1, .25, 1);
   --dur: .22s;
 }
 
@@ -175,18 +174,17 @@ button { font-family: inherit; cursor: pointer; }
 }
 
 /* ========== 外壳 ==========
-   侧栏（232px）整列退场：导航折叠进顶栏左上角的「当前页」按钮，
-   内容区因此多出 232px —— 房态盘 1440 屏从约 11 天可见提升到 14 天全露。
-   顶栏 60px（原 56px）为品牌块 + 菜单按钮留出触屏命中区。 */
+   无侧栏单列：品牌 + 全量导航 + 账户区全在顶栏一行里（<768px 折成两行）。
+   导航不再折叠进下拉面板——7 个目的地各占一个胶囊，跳转少一次点击。
+   顶栏实测高度由 AppShell 写进 --topbar-h，房态盘日期表头的吸附线靠它对齐。 */
 .app { display: flex; flex-direction: column; min-height: 100vh; }
 .topbar {
   position: sticky; top: 0; z-index: 35; flex-shrink: 0;
-  height: 60px; padding: 0 24px;
-  display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  height: 60px; padding: 0 20px;
+  display: flex; align-items: center; gap: 14px;
   background: var(--bg); border-bottom: 1px solid var(--hairline-soft);
 }
-.topbar-left, .topbar-right { display: flex; align-items: center; gap: 8px; min-width: 0; }
-.topbar-right { gap: 4px; }
+.topbar-right { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
 .topbar-div { width: 1px; height: 22px; background: var(--hairline-soft); margin: 0 6px; flex-shrink: 0; }
 
 /* 图标按钮：44px 命中区（触屏最小目标），视觉留白由内边距吸收 */
@@ -230,83 +228,51 @@ a.topbar-icon:hover { text-decoration: none; }
   border-radius: 5px; padding: 0 5px; line-height: 17px; margin-left: 2px; flex-shrink: 0;
 }
 
-/* ---- 左上角导航菜单：触发器 + 面板 ---- */
-.nav-menu { position: relative; }
-.nav-trigger {
-  height: 36px; padding: 0 9px 0 11px; display: flex; align-items: center; gap: 8px;
-  border: 1px solid var(--hairline-soft); border-radius: var(--radius-input);
-  background: var(--bg); color: var(--text-primary);
-  font-family: inherit; font-size: 13.5px; font-weight: 600; white-space: nowrap;
-  transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease);
+/* ---- 平台管理员：门店切换常驻顶栏（下拉框压扁成 34px 高） ---- */
+.topbar-hotel { flex-shrink: 0; }
+.topbar-hotel .select {
+  width: auto; max-width: 190px; height: 34px; font-size: 13px;
+  padding: 0 32px 0 11px; border-radius: var(--radius-input);
+  background-position: right 10px center;
 }
-.nav-trigger:hover { background: var(--bg-secondary); border-color: var(--hairline); }
-.nav-trigger[aria-expanded="true"] { background: var(--bg-secondary); border-color: var(--hairline); }
-.nav-trigger svg { color: var(--accent-deep); width: 17px; height: 17px; flex-shrink: 0; }
-.nav-trigger .chev {
-  width: 15px; height: 15px; color: var(--text-secondary); margin-left: 1px;
-  transition: transform var(--dur) var(--ease);
-}
-.nav-trigger[aria-expanded="true"] .chev { transform: rotate(180deg); }
 
-.menu-panel {
-  position: absolute; top: calc(100% + 10px); left: 0; z-index: 60;
-  width: 524px; max-width: calc(100vw - 36px);
-  background: var(--bg); border: 1px solid var(--hairline-soft);
-  border-radius: 16px; box-shadow: var(--shadow-pop); padding: 6px;
-  transform-origin: 12px 0; animation: panel-in .16s var(--ease);
+/* ---- 主导航：一行铺开全部目的地 ----
+   7 项 + 分组分隔符在 1280 屏刚好排满；再窄就横向滚动（不换行、不折叠），
+   所以 .topnav 必须 min-width:0 + overflow-x:auto 才能被 flex 压缩。 */
+.topnav {
+  display: flex; align-items: center; gap: 2px;
+  flex: 1; min-width: 0; overflow-x: auto; overflow-y: hidden;
+  scrollbar-width: none; -ms-overflow-style: none;
+  scroll-behavior: smooth;
 }
-@keyframes panel-in { from { opacity: 0; transform: translateY(-6px) scale(.985); } }
-.mp-head { display: flex; align-items: center; justify-content: space-between; padding: 8px 10px 4px; }
-.mp-head .t { font-size: 12.5px; color: var(--text-secondary); }
-.mp-head .k { font-size: 12px; color: var(--text-secondary); display: flex; align-items: center; gap: 5px; }
-.menu-panel kbd {
-  font-family: inherit; font-size: 12px; color: var(--text-secondary);
-  background: var(--bg-secondary); border: 1px solid var(--hairline);
-  border-bottom-width: 2px; border-radius: 5px; padding: 0 5px; line-height: 17px;
+.topnav::-webkit-scrollbar { display: none; }
+.topnav-sep {
+  width: 1px; height: 18px; background: var(--hairline-soft);
+  margin: 0 7px; flex-shrink: 0;
 }
-/* 平台管理员：门店切换收进菜单，顶栏不再被下拉框占位 */
-.mp-hotel {
-  display: flex; align-items: center; gap: 10px;
-  margin: 0 4px 4px; padding: 7px 8px;
-  background: var(--bg-secondary); border-radius: 10px;
+.tn-item {
+  display: flex; align-items: center; gap: 7px;
+  height: 36px; padding: 0 12px; border-radius: var(--radius-pill);
+  color: var(--text-secondary); font-size: 13.5px; font-weight: 500;
+  white-space: nowrap; flex-shrink: 0;
+  transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
 }
-.mp-hotel .l { font-size: 12.5px; color: var(--text-secondary); flex-shrink: 0; }
-.mp-hotel .select { flex: 1; min-width: 0; height: 30px; font-size: 13px; }
-.mp-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 6px; padding: 2px 4px; }
-.mp-label {
-  display: block; font-size: 12.5px; font-weight: 600; color: var(--text-secondary);
-  padding: 9px 10px 4px;
-}
-.mp-item {
-  display: grid; grid-template-columns: 18px minmax(0, 1fr); align-items: start;
-  gap: 10px; padding: 8px 10px; border-radius: 10px;
-  color: var(--text-primary); transition: background var(--dur) var(--ease);
-}
-.mp-item:hover { background: var(--row-hover); text-decoration: none; }
-.mp-item svg { width: 18px; height: 18px; margin-top: 1px; color: var(--text-secondary); flex-shrink: 0; }
-.mp-item .mp-title { display: flex; align-items: center; gap: 8px; }
-.mp-item .tt { font-size: 14px; font-weight: 600; letter-spacing: -0.005em; }
-.mp-item .dd { display: block; font-size: 12.5px; color: var(--text-secondary); margin-top: 2px; line-height: 1.5; }
-.mp-item.active { background: var(--accent-tint); }
-.mp-item.active svg, .mp-item.active .tt, .mp-item.active .dd { color: var(--accent-deep); }
+.tn-item:hover { background: var(--bg-secondary); color: var(--text-primary); text-decoration: none; }
+.tn-item svg { width: 17px; height: 17px; flex-shrink: 0; }
+.tn-item.active { background: var(--accent-tint); color: var(--accent-deep); font-weight: 600; }
 /* 待办计数：只在真的有活时出现，不做常驻徽章 */
-.mp-count {
-  font-size: 12px; font-weight: 600; line-height: 1; padding: 3px 7px;
-  border-radius: var(--radius-pill); white-space: nowrap; flex-shrink: 0;
+.tn-count {
+  min-width: 18px; height: 18px; padding: 0 5px; border-radius: var(--radius-pill);
+  display: inline-grid; place-items: center; flex-shrink: 0;
   background: var(--warning-tint); color: var(--warning-deep);
+  font-size: 11.5px; font-weight: 600; font-variant-numeric: tabular-nums;
 }
-.mp-count.red { background: var(--danger-tint); color: var(--danger-deep); }
-.mp-foot { margin: 6px 4px 2px; padding-top: 6px; border-top: 1px solid var(--hairline-soft); }
-.mp-foot a {
-  display: grid; grid-template-columns: 18px minmax(0, 1fr) auto; align-items: center; gap: 10px;
-  padding: 10px; border-radius: 10px; color: var(--text-primary);
-  font-size: 14px; font-weight: 600; transition: background var(--dur) var(--ease);
+.tn-count.red { background: var(--danger-tint); color: var(--danger-deep); }
+/* 移动端才用的「账号」入口（头像圆钮）：桌面端身份块 + 退出按钮已覆盖 */
+.topbar-acc {
+  display: none; width: 44px; height: 44px; padding: 0;
+  place-items: center; background: none; border: 0;
 }
-.mp-foot a:hover { background: var(--row-hover); text-decoration: none; }
-.mp-foot a svg { width: 18px; height: 18px; color: var(--text-secondary); }
-.mp-foot a .chev { width: 15px; height: 15px; color: var(--text-secondary); }
-.mp-foot a.active { background: var(--accent-tint); color: var(--accent-deep); }
-.mp-foot a.active svg { color: var(--accent-deep); }
 
 .avatar {
   width: 34px; height: 34px; border-radius: 50%; flex-shrink: 0;
@@ -781,23 +747,11 @@ textarea.input { height: auto; padding: 12px 14px; resize: vertical; }
 }
 .book-line input.bl-input.amt { width: 76px; text-align: right; }
 
-/* ========== 底部标签栏（移动端） ========== */
-.tabbar {
-  position: fixed; left: 0; right: 0; bottom: 0; z-index: 40; display: none;
-  background: var(--glass-bg); -webkit-backdrop-filter: blur(20px); backdrop-filter: blur(20px);
-  border-top: 1px solid var(--hairline-soft); padding: 5px 6px calc(5px + env(safe-area-inset-bottom));
-}
-.tabbar a {
-  flex: 1; display: flex; flex-direction: column; align-items: center; gap: 3px;
-  padding: 6px 0; border-radius: 10px; font-size: 10.5px; font-weight: 500; color: var(--text-tertiary);
-}
-.tabbar a.active { color: var(--accent); }
-.tabbar a svg { width: 22px; height: 22px; }
-
+/* ========== 移动端「账号」面板（窄屏顶栏头像入口） ========== */
 .overlay.sheet { padding: 0; display: block; }
 .sheet-panel {
   position: absolute; left: 0; right: 0; bottom: 0;
-  /* 账户 + 5 导航 + 外观 + 退出四段：小屏要能滚，否则底部会被裁掉 */
+  /* 账户 + 外观 + 退出三段：小屏仍留出滚动余量，防横屏时底部被裁 */
   max-height: 88vh; overflow-y: auto;
   background: var(--bg); border-radius: 20px 20px 0 0;
   padding: 14px 16px calc(20px + env(safe-area-inset-bottom));
@@ -892,10 +846,8 @@ textarea.input { height: auto; padding: 12px 14px; resize: vertical; }
   border-radius: var(--radius-card) var(--radius-card) 0 0;
 }
 /* 桌面有顶栏（60px，sticky z-index 35）：表头要停在它下沿而不是被它压住；
-   窄屏顶栏 display:none，直接贴视口顶 */
-@media (min-width: 768px) {
-  .cal-head-wrap { top: 60px; }
-}
+   高度由 AppShell 实测写进 --topbar-h（窄屏顶栏两行时更高），缺省 60px 兜底 */
+.cal-head-wrap { top: var(--topbar-h, 0px); }
 /* 吸附态由 Rooms.tsx 的 syncStuck 切换：离开板顶后去掉上圆角、补一条轻阴影，
    让「表头已脱离卡片」这件事看得出来；未吸附时保持与板体拼接的直角 */
 .cal-head-wrap.is-stuck { border-radius: 0; box-shadow: var(--shadow-hover); }
@@ -1201,24 +1153,79 @@ textarea.input { height: auto; padding: 12px 14px; resize: vertical; }
 .folio-total .due { color: var(--danger-deep); font-weight: 600; font-size: 16px; }
 .amount-due { font-size: 15px; font-weight: 600; color: var(--danger-deep); font-variant-numeric: tabular-nums; }
 
-.tabbar-more {
-  flex: 1; display: flex; flex-direction: column; align-items: center; gap: 3px;
-  padding: 6px 0; font-size: 10.5px; font-weight: 500; color: var(--text-tertiary);
-  border: 0; background: none;
-}
-.tabbar-more svg { width: 22px; height: 22px; }
-
 /* ========== 响应式 ========== */
+@media (max-width: 1279px) {
+  /* 中等宽度：品牌只留标识、身份只留头像，把横向空间让给导航（7 项必须整行放得下） */
+  .brand-pms { display: none; }
+  .topbar-user { max-width: none; }
+  .topbar-user .name { display: none; }
+  .tn-item { padding: 0 10px; gap: 6px; }
+}
+@media (max-width: 1119px) {
+  /* 1024 平板是最挤的一档：再收一档内距，并去掉重复的身份头像
+     （右上角已有设置/外观/退出三个动作，姓名只在这些宽度下省略） */
+  .topbar { padding: 0 14px; gap: 10px; }
+  .topbar-div, .topbar-user { display: none; }
+  .tn-item { padding: 0 8px; gap: 5px; font-size: 13px; }
+  .tn-item svg { width: 16px; height: 16px; }
+}
 @media (max-width: 1023px) {
   .main { padding: 28px 28px 60px; }
   .stats { grid-template-columns: repeat(2, 1fr); }
+
+  /* ≤1023（平板/手机）：导航独占第二行，7 项一律换行不折叠。
+     一行放不下时靠 flex-wrap 折到第二行，不给横向滚动条（滚动=看不见=等于折叠）。
+     grid 而非 flex-wrap 做外壳：flex-basis:100% 会让品牌行与导航行互相错位。 */
+  .topbar {
+    display: grid; align-items: center;
+    grid-template-columns: minmax(0, 1fr) auto auto auto;
+    grid-template-areas: "brand set theme out" "nav nav nav nav";
+    height: auto; padding: 6px 14px 0; gap: 2px;
+  }
+  .brand { grid-area: brand; min-width: 0; }
+  .brand-name { font-size: 14px; }
+  .topbar-div, .topbar-hotel { display: none; }
+  .topbar-right { display: contents; }
+  .topbar-right > .topbar-user { display: none; }
+  .topbar-right > a[href="/settings"] { grid-area: set; }
+  .topbar-right > .theme-wrap { grid-area: theme; }
+  .topbar-right > .topbar-icon.danger { grid-area: out; }
+  .topbar-acc { display: none; }
+  .topnav {
+    grid-area: nav;
+    flex-wrap: wrap; overflow: visible;
+    margin: 0 -4px; padding: 3px 0 6px;
+  }
+  .tn-item { height: 32px; padding: 0 10px; font-size: 13px; }
 }
 @media (max-width: 767px) {
-  /* 窄屏隐藏顶栏：与页面标题抢高度，导航/身份/外观/退出统一走底部标签栏与「更多」面板 */
-  .topbar { display: none; }
-  .main { padding: 20px 16px 96px; }
+  /* 手机（≤767）：顶栏只剩 品牌 + 设置 + 头像，
+     外观 / 退出 / 平台管理员切店收进头像打开的账号面板（宽度不够，也避免误触）。
+     导航改 4 列网格：7 项两行铺满，不横滑、不折叠。 */
+  .topbar {
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    grid-template-areas: "brand set acc" "nav nav nav";
+    padding: 6px 12px 0; gap: 4px 2px;
+  }
+  .topbar-right > .theme-wrap { display: none; }
+  .topbar-right > .topbar-icon.danger { display: none; }
+  .topbar-acc { display: grid; grid-area: acc; }
+  .topnav {
+    display: grid; grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 1px 2px;
+  }
+  /* 分组分隔符在网格里没有位置（运营 4 项 / 经营 3 项正好分两行，语义自明） */
+  .topnav-sep { display: none; }
+  .tn-item { padding: 0 4px; justify-content: center; gap: 5px; }
+  .tn-item > span:not(.tn-count) { overflow: hidden; text-overflow: ellipsis; }
+  .tn-count { min-width: 16px; height: 16px; font-size: 11px; }
+  /* 顶栏在窄屏常驻 sticky（约 119px），命中区收到 34px 换回内容高度 */
+  .topbar-right > a[href="/settings"] { width: 34px; height: 34px; }
+  .topbar-acc { width: 34px; height: 34px; }
+  .topbar-acc .avatar { width: 28px; height: 28px; font-size: 12.5px; }
+  /* 底部标签栏已退役：不再为它留 96px 尾距 */
+  .main { padding: 20px 16px 40px; }
   .page-title { font-size: 24px; }
-  .tabbar { display: flex; }
   .stats { grid-template-columns: repeat(2, 1fr); gap: 10px; }
   .stat { padding: 16px; }
   .stat-value { font-size: 26px; }
@@ -1267,8 +1274,8 @@ textarea.input { height: auto; padding: 12px 14px; resize: vertical; }
 
 /* ============================================================
    外观主题切换器（与 prototype/theme.js 注入的组件同款）
-   - 桌面：挂在顶栏右上角，按钮是 .topbar-icon，菜单向下弹出贴右缘
-   - 移动端：顶栏隐藏，改用底部「更多」面板里的 .theme-sheet
+   - 桌面 / 平板：挂在顶栏右上角，按钮是 .topbar-icon，菜单向下弹出贴右缘
+   - 手机（≤767px）：顶栏只留设置 + 头像，外观在账号面板的 .theme-sheet 里
    - 无侧栏页面（登录）：.theme-fab 浮动圆钮
    ============================================================ */
 .theme-wrap { position: relative; }
@@ -1294,7 +1301,7 @@ textarea.input { height: auto; padding: 12px 14px; resize: vertical; }
 .theme-fab:hover { color: var(--accent); border-color: var(--accent); transform: translateY(-1px); }
 .theme-fab svg { width: 19px; height: 19px; }
 
-/* 移动端「更多」面板：账户行 + 三态外观 + 退出登录 */
+/* 手机端「账号」面板：账户行 + 三态外观 + 退出登录 */
 .theme-sheet {
   display: flex; align-items: center; justify-content: space-between; gap: 12px;
   padding: 13px 10px 3px; margin-top: 4px; border-top: 1px solid var(--hairline-soft);
@@ -1310,6 +1317,13 @@ textarea.input { height: auto; padding: 12px 14px; resize: vertical; }
 .sheet-account .avatar { width: 40px; height: 40px; font-size: 16px; }
 .sheet-account-name { font-size: 15.5px; font-weight: 600; color: var(--text-primary); }
 .sheet-account-role { font-size: 12.5px; color: var(--text-tertiary); margin-top: 2px; }
+/* 平台管理员：窄屏的门店切换收在账号面板里 */
+.sheet-hotel {
+  display: flex; align-items: center; gap: 12px;
+  padding: 13px 10px 3px; margin-top: 4px; border-top: 1px solid var(--hairline-soft);
+}
+.sheet-hotel .k { font-size: 15px; font-weight: 500; color: var(--text-primary); flex-shrink: 0; }
+.sheet-hotel .select { flex: 1; min-width: 0; }
 /* 退出登录：破坏性操作，独立分组 + 语义红色，与上方导航行拉开距离 */
 .sheet-danger {
   width: 100%; margin-top: 6px; padding-top: 15px;
