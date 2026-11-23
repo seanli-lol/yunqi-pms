@@ -7,10 +7,42 @@ from sqlalchemy.orm import Session
 from app.db import get_db
 from app.deps import (dates_overlap, fmt_money, free_rooms, get_current_user,
                       log_op, money, resolve_hotel_id)
-from app.models import Channel, Guest, Hotel, Reservation, Room, RoomType
-from app.schemas import RoomBody, RoomOut, RoomPatch, RoomTypeBody, RoomTypeOut
+from app.models import Channel, Guest, HourlyRate, Hotel, Reservation, Room, RoomType
+from app.schemas import HourlyRateOut, RoomBody, RoomOut, RoomPatch, RoomTypeBody, RoomTypeOut
 
 router = APIRouter(prefix="/api", tags=["rooms"])
+
+
+def _type_tiers(db: Session, t: RoomType) -> list[HourlyRate]:
+    return db.query(HourlyRate).filter(HourlyRate.room_type_id == t.id).order_by(HourlyRate.hours).all()
+
+
+def _replace_tiers(db: Session, t: RoomType, rates: list) -> list:
+    """整体替换房型档位（PATCH 全量替换口径）：先删后插。
+
+    ⚠️ 必须 delete 后立刻 flush：SQLAlchemy 的 unit of work 默认 INSERT 先于 DELETE
+    执行，新档撞 UniqueConstraint(room_type_id, hours) 会 IntegrityError（真机踩过）。
+    返回插入后的档位行（按 hours 升序）。"""
+    for old in db.query(HourlyRate).filter(HourlyRate.room_type_id == t.id).all():
+        db.delete(old)
+    db.flush()
+    seen: set[int] = set()
+    for r in rates:
+        if r.hours in seen:
+            raise HTTPException(400, f"钟点价档位时长重复：{r.hours} 小时")
+        if not (1 <= r.hours <= 12):
+            raise HTTPException(400, "钟点价档位时长需在 1–12 小时之间")
+        if r.price <= 0:
+            raise HTTPException(400, "钟点价档位价格需大于 0")
+        seen.add(r.hours)
+        db.add(HourlyRate(room_type_id=t.id, hotel_id=t.hotel_id, hours=r.hours, price=money(r.price)))
+    db.flush()
+    return _type_tiers(db, t)
+
+
+def _tiers_tag(tiers: list[HourlyRate]) -> str:
+    """日志摘要的档位片段：2小时¥80.00 · 3小时¥90.00"""
+    return " · ".join(f"{x.hours}小时¥{fmt_money(x.price)}" for x in tiers)
 
 
 # ---------- 房型 ----------
@@ -18,11 +50,15 @@ router = APIRouter(prefix="/api", tags=["rooms"])
 def list_room_types(hotel_id: int | None = None, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     hid = resolve_hotel_id(user, hotel_id)
     types = db.query(RoomType).filter(RoomType.hotel_id == hid).order_by(RoomType.id).all()
-    return [RoomTypeOut(
-        id=t.id, name=t.name, base_price=t.base_price, hourly_price=t.hourly_price,
-        capacity=t.capacity, description=t.description,
-        room_count=db.query(Room).filter(Room.room_type_id == t.id).count(),
-    ) for t in types]
+    out = []
+    for t in types:
+        out.append(RoomTypeOut(
+            id=t.id, name=t.name, base_price=t.base_price, hourly_price=t.hourly_price,
+            capacity=t.capacity, description=t.description,
+            hourly_rates=[HourlyRateOut(id=x.id, hours=x.hours, price=x.price) for x in _type_tiers(db, t)],
+            room_count=db.query(Room).filter(Room.room_type_id == t.id).count(),
+        ))
+    return out
 
 
 @router.post("/room-types", response_model=RoomTypeOut)
@@ -33,13 +69,16 @@ def create_room_type(body: RoomTypeBody, hotel_id: int | None = None,
                  hourly_price=body.hourly_price, capacity=body.capacity, description=body.description)
     db.add(t)
     db.flush()
-    price_tag = f" · 钟点 ¥{fmt_money(t.hourly_price)}/小时" if t.hourly_price else ""
+    tiers = _replace_tiers(db, t, body.hourly_rates)
+    price_tag = f" · 钟点 {_tiers_tag(tiers)}" if tiers else ""
     log_op(db, hid, user, "room_type_create", "room_type", t.id,
            f"新增房型「{t.name}」¥{fmt_money(t.base_price)}/晚{price_tag}")
     db.commit()
     return RoomTypeOut(id=t.id, name=t.name, base_price=t.base_price,
                        hourly_price=t.hourly_price, capacity=t.capacity,
-                       description=t.description, room_count=0)
+                       description=t.description,
+                       hourly_rates=[HourlyRateOut(id=x.id, hours=x.hours, price=x.price) for x in _type_tiers(db, t)],
+                       room_count=0)
 
 
 @router.patch("/room-types/{type_id}", response_model=RoomTypeOut)
@@ -50,11 +89,15 @@ def patch_room_type(type_id: int, body: RoomTypeBody,
         raise HTTPException(404, "房型不存在")
     t.name, t.base_price, t.hourly_price, t.capacity, t.description = (
         body.name.strip(), body.base_price, body.hourly_price, body.capacity, body.description)
-    log_op(db, t.hotel_id, user, "room_type_update", "room_type", t.id, f"更新房型「{t.name}」")
+    tiers = _replace_tiers(db, t, body.hourly_rates)
+    tag = f" · 钟点 {_tiers_tag(tiers)}" if tiers else " · 钟点不支持"
+    log_op(db, t.hotel_id, user, "room_type_update", "room_type", t.id,
+           f"更新房型「{t.name}」{tag}")
     db.commit()
     return RoomTypeOut(id=t.id, name=t.name, base_price=t.base_price,
                        hourly_price=t.hourly_price, capacity=t.capacity,
                        description=t.description,
+                       hourly_rates=[HourlyRateOut(id=x.id, hours=x.hours, price=x.price) for x in _type_tiers(db, t)],
                        room_count=db.query(Room).filter(Room.room_type_id == t.id).count())
 
 
@@ -65,6 +108,8 @@ def delete_room_type(type_id: int, user: User = Depends(get_current_user), db: S
         raise HTTPException(404, "房型不存在")
     if db.query(Room).filter(Room.room_type_id == type_id).count():
         raise HTTPException(400, "该房型下仍有客房，不可删除")
+    for old in db.query(HourlyRate).filter(HourlyRate.room_type_id == type_id).all():
+        db.delete(old)  # 档位随房型级联删除（无 ORM cascade，手工清）
     db.delete(t)
     db.commit()
     return {"ok": True}
@@ -320,6 +365,11 @@ def rooms_board(
                 "room_type_name": t.name,
                 "base_price": t.base_price,
                 "hourly_price": t.hourly_price,
+                # 钟点价档位 [{hours, price}]（price=该时长整单总价）；空 = 不支持钟点
+                "hourly_tiers": [
+                    {"hours": x.hours, "price": x.price}
+                    for x in db.query(HourlyRate).filter(HourlyRate.room_type_id == t.id).order_by(HourlyRate.hours).all()
+                ],
                 "current_guest": current["guest_name"] if current else None,
                 "current_check_out": current["check_out"] if current else None,
                 "current_code": current["code"] if current else None,

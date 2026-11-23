@@ -15,11 +15,12 @@ from app.db import Base, SessionLocal, engine  # noqa: E402
 from app.main import app  # noqa: E402
 from app.models import Hotel  # noqa: E402
 from app.routers.payment_methods import ensure_default_methods  # noqa: E402
-from app.seed import ensure_seed  # noqa: E402
+from app.seed import backfill_hourly_tiers, ensure_seed  # noqa: E402
 
 Base.metadata.create_all(bind=engine)
 _seed_db = SessionLocal()
 ensure_seed(_seed_db)
+backfill_hourly_tiers(_seed_db)  # 与 main.lifespan 对齐：存量单值钟点价 → 多档位（幂等）
 # 与 main.lifespan 对齐：每家酒店补种默认收款方式（测试不走 lifespan）
 for _h in _seed_db.query(Hotel).all():
     ensure_default_methods(_seed_db, _h.id)
@@ -314,18 +315,25 @@ def test_hourly_booking_flow():
                 "room_id": room2["id"], "stay_type": "hourly", "hours": 3, **extra,
             })
             assert r.status_code == 400, f"{tname} extra={extra}: {r.text}"
-    # 大床房空净房按房型自动取钟点价 45
+    # 大床房空净房按房型自动取档位价：3 小时精确命中档位（3h ¥90 整单总价）→ rate = 90 ÷ 3 = 30/小时
     big = pick("大床房")
     r = client.post("/api/reservations", headers=h, json={
         "guest_name": "钟点客4", "check_in": cin, "check_out": cout,
         "room_id": big["id"], "stay_type": "hourly", "hours": 3,
     })
     assert r.status_code == 200, r.text
-    assert r.json()["rate"] == 45
+    assert r.json()["rate"] == 30.0
+    folio3 = client.get(f"/api/reservations/{r.json()['id']}/folio", headers=h).json()
+    assert folio3["items"][0]["description"] == "钟点房费 · 3 小时 × ¥30.00"
+    assert folio3["total_charge"] == 90.0
     # 房态盘 block 输出 stay_type/hours
     board = client.get("/api/rooms/board?days=45", headers=h).json()
     blk = next(b for g in board["groups"] for rm in g["rooms"] for b in rm["blocks"] if b["id"] == res["id"])
     assert blk["stay_type"] == "hourly" and blk["hours"] == 4
+    # board 每房输出钟点档位（大床房 5 档）
+    broom = next(rm for g in board["groups"] for rm in g["rooms"] if rm["id"] == room["id"])
+    assert [t["hours"] for t in broom["hourly_tiers"]] == [2, 3, 4, 6, 8]
+    assert broom["hourly_tiers"][0]["price"] == 80.0
 
 
 def test_extend_reservation():
@@ -1403,6 +1411,9 @@ def test_hourly_price_is_editable():
     # 房型基准钟点价 45/小时；议价到 50/小时（4 小时整单 ¥200 → rate = 200 ÷ 4 = 50）
     room = pick("大床房")
     assert types["大床房"]["hourly_price"] == 45.0
+    # 档位读回：大床房 5 档（price = 该时长整单总价）
+    assert [t["hours"] for t in types["大床房"]["hourly_rates"]] == [2, 3, 4, 6, 8]
+    assert types["大床房"]["hourly_rates"][0] == {"id": types["大床房"]["hourly_rates"][0]["id"], "hours": 2, "price": 80.0}
     r = client.post("/api/reservations", headers=h, json={
         "guest_name": "议价钟点客", "check_in": cin, "check_out": cout,
         "room_id": room["id"], "stay_type": "hourly", "hours": 4, "rate": 50,
@@ -1438,6 +1449,109 @@ def test_hourly_price_is_editable():
     })
     assert r.status_code == 400
     assert "未配置钟点价" in r.json()["detail"]
+
+
+def test_room_type_hourly_tiers_crud():
+    """房型多档钟点价：CRUD 读回 + PATCH 全量替换（整表 delete+insert）+ 校验守卫 + 删除级联（冒烟 26 项）。"""
+    from app.routers.auth import _login_attempts
+
+    _login_attempts.clear()
+    h = _headers(_login("zhouqi", hotel_id=1)["token"])
+
+    # ① 建房型带 3 档 → 读回一致
+    r = client.post("/api/room-types", headers=h, json={
+        "name": "档位测试房", "base_price": 300,
+        "hourly_rates": [{"hours": 2, "price": 80}, {"hours": 3, "price": 90}, {"hours": 5, "price": 140}]})
+    assert r.status_code == 200, r.text
+    t = r.json()
+    assert [(x["hours"], x["price"]) for x in t["hourly_rates"]] == [(2, 80.0), (3, 90.0), (5, 140.0)]
+    tid = t["id"]
+
+    # ② PATCH 全量替换档位（2 档替 3 档）：旧档删、新档在
+    r = client.patch(f"/api/room-types/{tid}", headers=h, json={
+        "name": "档位测试房", "base_price": 300,
+        "hourly_rates": [{"hours": 4, "price": 120}, {"hours": 8, "price": 200}]})
+    assert r.status_code == 200, r.text
+    assert sorted((x["hours"], x["price"]) for x in r.json()["hourly_rates"]) == [(4, 120.0), (8, 200.0)]
+
+    # ③ 守卫：同房型小时重复 → 400；hours 越界 → 400；price ≤ 0 → 400
+    r = client.patch(f"/api/room-types/{tid}", headers=h, json={
+        "name": "档位测试房", "base_price": 300,
+        "hourly_rates": [{"hours": 4, "price": 120}, {"hours": 4, "price": 150}]})
+    assert r.status_code == 400 and "重复" in r.json()["detail"]
+    r = client.patch(f"/api/room-types/{tid}", headers=h, json={
+        "name": "档位测试房", "base_price": 300,
+        "hourly_rates": [{"hours": 13, "price": 120}]})
+    assert r.status_code == 400 and "1–12" in r.json()["detail"]
+    r = client.patch(f"/api/room-types/{tid}", headers=h, json={
+        "name": "档位测试房", "base_price": 300,
+        "hourly_rates": [{"hours": 3, "price": 0}]})
+    assert r.status_code == 400 and "大于 0" in r.json()["detail"]
+
+    # ④ 开单默认价命中档位：4 小时精确档 ¥120 → rate = 120 ÷ 4 = 30；5 小时未命中回落最大档折合 200÷8×5 = 125
+    # 先给该房型建一间客房（新建房型默认无房）
+    r = client.post("/api/rooms", headers=h, json={
+        "room_number": "99701", "floor": 9, "room_type_id": tid})
+    assert r.status_code == 200, r.text
+    rid = r.json()["id"]
+    from datetime import date, timedelta
+    cin = date.today().isoformat()
+    cout = (date.today() + timedelta(days=1)).isoformat()
+    r = client.post("/api/reservations", headers=h, json={
+        "guest_name": "档位客", "check_in": cin, "check_out": cout,
+        "room_id": rid, "stay_type": "hourly", "hours": 4, "status": "confirmed"})
+    assert r.status_code == 200, r.text
+    assert r.json()["rate"] == 30.0
+    folio = client.get(f"/api/reservations/{r.json()['id']}/folio", headers=h).json()
+    assert folio["items"][0]["description"] == "钟点房费 · 4 小时 × ¥30.00"
+    assert folio["total_charge"] == 120.0
+    r = client.post("/api/rooms", headers=h, json={
+        "room_number": "99702", "floor": 9, "room_type_id": tid})
+    assert r.status_code == 200, r.text
+    rid2 = r.json()["id"]
+    r = client.post("/api/reservations", headers=h, json={
+        "guest_name": "档位客2", "check_in": cin, "check_out": cout,
+        "room_id": rid2, "stay_type": "hourly", "hours": 5, "status": "confirmed"})
+    assert r.status_code == 200, r.text
+    assert r.json()["rate"] == 125.0  # 未命中 → 最大档(8h ¥200)折合 25/h × 5
+
+    # ⑤ 档位全删 = 不支持钟点：显式传价也 400（新房间，避开前两单的整日占用）
+    r = client.patch(f"/api/room-types/{tid}", headers=h, json={
+        "name": "档位测试房", "base_price": 300, "hourly_rates": []})
+    assert r.status_code == 200, r.text
+    assert r.json()["hourly_rates"] == []
+    r = client.post("/api/rooms", headers=h, json={
+        "room_number": "99703", "floor": 9, "room_type_id": tid})
+    assert r.status_code == 200, r.text
+    rid3 = r.json()["id"]
+    r = client.post("/api/reservations", headers=h, json={
+        "guest_name": "档位客3", "check_in": cin, "check_out": cout,
+        "room_id": rid3, "stay_type": "hourly", "hours": 4, "rate": 50, "status": "confirmed"})
+    assert r.status_code == 400 and "未配置钟点价" in r.json()["detail"]
+
+    # ⑥ 删除房型：档位随级联清掉。房型下有客房（9901，有预订历史）会 400，先走「档位清空 = 不支持」
+    # 的兜底验证（⑤ 已覆盖），这里直接删 9901 会因预订历史被拒——改用「删档位后房型仍可正常删」
+    # 的路径：删掉 9901 的预订（cancelled 不上房态盘）→ 删客房 → 删房型 → 库内档位应为 0
+    res_list = client.get("/api/reservations", headers=h).json()
+    for rr in res_list:
+        if rr.get("room_id") in (rid, rid2, rid3) and rr["status"] in ("pending", "confirmed"):
+            client.post(f"/api/reservations/{rr['id']}/cancel", headers=h)
+    from app.models import HourlyRate, Room as RoomM
+    from app.db import SessionLocal
+    db = SessionLocal()
+    try:
+        # 客房 9901/9902 已有预订历史（cancelled 也算），DELETE /api/rooms 会 400——直接库内清（测试隔离，非业务口径）
+        db.query(RoomM).filter(RoomM.id.in_([rid, rid2, rid3])).delete(synchronize_session=False)
+        db.commit()
+    finally:
+        db.close()
+    r = client.delete(f"/api/room-types/{tid}", headers=h)
+    assert r.status_code == 200
+    db = SessionLocal()
+    try:
+        assert db.query(HourlyRate).filter(HourlyRate.room_type_id == tid).count() == 0
+    finally:
+        db.close()
 
 
 def test_chain_merge():

@@ -519,6 +519,26 @@ textarea.input { height: auto; padding: 12px 14px; resize: vertical; }
 .list-side { display: flex; align-items: center; gap: 10px; flex-shrink: 0; flex-wrap: wrap; justify-content: flex-end; }
 .list-amount { font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums; }
 
+/* ========== 房型钟点价档位（设置页多档行编辑器 + 表格摘要列；design/prototype/settings.html 同源） ========== */
+.tier-lines { display: flex; flex-direction: column; gap: 8px; margin-bottom: 10px; }
+.tier-line {
+  display: flex; align-items: center; gap: 8px;
+  border: 1px solid var(--hairline-soft); border-radius: 12px;
+  padding: 8px 10px; background: var(--bg-secondary);
+}
+.tier-line .tier-h { width: 74px; text-align: center; flex-shrink: 0; }
+.tier-line .tier-p { width: 96px; text-align: right; flex-shrink: 0; }
+.tier-sep { font-size: 12.5px; color: var(--text-secondary); white-space: nowrap; flex-shrink: 0; }
+.tier-line .tier-del { margin-left: auto; flex-shrink: 0; }
+.hourly-cell { font-size: 13px; color: var(--text-secondary); line-height: 1.5; }
+/* 移动端：tier 行收窄（500px 弹层内放下「小时输入 + 价格输入 + 删除」），第二个说明文案隐藏 */
+@media (max-width: 767px) {
+  .tier-line { padding: 8px; gap: 6px; }
+  .tier-line .tier-h { width: 56px; }
+  .tier-line .tier-p { width: 80px; }
+  .tier-sep:nth-of-type(2) { display: none; }
+}
+
 /* ========== 弹层 ========== */
 .overlay {
   position: fixed; inset: 0; z-index: 50; background: var(--scrim);

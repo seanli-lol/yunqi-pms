@@ -5,7 +5,7 @@ from datetime import date, datetime, timedelta
 from sqlalchemy.orm import Session
 
 from app import config
-from app.models import (Channel, FolioItem, Guest, Hotel,
+from app.models import (Channel, FolioItem, Guest, Hotel, HourlyRate,
                         OperationLog, Payment, Reservation, Room, RoomType, User)
 from app.security import encrypt_field, hash_password
 
@@ -16,6 +16,33 @@ def _d(offset: int) -> date:
 
 def _dt(offset_days: int, hh: int, mm: int) -> datetime:
     return datetime.combine(_d(offset_days), datetime.min.time()).replace(hour=hh, minute=mm)
+
+
+# 演示钟点档位（price = 该时长整单总价）：原 45/h、55/h 的多档化版本
+TIERS_BIG = [(2, 80), (3, 90), (4, 110), (6, 150), (8, 190)]
+TIERS_TWIN = [(2, 80), (3, 100), (4, 120), (6, 160)]
+
+
+def _add_tiers(db: Session, hotel_id: int, type_id: int, tiers: list) -> None:
+    for h, p in tiers:
+        db.add(HourlyRate(room_type_id=type_id, hotel_id=hotel_id, hours=h, price=p))
+
+
+def backfill_hourly_tiers(db: Session) -> None:
+    """存量库一次性回填：有 hourly_price>0 且尚无档位的房型，按 [2,3,4,6,8] 各折算一档（幂等）。
+
+    hourly_price 列保留（兼容展示兜底），业务判断一律走档位表；此函数在 main.lifespan
+    ensure_seed 之后对全部房型跑一遍，存量演示库下次启动自动多档化。
+    """
+    types = db.query(RoomType).filter(RoomType.hourly_price > 0).all()
+    for t in types:
+        has = db.query(HourlyRate).filter(HourlyRate.room_type_id == t.id).first()
+        if has:
+            continue
+        for h in (2, 3, 4, 6, 8):
+            db.add(HourlyRate(room_type_id=t.id, hotel_id=t.hotel_id, hours=h, price=t.hourly_price * h))
+    if types:
+        db.flush()
 
 
 def ensure_seed(db: Session) -> None:
@@ -68,15 +95,17 @@ def ensure_seed(db: Session) -> None:
 
     # ---------- 房型 ----------
     def add_types(h):
-        defs = [("大床房", 480, 45, 2, "1.8m 大床 · 城景"), ("双床房", 580, 55, 2, "1.2m 双床 · 城景"),
-                ("观景大床房", 780, 0, 2, "2m 大床 · 湖景阳台"), ("湖景套房", 1280, 0, 4, "客厅 + 卧室 · 湖景"),
-                ("亲子房", 680, 0, 3, "大床 + 儿童床 · 主题布置")]
+        defs = [("大床房", 480, 45, 2, "1.8m 大床 · 城景", TIERS_BIG), ("双床房", 580, 55, 2, "1.2m 双床 · 城景", TIERS_TWIN),
+                ("观景大床房", 780, 0, 2, "2m 大床 · 湖景阳台", []), ("湖景套房", 1280, 0, 4, "客厅 + 卧室 · 湖景", []),
+                ("亲子房", 680, 0, 3, "大床 + 儿童床 · 主题布置", [])]
         out = {}
-        for name, price, hourly, cap, desc in defs:
+        for name, price, hourly, cap, desc, tiers in defs:
             t = RoomType(hotel_id=h.id, name=name, base_price=price, hourly_price=hourly,
                          capacity=cap, description=desc)
             db.add(t)
             db.flush()
+            if tiers:
+                _add_tiers(db, h.id, t.id, tiers)
             out[name] = t
         return out
 
@@ -120,11 +149,13 @@ def ensure_seed(db: Session) -> None:
     # 其他两店的房型与客房（简洁布局）
     for h, (big, twin, base_floor) in ((hm, (13, 13, 2)), (hq, (21, 21, 2))):
         tmap = {}
-        for name, price, hourly, cap in (("大床房", 480, 45, 2), ("双床房", 580, 55, 2)):
+        for name, price, hourly, cap, tiers in (("大床房", 480, 45, 2, TIERS_BIG), ("双床房", 580, 55, 2, TIERS_TWIN)):
             t = RoomType(hotel_id=h.id, name=name, base_price=price, hourly_price=hourly,
                          capacity=cap, description="")
             db.add(t)
             db.flush()
+            if tiers:
+                _add_tiers(db, h.id, t.id, tiers)
             tmap[name] = t
         for i in range(big):
             db.add(Room(hotel_id=h.id, room_type_id=tmap["大床房"].id,

@@ -2141,6 +2141,7 @@ function toRoom(r: BoardRoom): Room {
     notes: r.notes, room_type_id: 0,
     room_type_name: r.room_type_name, base_price: r.base_price,
     hourly_price: r.hourly_price ?? 0,
+    hourly_tiers: r.hourly_tiers ?? [],
   }
 }
 
@@ -2162,7 +2163,7 @@ function BookDrawer({ open, lines, channels, busy, onClose, onChangeLines, onSub
   const [channelId, setChannelId] = useState<number | null>(null)
   /** 钟点仅在恰好 1 行时可用：多房按整晚处理，避免多房×钟点的组合复杂度 */
   const [stayType, setStayType] = useState<'normal' | 'hourly'>('normal')
-  /** 钟点时长默认 3 小时 */
+  /** 钟点时长默认 3 小时（所选房型无 3 小时档时切钟点回落首档，见「钟点」按钮 onClick） */
   const [hours, setHours] = useState(3)
 
   useEffect(() => {
@@ -2178,7 +2179,9 @@ function BookDrawer({ open, lines, channels, busy, onClose, onChangeLines, onSub
 
   // 钟点可用性必须在 early return 之前算好：下面这个 effect 的依赖数组会在此处求值
   const single = lines.length === 1
-  const hourlyAvail = single && (lines[0].room.hourly_price ?? 0) > 0
+  /** 钟点档位（房型级配置，[{hours, price}]，price=该时长整单总价）；空数组 = 不支持钟点 */
+  const tiers = single ? (lines[0].room.hourly_tiers ?? []) : []
+  const hourlyAvail = single && tiers.length > 0
 
   // 点「钟点」后又在日历追加第二间房：钟点仅单行可用，自动退回整晚并按基准价恢复该行总额
   // （点钟点时总额已被覆盖为 hours × 钟点价，多行模式下会按错误单价折算整晚费用）
@@ -2228,12 +2231,13 @@ function BookDrawer({ open, lines, channels, busy, onClose, onChangeLines, onSub
   const removeLine = (idx: number) => onChangeLines(lines.filter((_, i) => i !== idx))
 
   /** 切时长/切整晚：按新单位数 × 当前折合单价重算该行总额（保留用户手改过的单价）；
-      未手改过则回落到系统价（钟点 hourly_price / 整晚 base_price） */
+      未手改过则回落到该时长的档位整单总价（档位价 ÷ 小时数折成每小时单价，再 × h 还原） */
   const applyHours = (h: number) => {
     setHours(h)
+    const tier = tiers.find(t => t.hours === h)
     onChangeLines([{
       ...lines[0],
-      totalText: String(round2(h * (lines[0].unitRef ?? firstRoom.hourly_price ?? 0))),
+      totalText: String(round2(h * (lines[0].unitRef ?? (tier ? round2(tier.price / tier.hours) : (firstRoom.hourly_price ?? 0))))),
     }])
   }
 
@@ -2282,19 +2286,24 @@ function BookDrawer({ open, lines, channels, busy, onClose, onChangeLines, onSub
         <Field label="入住方式">
           <div className="segmented">
             <button className={!isHourly ? 'active' : ''} onClick={() => { setStayType('normal'); onChangeLines([{ ...lines[0], totalText: String(round2(lines[0].nights * firstRoom.base_price)), unitRef: null }]) }}>整晚</button>
-            <button className={isHourly ? 'active' : ''} onClick={() => { setStayType('hourly'); onChangeLines([{ ...lines[0], totalText: String(round2(hours * (firstRoom.hourly_price || 0))), unitRef: null }]) }}>钟点</button>
+            <button className={isHourly ? 'active' : ''} onClick={() => {
+              setStayType('hourly')
+              const tier = tiers.find(t => t.hours === hours) ?? tiers[0]
+              if (tier) setHours(tier.hours)
+              onChangeLines([{ ...lines[0], totalText: String(tier ? tier.price : 0), unitRef: null }])
+            }}>钟点</button>
           </div>
-          <span className="hint">钟点价 {fmtMoney(firstRoom.hourly_price || 0)}/小时（设置 → 房型 中配置）· 可直接改下方总额，改时长按折合单价重算；钟点房占用当日整天，创建后不可拖动改期。多间房仅支持整晚。</span>
+          <span className="hint">钟点档位：{tiers.map(t => `${t.hours}小时 ${fmtMoney(t.price)}`).join(' · ')}（设置 → 房型 中配置）· 时长按档位选择，总额可手改议价；钟点房占用当日整天，创建后不可拖动改期。多间房仅支持整晚。</span>
         </Field>
       )}
       {isHourly && (
         <Field label="入住时长">
           <div className="chips">
-            {[2, 3, 4, 6, 8].map(x => (
+            {tiers.map(t => (
               <button
-                key={x} className={`chip${hours === x ? ' active' : ''}`}
-                onClick={() => applyHours(x)}
-              >{x} 小时</button>
+                key={t.hours} className={`chip${hours === t.hours ? ' active' : ''}`}
+                onClick={() => applyHours(t.hours)}
+              >{t.hours} 小时 <span className="n">{fmtMoney(t.price)}</span></button>
             ))}
           </div>
         </Field>

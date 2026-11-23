@@ -167,10 +167,21 @@ class PayMethodOut(PayMethodBody):
 
 
 # ---------- room types ----------
+class HourlyRateBody(BaseModel):
+    """房型钟点价档位：hours=时长（1–12 整小时），price=该时长的整单总价（如 2 小时/¥80）"""
+    hours: int
+    price: Money
+
+
+class HourlyRateOut(HourlyRateBody):
+    id: int
+
+
 class RoomTypeBody(BaseModel):
     name: str
     base_price: Money
-    hourly_price: Money = 0  # 钟点房价（元/小时）；0 = 不支持钟点房
+    hourly_price: Money = 0  # 兼容保留（存量前端/测试 gradual 退役）；业务口径一律走 hourly_rates 档位
+    hourly_rates: list[HourlyRateBody] = []  # 钟点价档位；空列表 = 不支持钟点房
     capacity: int = 2
     description: str = ""
 
@@ -178,6 +189,7 @@ class RoomTypeBody(BaseModel):
 class RoomTypeOut(RoomTypeBody):
     id: int
     room_count: int = 0
+    hourly_rates: list[HourlyRateOut] = []
 
 
 # ---------- rooms ----------

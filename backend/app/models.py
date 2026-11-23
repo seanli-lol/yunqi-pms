@@ -94,10 +94,27 @@ class RoomType(Base):
     hotel_id: Mapped[int] = mapped_column(ForeignKey("hotels.id"), index=True)
     name: Mapped[str] = mapped_column(String(40))
     base_price: Mapped[float] = mapped_column(Money)
-    # 钟点房价（元/小时）；0 = 该房型不支持钟点房
+    # 兼容保留：单值钟点价（元/小时），仅作存量库回填档位的数据源，业务判断一律走 HourlyRate 档位表
     hourly_price: Mapped[float] = mapped_column(Money, default=0)
     capacity: Mapped[int] = mapped_column(Integer, default=2)
     description: Mapped[str] = mapped_column(String(120), default="")
+
+
+class HourlyRate(Base):
+    """房型钟点价档位：每档 = (hours, price)，price 是该时长的整单总价（如 2 小时/¥80）。
+
+    钟点房售卖铁律按「房型是否配了档位」判定（无档位 = 不支持钟点房）；
+    开单默认价 = 该时长精确命中的档位总价 ÷ 小时数（rate 仍是每小时单价，账目口径不变）。
+    同房型小时数唯一（UniqueConstraint），防止同档重复配置。
+    """
+    __tablename__ = "hourly_rates"
+    __table_args__ = (UniqueConstraint("room_type_id", "hours", name="uq_hourly_rate_type_hours"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    room_type_id: Mapped[int] = mapped_column(ForeignKey("room_types.id"), index=True)
+    hotel_id: Mapped[int] = mapped_column(ForeignKey("hotels.id"), index=True)
+    hours: Mapped[int] = mapped_column(Integer)  # 1–12
+    price: Mapped[float] = mapped_column(Money)  # 该时长的整单总价
 
 
 class Room(Base):

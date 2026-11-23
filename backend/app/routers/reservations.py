@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from app.db import get_db
 from app.deps import (balance_of, blocking_ids, fmt_money, free_rooms,
                       get_current_user, log_op, money, resolve_hotel_id)
-from app.models import (Channel, FolioItem, Guest, OperationLog,
+from app.models import (Channel, FolioItem, Guest, HourlyRate, OperationLog,
                         Payment, Reservation, Room, RoomType, User)
 from app.schemas import (CheckInBody, CheckOutBody, ExtendBody, FolioItemBody,
                          MergeChainBody, PaidTotalBody, PaymentBody, RegistrationBody,
@@ -16,6 +16,18 @@ from app.routers.payment_methods import assert_method_usable, pay_method_label
 from app.security import decrypt_field, encrypt_field
 
 router = APIRouter(prefix="/api/reservations", tags=["reservations"])
+
+
+def _hourly_rate_for(db: Session, rt: RoomType, hours: int) -> float:
+    """钟点默认每小时单价：hours 精确命中的档位总价 ÷ 小时数；未命中回落最大档折合单价。"""
+    tiers = db.query(HourlyRate).filter(HourlyRate.room_type_id == rt.id).order_by(HourlyRate.hours).all()
+    exact = next((x for x in tiers if x.hours == hours), None)
+    if exact:
+        return money(exact.price / exact.hours)
+    if tiers:
+        ref = tiers[-1]
+        return money(ref.price / ref.hours * hours)
+    return 0
 
 
 def _remark_suffix(remark: str) -> str:
@@ -303,12 +315,14 @@ def create_reservation(body: ReservationBody, hotel_id: int | None = None,
         room_type_id = rt.id
 
     if body.stay_type == "hourly":
-        # 铁律：房型未配置钟点价（hourly_price=0）不可按钟点房售卖——显式传价也不放行
-        hourly = rt.hourly_price if rt else 0
-        if not hourly:
+        # 铁律：房型未配置钟点价档位不可按钟点房售卖——显式传价也不放行
+        tiers = db.query(HourlyRate).filter(HourlyRate.room_type_id == rt.id).all() if rt else []
+        if not tiers:
             raise HTTPException(400, f"房型「{rt.name if rt else ''}」未配置钟点价，不能按钟点房售卖，请先在设置 → 房型 中配置")
         if body.rate is None:
-            rate = hourly
+            # 默认价：hours 精确命中的档位总价 ÷ 小时数（rate 语义 = 每小时单价，账目口径不变）；
+            # 未命中档位（如自定义 5 小时）回落最大档折合单价
+            rate = _hourly_rate_for(db, rt, hours)
         elif rate <= 0:
             raise HTTPException(400, "请设置钟点房价")
 

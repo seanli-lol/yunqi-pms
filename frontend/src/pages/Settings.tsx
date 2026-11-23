@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { X } from 'lucide-react'
 import { api, fmtMoney, maskPhone, round2, type Channel, type Hotel, type PayMethod, type Room, type RoomType, type UserRow } from '../api'
 import { useAuth } from '../auth'
 import { Badge, ConfirmDialog, Dialog, Field, PageHead, Segmented, Spinner, useToast } from '../ui'
@@ -505,7 +506,8 @@ function TypesTab() {
   const [editing, setEditing] = useState<RoomType | 'new' | null>(null)
   const [fName, setFName] = useState('')
   const [fPrice, setFPrice] = useState('')
-  const [fHourly, setFHourly] = useState('')
+  /** 钟点价档位行（hours=0 表示未填写；price 走字符串以便输入中显示） */
+  const [fTiers, setFTiers] = useState<{ hours: string; price: string }[]>([])
   const [fCap, setFCap] = useState(2)
   const [fDesc, setFDesc] = useState('')
   const list = useQuery({ queryKey: ['room-types'], queryFn: () => api.get<RoomType[]>('/api/room-types') })
@@ -523,20 +525,42 @@ function TypesTab() {
 
   const openEdit = (t: RoomType | 'new') => {
     if (t === 'new') {
-      setFName(''); setFPrice(''); setFHourly(''); setFCap(2); setFDesc('')
+      setFName(''); setFPrice(''); setFTiers([]); setFCap(2); setFDesc('')
     } else {
-      setFName(t.name); setFPrice(String(t.base_price)); setFHourly(t.hourly_price ? String(t.hourly_price) : '')
+      setFName(t.name); setFPrice(String(t.base_price))
+      setFTiers((t.hourly_rates ?? []).map(x => ({ hours: String(x.hours), price: String(x.price) })))
       setFCap(t.capacity); setFDesc(t.description)
     }
     setEditing(t)
   }
 
+  const setTier = (idx: number, patch: Partial<{ hours: string; price: string }>) => {
+    setFTiers(rows => rows.map((r, i) => (i === idx ? { ...r, ...patch } : r)))
+  }
+  const addTier = () => setFTiers(rows => [...rows, { hours: '', price: '' }])
+  const removeTier = (idx: number) => setFTiers(rows => rows.filter((_, i) => i !== idx))
+
   const submit = () => {
     const price = round2(Number(fPrice))
     if (!fName.trim() || !price) { toast('请填写名称与价格'); return }
+    // 档位规整：hours 1–12 整数、price > 0、同房型小时不重复；整行全空 = 忽略
+    const seen = new Set<number>()
+    const tiers: { hours: number; price: number }[] = []
+    for (const r of fTiers) {
+      const h = Math.round(Number(r.hours))
+      const p = round2(Number(r.price) || 0)
+      if (r.hours === '' && r.price === '') continue
+      if (!Number.isInteger(h) || h < 1 || h > 12) { toast('档位时长需为 1–12 整小时'); return }
+      if (p <= 0) { toast('档位价格需大于 0'); return }
+      if (seen.has(h)) { toast(`同一时长的档位重复了（${h} 小时），请合并为一档`); return }
+      seen.add(h)
+      tiers.push({ hours: h, price: p })
+    }
+    tiers.sort((a, b) => a.hours - b.hours)
     const body = {
       name: fName, base_price: price,
-      hourly_price: fHourly === '' ? 0 : Math.max(0, round2(Number(fHourly) || 0)),
+      hourly_price: tiers.length ? round2(tiers[tiers.length - 1].price / tiers[tiers.length - 1].hours) : 0,
+      hourly_rates: tiers,
       capacity: fCap, description: fDesc,
     }
     if (editing === 'new') mut.mutate({ method: 'post', path: '/api/room-types', body })
@@ -556,13 +580,17 @@ function TypesTab() {
         {list.isLoading ? <Spinner /> : (
           <div className="table-wrap">
             <table className="table">
-              <thead><tr><th>房型</th><th className="num">基准价</th><th className="num">钟点价</th><th className="num">可住</th><th className="num">间数</th><th>说明</th><th>操作</th></tr></thead>
+              <thead><tr><th>房型</th><th className="num">基准价</th><th>钟点价（按档位）</th><th className="num">可住</th><th className="num">间数</th><th>说明</th><th>操作</th></tr></thead>
               <tbody>
                 {(list.data ?? []).map(t => (
                   <tr key={t.id}>
                     <td data-label="房型" className="strong">{t.name}</td>
                     <td className="num" data-label="基准价">{fmtMoney(t.base_price)}</td>
-                    <td className="num" data-label="钟点价">{t.hourly_price ? `${fmtMoney(t.hourly_price)}/小时` : <span className="muted">不支持</span>}</td>
+                    <td data-label="钟点价（按档位）" className="hourly-cell">
+                      {(t.hourly_rates ?? []).length
+                        ? t.hourly_rates.map(x => `${x.hours}h ${fmtMoney(x.price)}`).join(' · ')
+                        : <span className="muted">不支持</span>}
+                    </td>
                     <td className="num" data-label="可住">{t.capacity} 人</td>
                     <td className="num" data-label="间数">{t.room_count}</td>
                     <td data-label="说明">{t.description || '—'}</td>
@@ -597,8 +625,24 @@ function TypesTab() {
             <select className="select" value={fCap} onChange={e => setFCap(Number(e.target.value))}><option value={2}>2 人</option><option value={3}>3 人</option><option value={4}>4 人</option></select>
           </Field>
         </div>
-        <Field label="钟点价（元/小时，选填）" hint="填写后该房型支持钟点房，开单时可按小时计价；留空表示不支持钟点房。支持到分。">
-          <input className="input" type="number" min="0" step="0.01" value={fHourly} onChange={e => setFHourly(e.target.value)} placeholder="如 45.5" />
+        <Field label="钟点价档位（选填，按档位设置）">
+          <div className="tier-lines">
+            {fTiers.map((r, i) => (
+              <div className="tier-line" key={i}>
+                <input className="input tier-h" type="number" min={1} max={12} step={1} placeholder="小时"
+                       value={r.hours} onChange={e => setTier(i, { hours: e.target.value })} />
+                <span className="tier-sep">小时 /</span>
+                <input className="input tier-p" type="number" min={0} step="0.01" placeholder="价格"
+                       value={r.price} onChange={e => setTier(i, { price: e.target.value })} />
+                <span className="tier-sep">元（整单总价）</span>
+                <button type="button" className="icon-btn tier-del" title="删除该档" aria-label="删除该档" onClick={() => removeTier(i)}>
+                  <X size={15} />
+                </button>
+              </div>
+            ))}
+          </div>
+          <button type="button" className="btn btn-ghost btn-sm" onClick={addTier} style={{ alignSelf: 'flex-start' }}>＋ 添加档位</button>
+          <span className="hint">每档 = 「时长 / 该时长的整单总价」，如 2 小时 ¥80。开单时长只提供已配档位，总额可议价；全部删除即该房型不支持钟点房。同房型时长不可重复，1–12 小时。支持到分。</span>
         </Field>
         <Field label="说明"><textarea className="input" rows={2} value={fDesc} onChange={e => setFDesc(e.target.value)} placeholder="床型、景观、设施等" /></Field>
       </Dialog>

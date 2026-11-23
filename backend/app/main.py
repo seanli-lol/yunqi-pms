@@ -10,7 +10,7 @@ from app.models import Hotel
 from app.routers import auth, channels, guests, hotels, reports, reservations, rooms
 from app.routers import payment_methods
 from app.routers.payment_methods import ensure_default_methods
-from app.seed import ensure_seed
+from app.seed import backfill_hourly_tiers, ensure_seed
 
 
 @asynccontextmanager
@@ -21,6 +21,7 @@ async def lifespan(app: FastAPI):
     try:
         backfill_encrypted_fields(db)  # 存量明文证件号 → 密文（幂等，seed 前执行）
         ensure_seed(db)
+        backfill_hourly_tiers(db)  # 存量单值钟点价 → 多档位（幂等：有档位的房型跳过）
         # 存量库 / 新建店补种默认收款方式（幂等：有配置的店跳过）
         for h in db.query(Hotel).all():
             ensure_default_methods(db, h.id)

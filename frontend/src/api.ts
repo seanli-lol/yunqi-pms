@@ -161,8 +161,10 @@ export interface Hotel { id: number; name: string; city: string; address: string
 export interface Channel { id: number; name: string; color: string; sort_order: number; is_active: boolean }
 /** 收款方式（设置页可配置，各店独立）；payments.method 存稳定 code，默认项 cash/wechat/alipay/card */
 export interface PayMethod { id: number; code: string; name: string; remark: string; sort_order: number; is_active: boolean }
-export interface RoomType { id: number; name: string; base_price: number; hourly_price: number; capacity: number; description: string; room_count: number }
-export interface Room { id: number; room_number: string; floor: number; status: string; notes: string; room_type_id: number; room_type_name: string; base_price: number; hourly_price?: number }
+/** 钟点价档位：hours=时长（1–12），price=该时长的整单总价（如 2 小时/¥80）；空数组 = 该房型不支持钟点房 */
+export interface HourlyTier { hours: number; price: number }
+export interface RoomType { id: number; name: string; base_price: number; hourly_price: number; hourly_rates: HourlyTier[]; capacity: number; description: string; room_count: number }
+export interface Room { id: number; room_number: string; floor: number; status: string; notes: string; room_type_id: number; room_type_name: string; base_price: number; hourly_price?: number; hourly_tiers?: HourlyTier[] }
 export interface CalBlock {
   id: number; code: string; guest_id?: number; guest_name: string; channel_id: number | null
   channel_name: string; channel_color: string
@@ -181,7 +183,7 @@ export interface CalBlock {
 }
 export interface BoardRoom {
   id: number; number: string; floor: number; status: string; notes: string
-  room_type_name: string; base_price: number; hourly_price?: number
+  room_type_name: string; base_price: number; hourly_price?: number; hourly_tiers?: HourlyTier[]
   current_guest: string | null; current_check_out: string | null; current_code: string | null
   blocks: CalBlock[]
 }

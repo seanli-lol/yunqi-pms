@@ -206,7 +206,9 @@ function NewReservationDialog({ open, onClose, channels, types, onSubmit, onDone
 
   const type = types.find(t => t.id === typeId)
   const nights = Math.max(1, Math.round(Number(nightsText) || 1))
-  const hourlyAvail = (type?.hourly_price ?? 0) > 0
+  /** 所选房型的钟点档位（空数组 = 不支持钟点房） */
+  const tiers = type?.hourly_rates ?? []
+  const hourlyAvail = tiers.length > 0
   /** 用户是否手改过总额：未改时总额跟随「房型基准价 × 数量」 */
   const [totalTouched, setTotalTouched] = useState(false)
 
@@ -225,10 +227,18 @@ function NewReservationDialog({ open, onClose, channels, types, onSubmit, onDone
     setChannelId(prev => (prev === null ? (channels[0]?.id ?? null) : prev))
   }, [open, channels])
 
-  // 房型 / 天数变化时按基准价带出总价（用户未手改前保持跟随）
+  // 房型 / 天数变化时按基准价带出总价（用户未手改前保持跟随）：
+  // 钟点 = 该时长的档位整单总价（未命中档位回落最大档折合单价 × h）；整晚 = 基准价 × 晚数
   useEffect(() => {
     if (!totalTouched && type) {
-      setTotalText(String(round2(stayType === 'hourly' ? (type.hourly_price || 0) * hours : type.base_price * nights)))
+      if (stayType === 'hourly') {
+        const tier = tiers.find(t => t.hours === hours)
+        const ref = tiers.length ? tiers[tiers.length - 1] : null
+        const totalH = tier ? tier.price : (ref ? round2((ref.price / ref.hours) * hours) : 0)
+        setTotalText(String(round2(totalH)))
+      } else {
+        setTotalText(String(round2(type.base_price * nights)))
+      }
     }
   }, [type, nights, hours, stayType, totalTouched])
 
@@ -296,9 +306,9 @@ function NewReservationDialog({ open, onClose, channels, types, onSubmit, onDone
         <select className="select" value={typeId ?? ''} onChange={e => {
           const id = Number(e.target.value)
           setTypeId(id)
-          // 新房型未配置钟点价时退出钟点模式：分段控件随之隐藏，避免 stayType 残留提交出钟点单
+          // 新房型未配置钟点档位时退出钟点模式：分段控件随之隐藏，避免 stayType 残留提交出钟点单
           const t = types.find(x => x.id === id)
-          if (!t || !(t.hourly_price > 0)) setStayType('normal')
+          if (!t || !(t.hourly_rates ?? []).length) setStayType('normal')
         }}>
           <option value="">请选择房型</option>
           {types.map(t => <option key={t.id} value={t.id}>{t.name} · {fmtMoney(t.base_price)}/晚 · {t.room_count} 间</option>)}
@@ -308,16 +318,20 @@ function NewReservationDialog({ open, onClose, channels, types, onSubmit, onDone
         <Field label="入住方式">
           <div className="segmented">
             <button className={stayType === 'normal' ? 'active' : ''} onClick={() => setStayType('normal')}>整晚</button>
-            <button className={stayType === 'hourly' ? 'active' : ''} onClick={() => setStayType('hourly')}>钟点</button>
+            <button className={stayType === 'hourly' ? 'active' : ''} onClick={() => {
+              setStayType('hourly')
+              // 所选房型没有 3 小时档时回落首档（与房态盘 BookDrawer 同口径）
+              if (!(tiers.some(t => t.hours === hours)) && tiers.length) setHours(tiers[0].hours)
+            }}>钟点</button>
           </div>
-          <span className="hint">钟点价 {fmtMoney(type!.hourly_price)}/小时；钟点房按入住日占整日，时长 {hours} 小时。</span>
+          <span className="hint">钟点档位：{tiers.map(t => `${t.hours}小时 ${fmtMoney(t.price)}`).join(' · ')}；钟点房按入住日占整日，时长 {hours} 小时。</span>
         </Field>
       )}
       {hourlyAvail && stayType === 'hourly' && (
         <Field label="入住时长">
           <div className="chips">
-            {[2, 3, 4, 6, 8].map(x => (
-              <button key={x} className={`chip${hours === x ? ' active' : ''}`} onClick={() => setHours(x)}>{x} 小时</button>
+            {tiers.map(t => (
+              <button key={t.hours} className={`chip${hours === t.hours ? ' active' : ''}`} onClick={() => setHours(t.hours)}>{t.hours} 小时 <span className="n">{fmtMoney(t.price)}</span></button>
             ))}
           </div>
         </Field>
