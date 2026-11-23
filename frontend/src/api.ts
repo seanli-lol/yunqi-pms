@@ -164,7 +164,7 @@ export interface PayMethod { id: number; code: string; name: string; remark: str
 export interface RoomType { id: number; name: string; base_price: number; hourly_price: number; capacity: number; description: string; room_count: number }
 export interface Room { id: number; room_number: string; floor: number; status: string; notes: string; room_type_id: number; room_type_name: string; base_price: number; hourly_price?: number }
 export interface CalBlock {
-  id: number; code: string; guest_name: string; channel_id: number | null
+  id: number; code: string; guest_id?: number; guest_name: string; channel_id: number | null
   channel_name: string; channel_color: string
   check_in: string; check_out: string; status: string; rate: number
   stay_type?: string; hours?: number
@@ -175,6 +175,9 @@ export interface CalBlock {
   // 当日入住当日退（stub_nights==1，钟点房/当日往返）由前端聚合为格角「退房」角标；
   // 原「可售」虚纹已退役——截断后右侧空白即可售
   truncated?: boolean; stub_nights?: number; stub_cut?: boolean
+  // 前端合并「同一客人、同一房、日期首尾相接」的连住预订后合成的展示方块（后端不产出）：
+  // chain = 被合并的多笔原订单（按 check_in 升序），length>0 即表示这是合并长条
+  chain?: CalBlock[]
 }
 export interface BoardRoom {
   id: number; number: string; floor: number; status: string; notes: string

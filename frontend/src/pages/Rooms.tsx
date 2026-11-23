@@ -13,9 +13,61 @@ import { Badge, ConfirmDialog, Dialog, Drawer, Field, PageHead, Segmented, Spinn
 import { CheckInDialog, ExtendDialog } from '../dialogs'
 import { GuestNameInput } from '../GuestNameInput'
 
+/** 真实住期晚数（按日期算）：board 的 nights 是「窗口内可见格数」，被窗口裁过，
+    长条明细/提示要显示真实住期时不能用它 */
+function stayNights(b: CalBlock): number {
+  return Math.max(1, Math.round((Date.parse(b.check_out) - Date.parse(b.check_in)) / 86400000))
+}
+
+/** 连住合并：同一客人（guest_id 优先）、同来源、同状态、同住法，且「上一笔离店日 == 下一笔入住日」
+    的相邻预订，合并为一条长条（前台常按晚逐笔开单，23/24/25 三笔应像一笔 3 晚那样连成一片）。
+    合并结果把原订单挂在 chain 上（点长条弹明细逐笔调整），金额/欠超按整条汇总。
+    已退房存根、钟点房不参与合并（存根有截断语义、钟点房按小时计不按夜连片）。 */
+function mergeChains(blocks: CalBlock[]): CalBlock[] {
+  const out: CalBlock[] = []
+  const groups = new Map<string, CalBlock[]>()
+  blocks.forEach(b => {
+    // 必须按 guest_id 归组：同名不同客（两个「李四」）绝不能被连成一条
+    if (b.truncated || b.stay_type === 'hourly' || b.guest_id == null) { out.push(b); return }
+    const k = `${b.guest_id}|${b.channel_id ?? 0}|${b.status}|${b.stay_type ?? 'normal'}`
+    const arr = groups.get(k)
+    if (arr) arr.push(b)
+    else groups.set(k, [b])
+  })
+  groups.forEach(list => {
+    list.sort((x, y) => x.check_in.localeCompare(y.check_in))
+    let run: CalBlock[] = []
+    const flush = () => {
+      if (!run.length) return
+      if (run.length === 1) { out.push(run[0]); run = []; return }
+      const first = run[0]
+      const last = run[run.length - 1]
+      out.push({
+        ...first,
+        check_out: last.check_out,
+        nights: last.col_start + last.nights - first.col_start,
+        // 欠/超徽章按整条汇总：应收、已收各自相加，余额同口径钳零
+        items_total: round2(run.reduce((s, x) => s + x.items_total, 0)),
+        paid_total: round2(run.reduce((s, x) => s + x.paid_total, 0)),
+        balance_due: Math.max(0, round2(run.reduce((s, x) => s + x.items_total - x.paid_total, 0))),
+        chain: run.slice(),
+      })
+      run = []
+    }
+    list.forEach(b => {
+      const prev = run[run.length - 1]
+      if (prev && prev.check_out === b.check_in) run.push(b)
+      else { flush(); run = [b] }
+    })
+    flush()
+  })
+  return out
+}
+
 /** 同房行内方块布局（评审定稿规则，design/prototype/rooms.html 同源）：
-    ① 真方块（在住/未来/多晚存根）按列冲突贪心分轨——同列可证明 ≤2 笔，行高恒定；
-    ② 当日入住当日退的窄存根（truncated + stub_nights==1，钟点房/当日往返）不画灰块，
+    ① 相邻同客连住预订先合并为一条长条（见 mergeChains）；
+    ② 真方块（在住/未来/多晚存根）按列冲突贪心分轨——同列可证明 ≤2 笔，行高恒定；
+    ③ 当日入住当日退的窄存根（truncated + stub_nights==1，钟点房/当日往返）不画灰块，
        按退房日聚合为格角「退房」角标（不限笔数，10 笔也只占一枚角标位）。 */
 function layoutRoomBlocks(blocks: CalBlock[]): {
   lanes: { b: CalBlock; span: number; track: number; lane: number }[]
@@ -23,7 +75,7 @@ function layoutRoomBlocks(blocks: CalBlock[]): {
 } {
   const depMap = new Map<number, CalBlock[]>()
   const real: { b: CalBlock; span: number; track: number; lane: number }[] = []
-  blocks.forEach(b => {
+  mergeChains(blocks).forEach(b => {
     if (b.truncated && b.stub_nights === 1 && b.status === 'checked_out') {
       const arr = depMap.get(b.col_start) ?? []
       arr.push(b)
@@ -72,6 +124,9 @@ function layoutRoomBlocks(blocks: CalBlock[]): {
 /** 退房角标明细卡的状态包（anchor 用于跟随定位） */
 interface DepInfo { roomNo: string; day: string; deps: CalBlock[]; anchor: HTMLElement }
 
+/** 连住合并长条的明细卡状态包（同客多笔首尾相接，逐笔打开订单详情抽屉） */
+interface ChainInfo { roomNo: string; parts: CalBlock[]; anchor: HTMLElement }
+
 /** 日历房号列/日期列的设计基准宽度；宽屏下列宽被 CSS 1fr 拉伸，仅作兜底（见 calGeom） */
 const CELL = 88
 const LAB_W = 150
@@ -113,6 +168,10 @@ export default function Rooms() {
   const toast = useToast()
   const qc = useQueryClient()
   const calRef = useRef<HTMLDivElement>(null)
+  /** 日历滚动容器（.cal-scroll）：用于测「板顶到视口顶」的距离，算固定高度 */
+  const calScrollRef = useRef<HTMLDivElement>(null)
+  /** 日历板高度（px）：占满首屏剩余空间，让日期表头在板内固定（null = 未测量，用 CSS 兜底） */
+  const [boardH, setBoardH] = useState<number | null>(null)
   const dragRef = useRef<DragState | null>(null)
   /** 刚完成拖动的门闩：松手后浏览器补发的 click 需要吞掉，避免误开弹层 */
   const justDraggedRef = useRef(false)
@@ -138,6 +197,9 @@ export default function Rooms() {
   const depHideTimer = useRef(0)
   const depPinnedRef = useRef(false)
   depPinnedRef.current = depPinned
+  // 连住合并长条明细卡（同一客人多笔首尾相接）：点长条钉住展开，点行逐笔开订单详情抽屉
+  const [chain, setChain] = useState<ChainInfo | null>(null)
+  const chainRef = useRef<HTMLDivElement | null>(null)
   const [adjustRes, setAdjustRes] = useState<Reservation | null>(null)
   /** 订单详情抽屉：双 tab（详情/操作日志）+ 折叠账目 + 收款小弹层 */
   const [orderTab, setOrderTab] = useState<'detail' | 'logs'>('detail')
@@ -158,6 +220,41 @@ export default function Rooms() {
     queryFn: () => api.get<Board>(`/api/rooms/board?start=${start}&days=14`),
     staleTime: 10_000,
   })
+
+  /* 日历板高度：占满首屏剩余空间，让日期表头在板内固定——滚到最下面也能看见是哪一天。
+     口径 = 视口高 − 盘面顶部 − 盘面下方实际内容（图例块 + main 底部内边距，实测而非猜）。
+     为什么必须把「下方内容」扣干净：表头的 sticky 只相对 .cal-scroll 这个滚动容器生效，
+     页面只要还能再滚一段，表头就会被页面带走——盘面高度必须让整页刚好一屏。
+     依赖 board.data：首帧还在 Spinner 分支、.cal-scroll 尚未挂载（ref 为 null），
+     只依赖 view 会让 effect 永不重跑 → 内联高度一直不生效。 */
+  useEffect(() => {
+    if (view !== 'cal' || !board.data) return
+    const measure = () => {
+      const el = calScrollRef.current
+      if (!el) return
+      // 页面已滚过板顶时 rect.top 为负：夹到 0，让板正好填满视口
+      const top = Math.max(0, el.getBoundingClientRect().top)
+      // 盘面下方的内容（图例 + 间距）高度——与外层容器高度无关，可直接量
+      const wrap = el.parentElement
+      const below = wrap
+        ? Math.max(0, wrap.getBoundingClientRect().bottom - el.getBoundingClientRect().bottom)
+        : 0
+      // main 底部内边距（桌面 72 / 移动 96，移动端已含底栏让位），不扣会让页面多出可滚高度
+      const main = document.querySelector('main.main')
+      const padBottom = main ? parseFloat(getComputedStyle(main).paddingBottom) || 0 : 0
+      const h = Math.floor(window.innerHeight - top - below - padBottom)
+      // 太矮（横向滚动条 + 一两行房）时给下限，宁可整页滚也不要把板压扁
+      setBoardH(Math.max(240, h))
+    }
+    // 等一帧让布局（字体/表头）稳定后再量
+    const raf = requestAnimationFrame(measure)
+    window.addEventListener('resize', measure)
+    return () => {
+      cancelAnimationFrame(raf)
+      window.removeEventListener('resize', measure)
+    }
+  }, [view, board.data])
+
   const channels = useQuery({
     queryKey: ['channels'],
     queryFn: () => api.get<Channel[]>('/api/channels'),
@@ -196,6 +293,7 @@ export default function Rooms() {
   const cancelDepHide = () => window.clearTimeout(depHideTimer.current)
   const openDep = (roomNo: string, col: number, list: CalBlock[], anchor: HTMLElement) => {
     cancelDepHide()
+    setChain(null)   // 与连住明细卡互斥：同时最多一张浮卡
     setDep({ roomNo, day: md(board.data?.day_list[col]?.date ?? ''), deps: list, anchor })
   }
   const toggleDep = (roomNo: string, col: number, list: CalBlock[], anchor: HTMLElement) => {
@@ -232,6 +330,42 @@ export default function Rooms() {
     const el = depRef.current
     if (!el || !dep) return
     const r = dep.anchor.getBoundingClientRect()
+    const left = Math.max(8, Math.min(r.left, window.innerWidth - el.offsetWidth - 12))
+    let top = r.bottom + 6
+    if (top + el.offsetHeight > window.innerHeight - 8) top = Math.max(8, r.top - el.offsetHeight - 6)
+    el.style.left = `${left}px`
+    el.style.top = `${top}px`
+  })
+
+  /* ---------- 连住合并长条：点开逐笔明细（同一客人按晚分别开的单） ---------- */
+  const closeChain = useCallback(() => setChain(null), [])
+  // Esc / 点外部 / 页面滚动 → 收起（卡内列表滚动不收起，同退房浮卡口径；
+  // 连住长条自身的点击由 React 处理——开/再点收起，故只豁免 .cal-block.chain）
+  useEffect(() => {
+    if (!chain) return
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') closeChain() }
+    const onClick = (e: MouseEvent) => {
+      const t = e.target as HTMLElement
+      if (chainRef.current?.contains(t) || t.closest('.cal-block.chain') || t.closest('.cal-dep')) return
+      closeChain()
+    }
+    const onScroll = (e: Event) => {
+      if (chainRef.current?.contains(e.target as Node)) return
+      closeChain()
+    }
+    document.addEventListener('keydown', onKey)
+    document.addEventListener('click', onClick)
+    window.addEventListener('scroll', onScroll, true)
+    return () => {
+      document.removeEventListener('keydown', onKey)
+      document.removeEventListener('click', onClick)
+      window.removeEventListener('scroll', onScroll, true)
+    }
+  }, [chain, closeChain])
+  useEffect(() => {
+    const el = chainRef.current
+    if (!el || !chain) return
+    const r = chain.anchor.getBoundingClientRect()
     const left = Math.max(8, Math.min(r.left, window.innerWidth - el.offsetWidth - 12))
     let top = r.bottom + 6
     if (top + el.offsetHeight > window.innerHeight - 8) top = Math.max(8, r.top - el.offsetHeight - 6)
@@ -734,7 +868,13 @@ export default function Rooms() {
 
       {view === 'cal' ? (
         <div>
-      <div className="cal-scroll">
+      {/* 日历板：固定高度的内部滚动区——日期表头（.cal-head）在板内 sticky 固定，
+          滚到最下面也能看见是哪一天；页面本身不再被几十行房撑长 */}
+      <div
+        className="cal-scroll"
+        ref={calScrollRef}
+        style={boardH != null ? { height: boardH } : undefined}
+      >
         <div className="cal" ref={calRef}>
           <div className="cal-row cal-head">
             <div className="cal-corner">
@@ -804,26 +944,47 @@ export default function Rooms() {
                     <div className="cal-maint">维修{room.notes ? ` · ${room.notes}` : ''}</div>
                   ) : (
                     <>
-                      {/* 真方块（在住/未来/多晚存根）：同列重叠 ≤2 笔，上下分轨（行高恒定 52px） */}
+                      {/* 真方块（在住/未来/多晚存根）：同列重叠 ≤2 笔，上下分轨（行高恒定 52px）。
+                          连住合并长条（chain）= 同一客人首尾相接的多笔，点开逐笔明细逐笔办操作 */}
                       {layout.lanes.map(({ b, span, lane }) => {
                         const cls = b.status === 'checked_in' ? 'stay'
                           : b.status === 'checked_out' ? 'past' : 'future'
                         const hourly = b.stay_type === 'hourly'
+                        const chained = !!b.chain?.length
                         // lane 已在 layoutRoomBlocks 里映射好：0=整行无类，1/2=上下轨 lane-1/lane-2
                         const laneCls = lane > 0 ? ` lane-${lane}` : ''
+                        const chainTitle = chained
+                          ? `${b.guest_name} · 连住 ${b.chain!.reduce((s, p) => s + stayNights(p), 0)} 晚（${md(b.check_in)}–${md(b.check_out)}）共 ${b.chain!.length} 笔订单，点击查看明细`
+                          : undefined
                         return (
                           <div
                             key={b.id}
-                            className={`cal-block ${cls}${hourly ? ' hourly' : ''}${b.truncated && b.stub_cut ? ' truncated' : ''}${laneCls}`}
+                            className={`cal-block ${cls}${hourly ? ' hourly' : ''}${b.truncated && b.stub_cut ? ' truncated' : ''}${laneCls}${chained ? ' chain' : ''}`}
                             data-res-id={b.id}
                             style={{ gridColumn: `${b.col_start + 2} / span ${span}`, ['--src' as any]: b.channel_color }}
-                            title={b.truncated ? `${b.guest_name} · 已离店（${b.check_in.slice(5).replace('-', '/')} 入住，原订至 ${b.check_out.slice(5).replace('-', '/')}，实际已提前退房）` : undefined}
-                            onPointerDown={(e) => onBlockPointerDown(e, b, room)}
-                            onClick={() => {
+                            title={chainTitle ?? (b.truncated ? `${b.guest_name} · 已离店（${b.check_in.slice(5).replace('-', '/')} 入住，原订至 ${b.check_out.slice(5).replace('-', '/')}，实际已提前退房）` : undefined)}
+                            onPointerDown={(e) => {
+                              // 合并长条不对应单笔订单：禁止拖动（要改期请点开明细逐笔调整）
+                              if (chained) { e.stopPropagation(); return }
+                              onBlockPointerDown(e, b, room)
+                            }}
+                            onClick={(e) => {
                               if (justDraggedRef.current) return
                               // 预订抽屉开着：点方块提示先完成开单；表单抽屉开着：忽略，防止详情被偷偷切走
                               if (booking !== null) { toast('正在开单，请先提交或关闭右侧预订抽屉'); return }
                               if (formDrawerOpen()) return
+                              if (chained) {
+                                e.stopPropagation()
+                                // 再点同一条 = 收起；点另一条 = 切换。
+                                // 锚点元素必须在事件里同步取出——state updater 延迟到渲染期执行，
+                                // 那时 e.currentTarget 已置 null，会把锚点变成 null 导致浮卡立即自行关闭
+                                const anchor = e.currentTarget as HTMLElement
+                                closeDep()   // 与退房明细卡互斥
+                                setChain(prev => prev && prev.anchor === anchor
+                                  ? null
+                                  : { roomNo: room.number, parts: b.chain!, anchor })
+                                return
+                              }
                               setDetailRes({ id: b.id } as Reservation)
                             }}
                           >
@@ -886,6 +1047,7 @@ export default function Rooms() {
           <p className="hint mt-16 cal-legend">
             图例：<Badge color="blue">在住</Badge> <Badge color="orange">未来抵店</Badge> <Badge color="red">欠</Badge> 在住/已离店未结清 · <Badge color="purple">超</Badge> 实付超过应收（多收待退）· 灰块 = 已离店（离店日格子只压左 1/3，当天下午起腾空，空白即可售，含当日钟点房）· 格子右上角<b style={{ color: 'var(--text-primary)' }}>退房图标</b> = 当日有客人退房，悬停看明细、<b>点按展开详情并可编辑</b>（更正实收 / 撤销退房；同列有方块时让位到右下角）·
             方块最前端竖条颜色 = 预订来源（可在「设置 → 来源渠道」配置）。<b>拖动方块换房/改期（冲突自动回弹）· 点击空白格直接开单 · 房号旁「设净/设脏」一键切换房态</b>。
+            <b>同一客人同房首尾相接的多笔预订自动连成一条长条</b>（点长条看逐笔明细）。
           </p>
         </div>
       ) : (
@@ -1364,6 +1526,34 @@ export default function Rooms() {
               </div>
             ))}
           </div>
+        </div>,
+        document.body,
+      )}
+
+      {/* ---------- 连住合并长条明细卡（同一客人多笔首尾相接：逐笔列明，点行开该笔订单详情） ---------- */}
+      {chain && createPortal(
+        <div className="dep-pop chain-pop" ref={chainRef} role="dialog"
+          aria-label={`${chain.roomNo} 连住 ${chain.parts.length} 笔明细`}>
+          <div className="t">
+            {chain.roomNo} · 连住 {chain.parts.length} 笔（{md(chain.parts[0].check_in)}–{md(chain.parts[chain.parts.length - 1].check_out)}）
+          </div>
+          <div className="agg-list">
+            {chain.parts.map((d, i) => (
+              <div key={d.id} className="agg-item">
+                <button type="button" className="agg-row"
+                  onClick={() => { closeChain(); setDetailRes({ id: d.id } as Reservation) }}>
+                  <span className="g">{i + 1}</span>
+                  <span className="m">{md(d.check_in)}–{md(d.check_out)} · {stayNights(d)} 晚</span>
+                  <span className={`badge ${RES_STATUS_BADGE[d.status]?.color ? `badge-${RES_STATUS_BADGE[d.status].color}` : 'badge-gray'}`}>
+                    {RES_STATUS_BADGE[d.status]?.label ?? d.status}
+                  </span>
+                  <b>{fmtMoney(d.items_total)}</b>
+                  <span className="agg-caret"><ChevronRight size={14} strokeWidth={2.2} /></span>
+                </button>
+              </div>
+            ))}
+          </div>
+          <div className="chain-foot">共 {fmtMoney(chain.parts.reduce((s, d) => s + d.items_total, 0))} · 点任意一笔单独调整</div>
         </div>,
         document.body,
       )}
@@ -1855,6 +2045,10 @@ function BookDrawer({ open, lines, channels, busy, onClose, onChangeLines, onSub
 
   const firstRoom = lines[0].room
   const isHourly = single && stayType === 'hourly'
+  /** 计价单位数：钟点按小时（后端 reservations.rate 是「每小时单价」，账目 = hours × rate），
+      整晚按天数。⚠️ 不能一律用 l.nights——钟点房 nights 恒为 1，会把整单总额当成小时单价
+      （曾导致：填 4 小时 ¥200 → rate=200 → 后端记 4×200=¥800）。 */
+  const lineUnits = (l: BookingLine) => (isHourly ? Math.max(1, hours) : Math.max(1, l.nights))
   const grandTotal = round2(lines.reduce((s, l) => {
     const n = Math.max(0, round2(Number(l.totalText) || 0))
     return s + n
@@ -1872,18 +2066,28 @@ function BookDrawer({ open, lines, channels, busy, onClose, onChangeLines, onSub
     })
     onChangeLines(next)
   }
-  /** 行内手改总额：折算单价记入 unitRef */
+  /** 行内手改总额：折算单价记入 unitRef（钟点按小时折算） */
   const lineTotalChange = (idx: number, v: string) => {
     const digits = moneyInputText(v)
     const next = lines.map((l, i) => {
       if (i !== idx) return l
       const t = Math.max(0, round2(Number(digits) || 0))
-      const unit = l.nights > 0 ? round2(t / l.nights) : 0
+      const unit = round2(t / lineUnits(l))
       return { ...l, totalText: digits, unitRef: unit }
     })
     onChangeLines(next)
   }
   const removeLine = (idx: number) => onChangeLines(lines.filter((_, i) => i !== idx))
+
+  /** 切时长/切整晚：按新单位数 × 当前折合单价重算该行总额（保留用户手改过的单价）；
+      未手改过则回落到系统价（钟点 hourly_price / 整晚 base_price） */
+  const applyHours = (h: number) => {
+    setHours(h)
+    onChangeLines([{
+      ...lines[0],
+      totalText: String(round2(h * (lines[0].unitRef ?? firstRoom.hourly_price ?? 0))),
+    }])
+  }
 
   const submit = () => {
     onSubmit({
@@ -1891,7 +2095,8 @@ function BookDrawer({ open, lines, channels, busy, onClose, onChangeLines, onSub
       lines: lines.map(l => {
         const t = Math.max(0, round2(Number(l.totalText) || 0))
         const n = Math.max(1, l.nights)
-        const rate = round2(t / n)
+        // 单价 = 整单总额 ÷ 计价单位数：钟点按小时、整晚按天数
+        const rate = round2(t / lineUnits(l))
         if (isHourly) {
           // 钟点：仅第一行（单行模式），check_out 占整日 = check_in + 1 天，后端口径一致
           return { room_id: l.room.id, check_in: l.checkIn, check_out: addDaysIso(l.checkIn, 1), rate, nights: 1, stay_type: 'hourly' as const, hours }
@@ -1929,9 +2134,9 @@ function BookDrawer({ open, lines, channels, busy, onClose, onChangeLines, onSub
         <Field label="入住方式">
           <div className="segmented">
             <button className={!isHourly ? 'active' : ''} onClick={() => { setStayType('normal'); onChangeLines([{ ...lines[0], totalText: String(round2(lines[0].nights * firstRoom.base_price)), unitRef: null }]) }}>整晚</button>
-            <button className={isHourly ? 'active' : ''} onClick={() => { setStayType('hourly'); onChangeLines([{ ...lines[0], totalText: String(round2(hours * (firstRoom.hourly_price || 0))) }]) }}>钟点</button>
+            <button className={isHourly ? 'active' : ''} onClick={() => { setStayType('hourly'); onChangeLines([{ ...lines[0], totalText: String(round2(hours * (firstRoom.hourly_price || 0))), unitRef: null }]) }}>钟点</button>
           </div>
-          <span className="hint">钟点价 {fmtMoney(firstRoom.hourly_price || 0)}/小时（设置 → 房型 中配置）；钟点房占用当日整天，创建后不可拖动改期。多间房仅支持整晚。</span>
+          <span className="hint">钟点价 {fmtMoney(firstRoom.hourly_price || 0)}/小时（设置 → 房型 中配置）· 可直接改下方总额，改时长按折合单价重算；钟点房占用当日整天，创建后不可拖动改期。多间房仅支持整晚。</span>
         </Field>
       )}
       {isHourly && (
@@ -1940,7 +2145,7 @@ function BookDrawer({ open, lines, channels, busy, onClose, onChangeLines, onSub
             {[2, 3, 4, 6, 8].map(x => (
               <button
                 key={x} className={`chip${hours === x ? ' active' : ''}`}
-                onClick={() => { setHours(x); onChangeLines([{ ...lines[0], totalText: String(round2(x * (firstRoom.hourly_price || 0))) }]) }}
+                onClick={() => applyHours(x)}
               >{x} 小时</button>
             ))}
           </div>
@@ -1954,7 +2159,8 @@ function BookDrawer({ open, lines, channels, busy, onClose, onChangeLines, onSub
         {lines.map((l, i) => {
           const t = Math.max(0, round2(Number(l.totalText) || 0))
           const n = Math.max(1, l.nights)
-          const unit = round2(t / n)
+          // 折合单价：钟点按小时（hours）、整晚按天数——与提交时的折算口径一致
+          const unit = round2(t / lineUnits(l))
           return (
             <div key={`${l.room.id}-${l.checkIn}-${i}`} className="book-line">
               <div className="bl-room">
@@ -1977,7 +2183,7 @@ function BookDrawer({ open, lines, channels, busy, onClose, onChangeLines, onSub
                 className="bl-input amt" inputMode="decimal" value={l.totalText}
                 onChange={e => lineTotalChange(i, e.target.value)}
                 aria-label="行整单总额"
-                title="行整单总额（元）"
+                title={isHourly ? '本间钟点房整单总额（元），按小时折合单价入账' : '行整单总额（元）'}
               />
               <span className="bl-amt" style={{ color: 'var(--text-secondary)', fontWeight: 400, fontSize: 12 }}>折合 {fmtMoney(unit)}/{isHourly ? '小时' : '晚'}</span>
               <button className="icon-btn" aria-label="移除该房间" onClick={() => removeLine(i)}><X size={14} /></button>
@@ -1986,7 +2192,7 @@ function BookDrawer({ open, lines, channels, busy, onClose, onChangeLines, onSub
         })}
       </div>
       <p className="hint" style={{ marginTop: 10 }}>
-        逐间提交，任一间失败（如时段冲突）即中止，已成功的保留；金额填每间整单总额，按天数折合单价入账。来源选项与顺序来自「设置 → 来源渠道」。
+        逐间提交，任一间失败（如时段冲突）即中止，已成功的保留；金额填每间整单总额，{isHourly ? '按钟点小时数折合单价入账。' : '按天数折合单价入账。'}来源选项与顺序来自「设置 → 来源渠道」。
       </p>
       <Field label="来源">
         <select className="select" value={channelId ?? ''} onChange={e => setChannelId(e.target.value ? Number(e.target.value) : null)}>

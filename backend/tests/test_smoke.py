@@ -1370,3 +1370,71 @@ def test_decimal_amounts():
     folio2 = client.get(f"/api/reservations/{res2['id']}/folio", headers=tok).json()
     assert folio2["items"][0]["description"] == "钟点房费 · 4 小时 × ¥45.50"
     assert folio2["total_charge"] == 182.0
+
+
+def test_hourly_price_is_editable():
+    """钟点房价可议价：reservations.rate 是「每小时单价」，账目 = hours × rate。
+    前端把「整单总额 ÷ 小时数」折算成 rate 提交（曾按天数折算导致 4h ¥200 记成 ¥800）。"""
+    from datetime import date, timedelta
+
+    from app.routers.auth import _login_attempts
+
+    _login_attempts.clear()
+    h = _headers(_login("zhouqi", hotel_id=1)["token"])
+    cin = date.today().isoformat()
+    cout = (date.today() + timedelta(days=1)).isoformat()
+    types = {t["name"]: t for t in client.get("/api/room-types", headers=h).json()}
+
+    def pick(type_name):
+        t = types[type_name]
+        av = client.get(
+            f"/api/rooms/available?room_type_id={t['id']}&check_in={cin}&check_out={cout}"
+            f"&include_dirty=1&allow_prev_guest=1", headers=h).json()
+        idle = [x for x in av if x["status"] in ("vacant_clean", "vacant_dirty")]
+        assert idle, f"{type_name} 无可用空房"
+        # 依次取用，避免本测试内两单抢同一间房
+        pick.used = getattr(pick, "used", set())
+        for x in idle:
+            if x["id"] not in pick.used:
+                pick.used.add(x["id"])
+                return x
+        raise AssertionError("可用房已耗尽")
+
+    # 房型基准钟点价 45/小时；议价到 50/小时（4 小时整单 ¥200 → rate = 200 ÷ 4 = 50）
+    room = pick("大床房")
+    assert types["大床房"]["hourly_price"] == 45.0
+    r = client.post("/api/reservations", headers=h, json={
+        "guest_name": "议价钟点客", "check_in": cin, "check_out": cout,
+        "room_id": room["id"], "stay_type": "hourly", "hours": 4, "rate": 50,
+        "status": "confirmed",
+    })
+    assert r.status_code == 200, r.text
+    res = r.json()
+    assert res["stay_type"] == "hourly" and res["hours"] == 4
+    assert res["rate"] == 50.0           # 存的是每小时单价，不是整单总额
+    folio = client.get(f"/api/reservations/{res['id']}/folio", headers=h).json()
+    assert folio["items"][0]["description"] == "钟点房费 · 4 小时 × ¥50.00"
+    assert folio["total_charge"] == 200.0   # 用户填的整单总额原样入账
+
+    # 议价低于系统价同样放行（钟点价可下调，如协议客）
+    room2 = pick("大床房")
+    r = client.post("/api/reservations", headers=h, json={
+        "guest_name": "协议钟点客", "check_in": cin, "check_out": cout,
+        "room_id": room2["id"], "stay_type": "hourly", "hours": 2, "rate": 30,
+        "status": "confirmed",
+    })
+    assert r.status_code == 200, r.text
+    res2 = r.json()
+    assert res2["rate"] == 30.0
+    folio2 = client.get(f"/api/reservations/{res2['id']}/folio", headers=h).json()
+    assert folio2["total_charge"] == 60.0    # 2 小时 × 30
+
+    # 未配钟点价的房型仍不可按钟点售卖（铁律不因议价放开）
+    room3 = pick("观景大床房")
+    r = client.post("/api/reservations", headers=h, json={
+        "guest_name": "无钟点价客", "check_in": cin, "check_out": cout,
+        "room_id": room3["id"], "stay_type": "hourly", "hours": 4, "rate": 50,
+        "status": "confirmed",
+    })
+    assert r.status_code == 400
+    assert "未配置钟点价" in r.json()["detail"]

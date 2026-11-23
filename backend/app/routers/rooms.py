@@ -249,6 +249,7 @@ def rooms_board(
         block = {
             "id": res.id,
             "code": res.code,
+            "guest_id": res.guest_id,
             "guest_name": g.name if g else "",
             "channel_id": res.channel_id,
             "channel_name": ch.name if ch else "",
