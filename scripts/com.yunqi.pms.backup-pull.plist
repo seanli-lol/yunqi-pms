@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  云栖 PMS · 本机每日拉取服务器数据库备份（异地灾备）
+
+  为什么用 launchd 而不是 cron：macOS 上 cron 已废弃，且 launchd 支持
+  「错过时间后补跑」（StartCalendarInterval + 睡眠唤醒后补偿），笔记本合盖
+  错过 12:30 也能在下次唤醒时补上——cron 做不到这一点，会直接跳过。
+
+  时间：每天 12:30（本机 CST）。选这个点是因为服务器备份在
+  服务器 UTC 03:00 = 北京 11:00 生成，错开 1.5 小时确保当天备份已就绪。
+
+  安装：cp 本文件 ~/Library/LaunchAgents/ && launchctl load 它
+  卸载：launchctl unload ~/Library/LaunchAgents/com.yunqi.pms.backup-pull.plist
+  手动触发一次：launchctl start com.yunqi.pms.backup-pull
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.yunqi.pms.backup-pull</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/path/to/yunqi-pms/scripts/pull-backup.sh</string>
+    </array>
+
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>12</integer>
+        <key>Minute</key>
+        <integer>30</integer>
+    </dict>
+
+    <!-- 错过时间后尽快补跑（合盖/休眠场景） -->
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/yourname/Backups/yunqi-pms/pull.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/yourname/Backups/yunqi-pms/pull.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>HOME</key>
+        <string>/Users/yourname</string>
+    </dict>
+</dict>
+</plist>
