@@ -34,6 +34,8 @@ _MIGRATION_COLUMNS = [
     ("reservations", "stay_type", "VARCHAR(10) NOT NULL DEFAULT 'normal'"),
     ("reservations", "hours", "INTEGER NOT NULL DEFAULT 0"),
     ("reservations", "actual_check_out", "DATE NULL"),
+    # 钟点房到时提醒：实际入住时刻（DATETIME 含时分秒），办理入住写入、撤销入住清空
+    ("reservations", "actual_check_in", "DATETIME NULL"),
     ("guests", "id_number", "VARCHAR(40) NOT NULL DEFAULT ''"),
     ("payments", "remark", "VARCHAR(120) NOT NULL DEFAULT ''"),
 ]

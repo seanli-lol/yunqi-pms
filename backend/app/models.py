@@ -158,6 +158,9 @@ class Reservation(Base):
     check_out: Mapped[date] = mapped_column(Date)
     # 实际离店日：提前退房时早于 check_out（当天腾房，尾段/尾夜可续售）；正常退房等于 check_out；撤销退房清 NULL
     actual_check_out: Mapped[date | None] = mapped_column(Date, nullable=True)
+    # 实际入住时刻：钟点房「到时 = actual_check_in + hours」的口径来源；办理入住写入，
+    # 撤销入住清 NULL（再次入住覆盖）。整晚房不参与到时判断，但同样记录留痕
+    actual_check_in: Mapped[datetime | None] = mapped_column(DateTimeMS, nullable=True)
     # pending / confirmed / checked_in / checked_out / cancelled / no_show
     status: Mapped[str] = mapped_column(String(20), default="confirmed")
     channel_id: Mapped[int | None] = mapped_column(ForeignKey("channels.id"), nullable=True)

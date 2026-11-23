@@ -1746,3 +1746,81 @@ def test_chain_merge():
     h2 = _headers(_login("xumin", hotel_id=mogan["id"])["token"])
     assert client.post("/api/reservations/merge-chain", headers=h2,
                        json={"ids": [g1["id"], g2["id"]]}).status_code == 404
+
+
+def test_hourly_overtime_alert():
+    """钟点房到时提醒：actual_check_in 生命周期 + board 超时字段 + /overtime 端点"""
+    from datetime import date, datetime, timedelta
+
+    from app.models import Reservation
+
+    tok = _login("zhouqi", hotel_id=1)["token"]
+    h = _headers(tok)
+    types = {t["name"]: t for t in client.get("/api/room-types", headers=h).json()}
+    cin = date.today().isoformat()
+    cout = (date.today() + timedelta(days=1)).isoformat()
+
+    def pick(type_name):
+        t = types[type_name]
+        av = client.get(
+            f"/api/rooms/available?room_type_id={t['id']}&check_in={cin}&check_out={cout}"
+            f"&include_dirty=1&allow_prev_guest=1", headers=h).json()
+        idle = [x for x in av if x["status"] in ("vacant_clean", "vacant_dirty")]
+        assert idle, f"{type_name} 无可用空房"
+        return idle[0]
+
+    room = pick("双床房")  # 大床房空位被前面的测试耗尽，双床房同样配了钟点档位
+    r = client.post("/api/reservations", headers=h, json={
+        "guest_name": "到时客", "check_in": cin, "check_out": cout,
+        "room_id": room["id"], "stay_type": "hourly", "hours": 3, "status": "confirmed",
+    })
+    assert r.status_code == 200, r.text
+    res_id = r.json()["id"]
+
+    # 入住 → actual_check_in 写入 = now，此时未超时
+    assert client.post(f"/api/reservations/{res_id}/check-in", headers=h,
+                       json={"room_id": room["id"]}).status_code == 200
+    board = client.get(f"/api/rooms/board?start={cin}&days=1", headers=h).json()
+    blk = next(b for grp in board["groups"] for room_ in grp["rooms"]
+               for b in room_["blocks"] if b["id"] == res_id)
+    assert blk["overtime_minutes"] == 0
+    assert blk["due_at"].startswith(cin)
+
+    # 回拨入住时刻 4 小时 → 超时约 60 分钟：board 超时字段 + /overtime 端点命中
+    db = SessionLocal()
+    db.query(Reservation).filter(Reservation.id == res_id).update(
+        {"actual_check_in": datetime.now() - timedelta(hours=4)})
+    db.commit()
+    db.close()
+    board = client.get(f"/api/rooms/board?start={cin}&days=1", headers=h).json()
+    blk = next(b for grp in board["groups"] for room_ in grp["rooms"]
+               for b in room_["blocks"] if b["id"] == res_id)
+    assert 55 <= blk["overtime_minutes"] <= 70
+    ot = client.get("/api/reservations/overtime", headers=h).json()
+    hit = next((x for x in ot if x["reservation_id"] == res_id), None)
+    assert hit is not None
+    assert hit["room_number"] == room["room_number"] and hit["hours"] == 3
+    assert 55 <= hit["overtime_minutes"] <= 70
+    assert hit["due_at"].startswith(cin)
+
+    # 撤销入住 → 时刻清空，退出超时列表
+    assert client.post(f"/api/reservations/{res_id}/undo-check-in", headers=h).status_code == 200
+    ot = client.get("/api/reservations/overtime", headers=h).json()
+    assert all(x["reservation_id"] != res_id for x in ot)
+    db = SessionLocal()
+    assert db.get(Reservation, res_id).actual_check_in is None
+    db.close()
+
+    # 再入住 → 时刻重新写入（= now，未超时）；再退房 → 退出列表
+    assert client.post(f"/api/reservations/{res_id}/check-in", headers=h,
+                       json={"room_id": room["id"]}).status_code == 200
+    ot = client.get("/api/reservations/overtime", headers=h).json()
+    assert all(x["reservation_id"] != res_id for x in ot)
+    assert client.post(f"/api/reservations/{res_id}/check-out", headers=h,
+                       json={"force": True}).status_code == 200
+    ot = client.get("/api/reservations/overtime", headers=h).json()
+    assert all(x["reservation_id"] != res_id for x in ot)
+
+    # 种子的超时演示单（301）应出现在超时列表里（seed 相对 now 回溯 140 分钟）
+    seeded = [x for x in client.get("/api/reservations/overtime", headers=h).json()]
+    assert any(x["room_number"] == "301" for x in seeded)

@@ -1,5 +1,5 @@
 """房型 / 客房管理 + 房态盘（日历与单日网格共用的聚合接口）"""
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
@@ -313,6 +313,17 @@ def rooms_board(
             # 提前退房截断标记（False = 正常占满原订区间）
             "truncated": False,
         }
+        # 钟点房到时提醒：到时 = 实际入住时刻 + 购买小时数。仅 checked_in 计算，
+        # overtime_minutes > 0 即前端「超时」态（延住会把 hours 累加 → 到时自动后移）
+        if res.stay_type == "hourly":
+            check_in_at = res.actual_check_in
+            if res.status == "checked_in" and check_in_at is not None:
+                due = check_in_at + timedelta(hours=res.hours)
+                now = datetime.now()
+                over_min = max(0, int((now - due).total_seconds() // 60))
+                block["check_in_at"] = check_in_at.isoformat()
+                block["due_at"] = due.isoformat()
+                block["overtime_minutes"] = over_min
         blocks_by_room.setdefault(res.room_id, []).append(block)
         # 提前退房截断：灰块止于实际离店日（该日只压左 1/3，表示白天仍占房、下午腾空）。
         # 原「可售」虚纹已退役——截断后右侧空白即可售；当日入住当日退的窄存根

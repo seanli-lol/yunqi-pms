@@ -180,6 +180,9 @@ export interface CalBlock {
   // 前端合并「同一客人、同一房、日期首尾相接」的连住预订后合成的展示方块（后端不产出）：
   // chain = 被合并的多笔原订单（按 check_in 升序），length>0 即表示这是合并长条
   chain?: CalBlock[]
+  // 钟点房到时提醒（仅 checked_in 钟点单输出）：到时 = 实际入住时刻 + 购买小时数，
+  // overtime_minutes > 0 即「已超时」（前端整块变红 + 右下角提醒卡）
+  check_in_at?: string; due_at?: string; overtime_minutes?: number
 }
 export interface BoardRoom {
   id: number; number: string; floor: number; status: string; notes: string
@@ -212,6 +215,13 @@ export interface Reservation {
   operator_name: string | null; created_at: string
 }
 export interface OpLog { id: number; time: string; action: string; summary: string; operator: string }
+/** 钟点房到时提醒行（GET /api/reservations/overtime，30s 轮询；按超时降序） */
+export interface HourlyOvertimeItem {
+  reservation_id: number; code: string; room_number: string
+  guest_name: string; channel_name: string
+  hours: number; check_in_at: string; due_at: string; overtime_minutes: number
+  balance_due: number
+}
 /** 在住登记信息更正（字段为 null 表示不修改） */
 export interface RegistrationBody {
   guest_name?: string

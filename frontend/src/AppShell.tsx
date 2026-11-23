@@ -9,6 +9,7 @@ import { api, type DashData, type Hotel } from './api'
 import { Overlay } from './ui'
 import { useAuth } from './auth'
 import { useTheme, type ThemeMode } from './theme'
+import OvertimeAlert from './OvertimeAlert'
 
 /** 导航项：desc 是 hover 提示（顶栏只有标题，说明不占版面） */
 type NavItem = {
@@ -346,6 +347,9 @@ export default function AppShell() {
       <main className={loc.pathname === '/rooms' ? 'main main-bleed' : 'main'}>
         <Outlet />
       </main>
+
+      {/* 钟点房到时提醒卡：全局右下角（任何页面可见，portal 挂 body） */}
+      <OvertimeAlert />
 
       <AccountSheet
         open={accountOpen}

@@ -5,6 +5,7 @@ from datetime import date, datetime, timedelta
 from sqlalchemy.orm import Session
 
 from app import config
+from app.deps import fmt_money, money
 from app.models import (Channel, FolioItem, Guest, Hotel, HourlyRate,
                         OperationLog, Payment, Reservation, Room, RoomType, User)
 from app.security import encrypt_field, hash_password
@@ -135,7 +136,7 @@ def ensure_seed(db: Session) -> None:
     room_by_no = {r.room_number: r for r in rooms_x}
 
     # 房态：在住 / 空脏（维修功能已下线，不再产生维修房）
-    occupied_nos = {"201", "202", "203", "205", "206", "207", "209", "302", "304", "305",
+    occupied_nos = {"201", "202", "203", "205", "206", "207", "209", "301", "302", "304", "305",
                     "308", "309", "401", "402", "404", "406", "408", "502", "504", "506", "507"}
     dirty_nos = {"204", "208", "303", "403", "501"}
     for r in rooms_x:
@@ -246,8 +247,6 @@ def ensure_seed(db: Session) -> None:
     res_list.append(add_res("赵磊", "209", 0, 1, "前台（自来客）", deposit=1000))
     res_list.append(add_res("朱琳", "302", 0, 3, "美团", deposit=1440))
     res_list.append(add_res("陈晨", "304", -2, 2, "携程", deposit=1500))
-    res_list.append(add_res("马俊", "305", -2, 0, "美团", deposit=1160))
-    res_list.append(add_res("彭飞", "308", -2, 0, "美团", deposit=960))
     res_list.append(add_res("杜鹃", "309", 0, 3, "微信小程序", deposit=2040))
     res_list.append(add_res("许娜", "401", -2, 0, "官网", deposit=960))
     r_wangfang = add_res("王芳", "402", -2, 1, "携程", deposit=900,
@@ -303,6 +302,46 @@ def ensure_seed(db: Session) -> None:
     f_gaoyuan.description = "房费 · 2 晚 × ¥580（提前退房按实住结算）"
     db.add(Payment(hotel_id=hx.id, reservation_id=r_gaoyuan.id, method="wechat",
                    amount=2 * 580, created_by=u_qi.id, created_at=_dt(0, 11, 32)))
+
+    # ---------- 钟点房到时提醒演示单（2026-11-23） ----------
+    # 两笔今天入住的钟点房：305 未到时（在住蓝）+ 301 已超时约 20 分钟（网格红块 +
+    # 右下角提醒卡演示）。入住时刻相对 now 回溯——任何时候种库都稳定成立。
+    # 口径同 create_reservation：rate = 每小时单价（档位总价 ÷ 小时数），账目 = hours × rate。
+    def add_hourly_res(gname, room_no, hours, checked_in_minutes_ago, overdue=False):
+        room = room_by_no[room_no]
+        rt = types_x[[k for k, v in types_x.items() if v.id == room.room_type_id][0]]
+        tiers = {t.hours: t.price for t in db.query(HourlyRate).filter(HourlyRate.room_type_id == rt.id).all()}
+        unit = money((tiers[hours] if hours in tiers else max(tiers.values())) / hours)
+        cin_at = datetime.now() - timedelta(minutes=checked_in_minutes_ago)
+        r = Reservation(
+            hotel_id=hx.id, code="TMP" + uuid.uuid4().hex[:10],
+            guest_id=g_map[gname].id, room_type_id=room.room_type_id, room_id=room.id,
+            check_in=_d(0), check_out=_d(1), status="checked_in",
+            channel_id=ch["美团"].id, rate=unit, stay_type="hourly", hours=hours,
+            created_by=u_qi.id, created_at=cin_at, actual_check_in=cin_at,
+        )
+        db.add(r)
+        db.flush()
+        r.code = f"YQ{_d(0):%Y%m%d}{r.id:04d}"
+        db.add(FolioItem(hotel_id=hx.id, reservation_id=r.id, category="room_charge",
+                         description=f"钟点房费 · {hours} 小时 × ¥{fmt_money(unit)}",
+                         amount=money(hours * unit), created_by=u_qi.id, created_at=cin_at))
+        db.add(OperationLog(hotel_id=hx.id, user_id=u_qi.id, operator_name=u_qi.name,
+                            action="check_in", object_type="reservation", object_id=r.id,
+                            summary=f"办理入住 {gname} · {r.code} · 分配 {room_no} {rt.name}",
+                            created_at=cin_at))
+        return r
+
+    r_ot_in = add_hourly_res("马俊", "305", 3, checked_in_minutes_ago=60)     # 3h 档，1h 前入住 → 还有 2h
+    r_ot_over = add_hourly_res("张敏", "301", 2, checked_in_minutes_ago=140, overdue=True)  # 2h 档，140 分前入住 → 超时 20 分
+    r_ot_over2 = add_hourly_res("彭飞", "308", 2, checked_in_minutes_ago=95)  # 2h 档，95 分前入住 → 超时 15 分
+    # 305 结清（不欠款）；301 未结清 → 提醒卡「欠款」栏与网格「欠」徽章的演示数据
+    db.add(Payment(hotel_id=hx.id, reservation_id=r_ot_in.id, method="wechat",
+                   amount=money(r_ot_in.hours * r_ot_in.rate), created_by=u_qi.id,
+                   created_at=datetime.now() - timedelta(minutes=55)))
+    db.add(Payment(hotel_id=hx.id, reservation_id=r_ot_over2.id, method="cash",
+                   amount=money(r_ot_over2.hours * r_ot_over2.rate), created_by=u_qi.id,
+                   created_at=datetime.now() - timedelta(minutes=90)))
 
     # ---------- 今日操作日志（单日明细演示） ----------
     logs = [

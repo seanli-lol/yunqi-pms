@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
+import { useLocation, useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ChevronRight, Clock, X } from 'lucide-react'
+import { AlarmClock, ChevronRight, Clock, X } from 'lucide-react'
 import {
   api, addDaysIso, fmtMoney, maskPhone, md, mdt, moneyInputText, payMethodLabel, round2, todayIso,
   ROOM_STATUS_LABEL, OP_ACTION_LABEL, OP_ACTION_COLOR,
@@ -185,6 +186,18 @@ export default function Rooms() {
   const [view, setView] = useState<'cal' | 'grid'>('cal')
   const [start, setStart] = useState(addDaysIso(todayIso(), -2))
   const [detailRes, setDetailRes] = useState<Reservation | null>(null)
+  // 右下角到时提醒卡深链：其他页面点提醒行 → navigate('/rooms', { state: { openResId } })，
+  // 挂载后开对应订单详情抽屉并清掉 state（刷新/前进后退不再重开）
+  const location = useLocation()
+  const navigate = useNavigate()
+  useEffect(() => {
+    const openId = (location.state as { openResId?: number } | null)?.openResId
+    if (openId) {
+      setDetailRes({ id: openId } as Reservation)
+      navigate(location.pathname, { replace: true, state: null })
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [location.state])
   const [vacantRoom, setVacantRoom] = useState<Room | null>(null)
   /** 多房预订：null = 关闭；lines 可累积多间（点空白格/拖选追加） */
   const [booking, setBooking] = useState<{ lines: BookingLine[] } | null>(null)
@@ -1017,6 +1030,9 @@ export default function Rooms() {
                         // 钟点房用右上角钟表图标表达（不再写「· 钟点」文字）；退房后图标撤掉，
                         // 该格回到既有「提前退房」角标（当日退的钟点房本来就走 layout.deps，不画方块）
                         const hourlyLive = hourly && b.status !== 'checked_out'
+                        // 已到时（购买小时数用完）：整块变红 + 钟表换闹钟轻脉冲；
+                        // 延住（hours 累加）会自动后移到时，超时态随之解除
+                        const overtime = hourlyLive && (b.overtime_minutes ?? 0) > 0
                         // 欠/超徽章（与下面的渲染条件同口径）：钟点方块要按它给姓名让出额外宽度
                         const hasBadge = (b.status === 'checked_in' || b.status === 'checked_out') && b.balance_due > 0
                           || b.paid_total > b.items_total
@@ -1031,7 +1047,7 @@ export default function Rooms() {
                         return (
                           <div
                             key={b.id}
-                            className={`cal-block ${cls}${hourlyLive ? ' hourly' : ''}${hourlyLive && hasBadge ? ' has-badge' : ''}${hourlyLive && colHasDep ? ' has-dep' : ''}${b.truncated && b.stub_cut ? ' truncated' : ''}${laneCls}${chained ? ' chain' : ''}`}
+                            className={`cal-block ${cls}${hourlyLive ? ' hourly' : ''}${overtime ? ' overtime' : ''}${hourlyLive && hasBadge ? ' has-badge' : ''}${hourlyLive && colHasDep ? ' has-dep' : ''}${b.truncated && b.stub_cut ? ' truncated' : ''}${laneCls}${chained ? ' chain' : ''}`}
                             data-res-id={b.id}
                             style={{ gridColumn: `${b.col_start + 2} / span ${span}`, ['--src' as any]: b.channel_color }}
                             title={chainTitle ?? (b.truncated ? `${b.guest_name} · 已离店（${b.check_in.slice(5).replace('-', '/')} 入住，原订至 ${b.check_out.slice(5).replace('-', '/')}，实际已提前退房）` : undefined)}
@@ -1071,10 +1087,17 @@ export default function Rooms() {
                                 : hourly ? `${b.hours ?? 0} 小时` : b.channel_name}
                             </span>
                             {/* 钟点房：右上角钟表图标（代替「· 钟点」文字）；退房后不显示，
-                                改由该格既有的「退房」角标表达提前退房 */}
+                                改由该格既有的「退房」角标表达提前退房。
+                                已到时换闹钟并轻脉冲（CSS .overtime .cal-hour），tooltip 带超时分钟数 */}
                             {hourlyLive && (
-                              <span className="cal-hour" title={`钟点房 · ${b.hours ?? 0} 小时`} aria-label={`钟点房 ${b.hours ?? 0} 小时`}>
-                                <Clock size={13} strokeWidth={2.2} />
+                              <span
+                                className="cal-hour"
+                                title={overtime
+                                  ? `钟点房已到时 · 购买 ${b.hours ?? 0} 小时，已超时 ${b.overtime_minutes} 分钟`
+                                  : `钟点房 · ${b.hours ?? 0} 小时`}
+                                aria-label={overtime ? `钟点房已到时，超时 ${b.overtime_minutes} 分钟` : `钟点房 ${b.hours ?? 0} 小时`}
+                              >
+                                {overtime ? <AlarmClock size={13} strokeWidth={2.2} /> : <Clock size={13} strokeWidth={2.2} />}
                               </span>
                             )}
                             {(b.status === 'checked_in' || b.status === 'checked_out') && b.balance_due > 0 && <span className="owe">欠</span>}
@@ -1136,7 +1159,7 @@ export default function Rooms() {
       </div>
       </div>
           <p className="hint mt-16 cal-legend">
-            图例：<Badge color="blue">在住</Badge> <Badge color="orange">未来抵店</Badge> <Badge color="red">欠</Badge> 在住/已离店未结清 · <Badge color="purple">超</Badge> 实付超过应收（多收待退）· 灰块 = 已离店（离店日格子只压左 1/3，当天下午起腾空，空白即可售，含当日钟点房）· 方块右上角<b style={{ color: 'var(--text-primary)' }}>钟表图标</b> = 钟点房（时长见方块第二行「渠道 · 时长」，退房后不再显示、改显格子右上角退房图标）· 格子右上角<b style={{ color: 'var(--text-primary)' }}>退房图标</b> = 当日有客人退房，悬停看明细、<b>点按展开详情并可编辑</b>（更正实收 / 撤销退房；同列有方块时让位到右下角）·
+            图例：<Badge color="blue">在住</Badge> <Badge color="orange">未来抵店</Badge> <Badge color="red">欠</Badge> 在住/已离店未结清 · <Badge color="purple">超</Badge> 实付超过应收（多收待退）· 灰块 = 已离店（离店日格子只压左 1/3，当天下午起腾空，空白即可售，含当日钟点房）· 方块右上角<b style={{ color: 'var(--text-primary)' }}>钟表图标</b> = 钟点房（时长见方块第二行「渠道 · 时长」，退房后不再显示、改显格子右上角退房图标）· <b style={{ color: 'var(--danger-deep)' }}>方块变红 + 闹钟图标</b> = 钟点房已到时（超时分钟数见右下角提醒卡，延住/退房后自动恢复）· 格子右上角<b style={{ color: 'var(--text-primary)' }}>退房图标</b> = 当日有客人退房，悬停看明细、<b>点按展开详情并可编辑</b>（更正实收 / 撤销退房；同列有方块时让位到右下角）·
             方块最前端竖条颜色 = 预订来源（可在「设置 → 来源渠道」配置）。<b>拖动方块换房/改期（冲突自动回弹）· 点击空白格直接开单 · 房号旁「设净/设脏」一键切换房态</b>。
             <b>同一客人同房首尾相接的多笔预订自动合并为一笔订单</b>（新开单直接并入原单；存量逐笔单点长条看明细并可「合并为一笔」，合并后与普通多晚订单完全一致，点开即订单详情）。
           </p>

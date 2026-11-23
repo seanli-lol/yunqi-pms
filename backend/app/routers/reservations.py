@@ -1,11 +1,11 @@
 """预订全流程：创建（按房型或锁定房号）、拖动改期/换房、入住、退房结算、账目与收款"""
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.db import get_db
-from app.deps import (balance_of, blocking_ids, fmt_money, free_rooms,
+from app.deps import (balance_of, blocking_ids, fmt_money, folio_totals, free_rooms,
                       get_current_user, log_op, money, resolve_hotel_id)
 from app.models import (Channel, FolioItem, Guest, HourlyRate, OperationLog,
                         Payment, Reservation, Room, RoomType, User)
@@ -502,6 +502,50 @@ def cancel_reservation(res_id: int, user: User = Depends(get_current_user), db: 
     return res_out(db, r)
 
 
+# ---------- 钟点房到时列表（右下角提醒卡轮询源） ----------
+@router.get("/overtime")
+def hourly_overtime(user: User = Depends(get_current_user), db: Session = Depends(get_db),
+                    hotel_id: int | None = Query(default=None)):
+    """本店当前已到时的在住钟点房（now > 实际入住时刻 + 购买小时数），按超时降序。
+
+    前端 OvertimeAlert 每 30s 轮询本端点；延住（hours 累加）/撤销入住（时刻清空）/
+    退房（状态离开 checked_in）都会让预订自然退出本列表。"""
+    hid = resolve_hotel_id(user, hotel_id)
+    if hid is None:
+        return []
+    rows = (db.query(Reservation)
+            .filter(Reservation.hotel_id == hid,
+                    Reservation.stay_type == "hourly",
+                    Reservation.status == "checked_in",
+                    Reservation.actual_check_in.isnot(None))
+            .all())
+    now = datetime.now()
+    out = []
+    for r in rows:
+        due = r.actual_check_in + timedelta(hours=r.hours)
+        over_min = int((now - due).total_seconds() // 60)
+        if over_min <= 0:
+            continue
+        room = db.get(Room, r.room_id) if r.room_id else None
+        g = db.get(Guest, r.guest_id)
+        ch = db.get(Channel, r.channel_id) if r.channel_id else None
+        items_total, paid_total = folio_totals(db, r.id)
+        out.append({
+            "reservation_id": r.id,
+            "code": r.code,
+            "room_number": room.room_number if room else "",
+            "guest_name": g.name if g else "",
+            "channel_name": ch.name if ch else "",
+            "hours": r.hours,
+            "check_in_at": r.actual_check_in.isoformat(),
+            "due_at": due.isoformat(),
+            "overtime_minutes": over_min,
+            "balance_due": max(0.0, money(items_total - paid_total)),
+        })
+    out.sort(key=lambda x: -x["overtime_minutes"])
+    return out
+
+
 # ---------- 入住 ----------
 @router.post("/{res_id}/check-in")
 def check_in(res_id: int, body: CheckInBody, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
@@ -530,6 +574,9 @@ def check_in(res_id: int, body: CheckInBody, user: User = Depends(get_current_us
     prev_status = room.status  # 覆盖前留档：脏房/前客在住要写进日志
     r.room_id = room.id
     r.status = "checked_in"
+    # 实际入住时刻：钟点房到时提醒的口径（到时 = actual_check_in + hours）；撤销入住清空，
+    # 撤销后再入住自然覆盖（多次重办取最后一次）
+    r.actual_check_in = datetime.now()
     room.status = "occupied"
 
     if body.amount_received > 0:
@@ -646,6 +693,7 @@ def undo_check_in(res_id: int, user: User = Depends(get_current_user), db: Sessi
 
     # 款项保留：只有「取消预订」才清除已收款（撤销入住/撤销退房均不动 payments）
     r.status = "confirmed"
+    r.actual_check_in = None  # 到时提醒口径随之失效；再入住会重新写入
 
     # 同房还有其他在住客人（前客未退场景）时不动房态，否则退回空脏待清洁
     other_guests = []
