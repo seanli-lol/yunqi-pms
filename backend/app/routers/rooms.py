@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.db import get_db
-from app.deps import (dates_overlap, fmt_money, free_rooms, get_current_user,
+from app.deps import (can_access_hotel, dates_overlap, fmt_money, free_rooms, get_current_user,
                       log_op, money, resolve_hotel_id)
 from app.models import Channel, Guest, HourlyRate, Hotel, Reservation, Room, RoomType
 from app.schemas import HourlyRateOut, RoomBody, RoomOut, RoomPatch, RoomTypeBody, RoomTypeOut
@@ -48,7 +48,7 @@ def _tiers_tag(tiers: list[HourlyRate]) -> str:
 # ---------- 房型 ----------
 @router.get("/room-types", response_model=list[RoomTypeOut])
 def list_room_types(hotel_id: int | None = None, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    hid = resolve_hotel_id(user, hotel_id)
+    hid = resolve_hotel_id(db, user, hotel_id)
     types = db.query(RoomType).filter(RoomType.hotel_id == hid).order_by(RoomType.id).all()
     out = []
     for t in types:
@@ -64,7 +64,7 @@ def list_room_types(hotel_id: int | None = None, user: User = Depends(get_curren
 @router.post("/room-types", response_model=RoomTypeOut)
 def create_room_type(body: RoomTypeBody, hotel_id: int | None = None,
                      user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    hid = resolve_hotel_id(user, hotel_id)
+    hid = resolve_hotel_id(db, user, hotel_id)
     t = RoomType(hotel_id=hid, name=body.name.strip(), base_price=body.base_price,
                  hourly_price=body.hourly_price, capacity=body.capacity, description=body.description)
     db.add(t)
@@ -85,7 +85,7 @@ def create_room_type(body: RoomTypeBody, hotel_id: int | None = None,
 def patch_room_type(type_id: int, body: RoomTypeBody,
                     user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     t = db.get(RoomType, type_id)
-    if not t or (user.role != "platform_admin" and t.hotel_id != user.hotel_id):
+    if not t or (not can_access_hotel(db, user, t.hotel_id)):
         raise HTTPException(404, "房型不存在")
     t.name, t.base_price, t.hourly_price, t.capacity, t.description = (
         body.name.strip(), body.base_price, body.hourly_price, body.capacity, body.description)
@@ -104,7 +104,7 @@ def patch_room_type(type_id: int, body: RoomTypeBody,
 @router.delete("/room-types/{type_id}")
 def delete_room_type(type_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     t = db.get(RoomType, type_id)
-    if not t or (user.role != "platform_admin" and t.hotel_id != user.hotel_id):
+    if not t or (not can_access_hotel(db, user, t.hotel_id)):
         raise HTTPException(404, "房型不存在")
     if db.query(Room).filter(Room.room_type_id == type_id).count():
         raise HTTPException(400, "该房型下仍有客房，不可删除")
@@ -118,7 +118,7 @@ def delete_room_type(type_id: int, user: User = Depends(get_current_user), db: S
 # ---------- 客房 ----------
 @router.get("/rooms", response_model=list[RoomOut])
 def list_rooms(hotel_id: int | None = None, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    hid = resolve_hotel_id(user, hotel_id)
+    hid = resolve_hotel_id(db, user, hotel_id)
     rooms = (db.query(Room, RoomType)
              .join(RoomType, Room.room_type_id == RoomType.id)
              .filter(Room.hotel_id == hid)
@@ -132,7 +132,7 @@ def list_rooms(hotel_id: int | None = None, user: User = Depends(get_current_use
 @router.post("/rooms", response_model=RoomOut)
 def create_room(body: RoomBody, hotel_id: int | None = None,
                 user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    hid = resolve_hotel_id(user, hotel_id)
+    hid = resolve_hotel_id(db, user, hotel_id)
     t = db.get(RoomType, body.room_type_id)
     if not t or t.hotel_id != hid:
         raise HTTPException(400, "房型不存在")
@@ -151,7 +151,7 @@ def create_room(body: RoomBody, hotel_id: int | None = None,
 @router.patch("/rooms/{room_id}", response_model=RoomOut)
 def patch_room(room_id: int, body: RoomPatch, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     r = db.get(Room, room_id)
-    if not r or (user.role != "platform_admin" and r.hotel_id != user.hotel_id):
+    if not r or (not can_access_hotel(db, user, r.hotel_id)):
         raise HTTPException(404, "客房不存在")
     # 局部更新口径：null = 不改；纯房态切换沿用 room_status 日志（操作列下拉），客房信息编辑记 room_update
     changed = []
@@ -206,7 +206,7 @@ def patch_room(room_id: int, body: RoomPatch, user: User = Depends(get_current_u
 @router.delete("/rooms/{room_id}")
 def delete_room(room_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     r = db.get(Room, room_id)
-    if not r or (user.role != "platform_admin" and r.hotel_id != user.hotel_id):
+    if not r or (not can_access_hotel(db, user, r.hotel_id)):
         raise HTTPException(404, "客房不存在")
     if db.query(Reservation).filter(Reservation.room_id == room_id).count():
         raise HTTPException(400, "该客房有历史预订，不可删除")
@@ -226,7 +226,7 @@ def available_rooms(room_type_id: int, check_in: str, check_out: str,
                     allow_prev_guest: int | None = None,
                     hotel_id: int | None = None,
                     user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    hid = resolve_hotel_id(user, hotel_id)
+    hid = resolve_hotel_id(db, user, hotel_id)
     cin = date.fromisoformat(check_in)
     cout = date.fromisoformat(check_out)
     if cout <= cin:
@@ -253,7 +253,7 @@ def rooms_board(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    hid = resolve_hotel_id(user, hotel_id)
+    hid = resolve_hotel_id(db, user, hotel_id)
     days = max(1, min(60, days))
     start_d = date.fromisoformat(start) if start else date.today() - timedelta(days=2)
     end_d = start_d + timedelta(days=days)

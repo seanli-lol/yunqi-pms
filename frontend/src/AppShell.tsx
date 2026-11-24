@@ -170,14 +170,16 @@ export default function AppShell() {
   const nav = useNavigate()
   const { user, activeHotelName, activeHotelId, setActiveHotel, logout } = useAuth()
 
-  // 平台管理员可操作的酒店全列表（与设置页共用 ['hotels'] 缓存）
+  // 谁能看到顶栏切店：超级管理员恒可；员工绑定 ≥2 家酒店（登录后切换所属店）
+  const canSwitch = user?.role === 'platform_admin' || (user?.hotel_ids?.length ?? 0) > 1
+  // 可操作的酒店全列表（与设置页共用 ['hotels'] 缓存；后端已按绑定集合过滤）
   const hotels = useQuery({
     queryKey: ['hotels'],
     queryFn: () => api.get<Hotel[]>('/api/hotels'),
-    enabled: user?.role === 'platform_admin',
+    enabled: canSwitch,
   })
   // 导航待办计数：与仪表盘共用 ['dashboard'] 缓存。
-  // 平台管理员首次登录尚未选店时没有业务上下文（后端 400），先挡掉。
+  // 超级管理员首次登录尚未选店时没有业务上下文（后端 400），先挡掉。
   const dash = useQuery({
     queryKey: ['dashboard'],
     queryFn: () => api.get<DashData>('/api/dashboard'),
@@ -192,7 +194,7 @@ export default function AppShell() {
     }
   }, [user, activeHotelId, hotels.data, setActiveHotel])
   // 角色 + 去掉「云栖酒店 · 」前缀的门店名（顶栏 title 与账号面板共用同一口径）。
-  // 平台管理员的账号名常就叫「平台管理员」，副行必须带上当前门店，否则两行完全重复。
+  // 超级管理员的账号名常就叫「超级管理员」，副行必须带上当前门店，否则两行完全重复。
   const roleLine = `${user?.role_label ?? ''}${
     activeHotelName
       ? ` · ${activeHotelName.replace('云栖酒店 · ', '')}`
@@ -260,8 +262,8 @@ export default function AppShell() {
 
         <span className="topbar-div" aria-hidden="true" />
 
-        {/* 平台管理员专属：门店切换常驻顶栏，品牌名与业务上下文同步更新 */}
-        {user?.role === 'platform_admin' && (
+        {/* 可切店账号（超级管理员 / 多店员工）：门店切换常驻顶栏，品牌名与业务上下文同步更新 */}
+        {canSwitch && (
           <label className="topbar-hotel">
             <select
               className="select"
@@ -355,7 +357,7 @@ export default function AppShell() {
         open={accountOpen}
         onClose={() => setAccountOpen(false)}
         roleLine={roleLine}
-        hotelSwitch={user?.role === 'platform_admin' ? (
+        hotelSwitch={canSwitch ? (
           <select className="select" value={activeHotelId ?? ''} onChange={onSwitchHotel} aria-label="切换酒店">
             {hotelOptions}
           </select>

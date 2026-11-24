@@ -35,7 +35,7 @@ class User(Base):
     __tablename__ = "users"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    hotel_id: Mapped[int | None] = mapped_column(ForeignKey("hotels.id"), nullable=True)
+    hotel_id: Mapped[int | None] = mapped_column(ForeignKey("hotels.id"), nullable=True)  # 主店（登录后默认进入；platform_admin 为 NULL）
     username: Mapped[str] = mapped_column(String(40), unique=True)
     password_hash: Mapped[str] = mapped_column(String(200))
     name: Mapped[str] = mapped_column(String(40))
@@ -43,6 +43,19 @@ class User(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     last_login_at: Mapped[datetime | None] = mapped_column(DateTimeMS, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTimeMS, default=datetime.now)
+
+
+class UserHotel(Base):
+    """账号-酒店绑定：员工可绑定多家酒店（users.hotel_id 恒为绑定集内的主店）。
+
+    username 全局唯一，不存在同名跨店账号；绑定集合 = 本表全部行（主店兜底，
+    缺行时由 deps.bound_hotel_ids 以 users.hotel_id 回填）。存量单店用户只有 1 行，
+    行为与改造前完全一致。platform_admin 不参与绑定（恒可访问全部门店）。
+    """
+    __tablename__ = "user_hotels"
+
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), primary_key=True)
+    hotel_id: Mapped[int] = mapped_column(ForeignKey("hotels.id"), primary_key=True)
 
 
 class RefreshToken(Base):

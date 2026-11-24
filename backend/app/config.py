@@ -105,7 +105,7 @@ ROOM_STATUSES = ("vacant_clean", "vacant_dirty", "occupied", "maintenance")
 RES_STATUSES = ("pending", "confirmed", "checked_in", "checked_out", "cancelled", "no_show")
 USER_ROLES = ("platform_admin", "admin", "receptionist", "housekeeper")
 ROLE_LABELS = {
-    "platform_admin": "平台管理员",
+    "platform_admin": "超级管理员",
     "admin": "管理员",
     "receptionist": "前台",
     "housekeeper": "客房部",

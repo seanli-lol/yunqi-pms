@@ -9,6 +9,8 @@ export interface LoginUser {
   role_label: string
   hotel_id: number | null
   hotel_name: string | null
+  /** 员工可访问的酒店 id 集合（主店在前）；platform_admin 为空数组（恒可访问全部） */
+  hotel_ids?: number[]
 }
 
 let token: string | null = localStorage.getItem('pms_token')
@@ -53,10 +55,22 @@ export function clearAuthStorage() {
   localStorage.removeItem('pms_active_hotel')
 }
 
-/** 平台管理员登录后注册当前操作酒店（业务接口自动带 hotel_id） */
+/** 平台管理员/多店员工登录后注册当前操作酒店（业务接口自动带 hotel_id） */
 export function setHotelResolver(fn: () => number | null) {
   hotelResolver = fn
 }
+
+// 模块加载即从 localStorage 恢复上一次操作酒店：AuthProvider 的 useEffect 是异步恢复，
+// 而页面子组件的 react-query 在挂载时就发首波请求——不在这里同步兜底，刷新后首屏
+// 会以「无 hotel_id」请求、后端回落主店，切店后刷新一瞬显示回主店数据（真机踩过）。
+hotelResolver = (() => {
+  try {
+    const raw = localStorage.getItem('pms_active_hotel')
+    if (!raw) return hotelResolver
+    const active = JSON.parse(raw) as { id: number | null }
+    return active?.id != null ? () => active.id : hotelResolver
+  } catch { return hotelResolver }
+})()
 
 export class ApiError extends Error {
   status: number
@@ -260,9 +274,12 @@ export interface DashData {
   departure_items: Reservation[]
   unpaid_items: Reservation[]
 }
+export interface HotelBrief { id: number; name: string }
 export interface UserRow {
   id: number; name: string; username: string; role: string; role_label: string
   hotel_id: number | null; hotel_name: string | null; is_active: boolean; last_login_at: string | null
+  /** 绑定酒店集合（主店在前）；platform_admin 为空数组 */
+  hotels?: HotelBrief[]
 }
 
 /** 金额显示：统一两位小数（保留到分） */

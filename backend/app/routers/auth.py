@@ -1,4 +1,4 @@
-"""认证：酒店员工（酒店+账号+密码）/ 平台管理员（账号+密码）登录 + 滑块验证码 + 刷新令牌续期"""
+"""认证：账号密码直登（员工默认主店，绑定多店登录后切换）+ 滑块验证码 + 刷新令牌续期"""
 import time
 from collections import defaultdict, deque
 from datetime import datetime, timedelta
@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 import app.captcha as captcha
 from app.config import JWT_EXPIRE_HOURS, REFRESH_TOKEN_DAYS, ROLE_LABELS
-from app.deps import get_current_user
+from app.deps import bound_hotel_ids, get_current_user
 from app.db import get_db
 from app.models import Hotel, RefreshToken, User
 from app.schemas import (
@@ -79,6 +79,7 @@ def _login_result(db: Session, user: User, hotel_name: str | None) -> LoginResul
             role_label=ROLE_LABELS.get(user.role, user.role),
             hotel_id=user.hotel_id,
             hotel_name=hotel_name,
+            hotel_ids=[] if user.role == "platform_admin" else bound_hotel_ids(db, user),
         ),
         hotel_name=hotel_name,
     )
@@ -110,6 +111,8 @@ def login(body: LoginBody, request: Request, db: Session = Depends(get_db)):
     if not captcha.consume(body.captcha_token):
         raise HTTPException(400, "请先完成滑块验证")
 
+    # 账号密码直登，不再选酒店：员工默认主店，绑定多店的登录后在顶栏切换；
+    # body.hotel_id 已废弃（历史客户端/dev-login 传入一律忽略）。
     user = db.query(User).filter(User.username == body.username.strip()).first()
     if user is None or not verify_password(body.password, user.password_hash):
         raise HTTPException(400, "账号或密码不正确")
@@ -118,14 +121,8 @@ def login(body: LoginBody, request: Request, db: Session = Depends(get_db)):
 
     hotel_name = None
     if user.hotel_id is not None:
-        # 员工：必须选择所属酒店
-        if body.hotel_id is None:
-            raise HTTPException(400, "请选择所属酒店")
-        if body.hotel_id != user.hotel_id:
-            raise HTTPException(400, "所选酒店与该账号不匹配")
         hotel = db.get(Hotel, user.hotel_id)
         hotel_name = hotel.name if hotel else None
-    # 平台管理员：无需酒店，直接登录
 
     user.last_login_at = datetime.now()
     return _login_result(db, user, hotel_name)
@@ -195,4 +192,5 @@ def me(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
         role_label=ROLE_LABELS.get(user.role, user.role),
         hotel_id=user.hotel_id,
         hotel_name=hotel_name,
+        hotel_ids=[] if user.role == "platform_admin" else bound_hotel_ids(db, user),
     )

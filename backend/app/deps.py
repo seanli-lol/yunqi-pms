@@ -14,6 +14,33 @@ from app.security import decode_token
 _bearer = HTTPBearer(auto_error=False)
 
 
+def bound_hotel_ids(db: Session, user: User) -> list[int]:
+    """员工可访问的酒店集合：主店（users.hotel_id）+ 绑定表全部行，主店兜底在前。
+
+    绑定表缺行（历史数据/手工 SQL）时以主店兜底，保证单店用户语义不变；
+    platform_admin 不走绑定（调用方先判角色），本函数按集合语义返回。"""
+    from app.models import UserHotel  # noqa: PLC0415
+
+    ids: list[int] = []
+    if user.hotel_id is not None:
+        ids.append(user.hotel_id)
+    bound = [r[0] for r in db.query(UserHotel.hotel_id).filter(UserHotel.user_id == user.id).all()]
+    for hid in bound:
+        if hid not in ids:
+            ids.append(hid)
+    return ids
+
+
+def can_access_hotel(db: Session, user: User, hotel_id: int | None) -> bool:
+    """归属守卫统一口径：platform_admin 恒真；员工 = 目标酒店在绑定集合内。
+
+    全站详情类端点的 `user.role != "platform_admin" and X.hotel_id != user.hotel_id`
+    都应替换为本谓词（多店员工切店后按当前店访问详情，不再是主店硬比较）。"""
+    if user.role == "platform_admin":
+        return True
+    return hotel_id is not None and hotel_id in bound_hotel_ids(db, user)
+
+
 def money(v) -> float:
     """金额规整到分（四舍五入 half-up）：全站金额计算/落库出口统一走此函数。
 
@@ -45,12 +72,15 @@ def get_current_user(
     return user
 
 
-def resolve_hotel_id(user: User, hotel_id: int | None) -> int:
-    """酒店上下文：员工锁定本店；平台管理员必须显式指定 hotel_id"""
+def resolve_hotel_id(db: Session, user: User, hotel_id: int | None) -> int:
+    """酒店上下文：员工默认主店；绑定多店的员工可显式传 hotel_id 切到绑定集合内的店；
+    平台管理员必须显式指定 hotel_id（无主店可回落）"""
     if user.role == "platform_admin":
         if not hotel_id:
             raise HTTPException(400, "平台管理员需要指定 hotel_id")
         return hotel_id
+    if hotel_id and hotel_id in bound_hotel_ids(db, user):
+        return hotel_id  # 多店员工显式切店：仅放行绑定集合内的店
     return user.hotel_id
 
 

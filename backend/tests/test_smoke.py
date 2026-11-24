@@ -30,11 +30,9 @@ _seed_db.close()
 client = TestClient(app)
 
 
-def _login(username="zhouqi", hotel_id=None):
-    body = {"username": username, "password": "123456"}
-    if hotel_id is not None:
-        body["hotel_id"] = hotel_id
-    r = client.post("/api/auth/login", json=body)
+def _login(username="zhouqi"):
+    """账号密码直登（不再传 hotel_id：登录页免选店，员工默认主店）"""
+    r = client.post("/api/auth/login", json={"username": username, "password": "123456"})
     assert r.status_code == 200, r.text
     return r.json()
 
@@ -44,27 +42,34 @@ def _headers(token):
 
 
 def test_login_hotel_staff_and_platform_admin():
-    # 员工：不选酒店应报错
+    # 员工：不选酒店直接登录（免选店直登）→ 200，默认主店
     r = client.post("/api/auth/login", json={"username": "zhouqi", "password": "123456"})
-    assert r.status_code == 400
-    # 员工：选错酒店报错
+    assert r.status_code == 200
+    assert r.json()["user"]["hotel_name"].endswith("西湖店")
+    assert r.json()["user"]["hotel_ids"] == [1]
+    # 员工：传了 hotel_id（含错值）也被忽略（历史客户端/dev-login 兼容）→ 200
     r = client.post("/api/auth/login", json={"username": "zhouqi", "password": "123456", "hotel_id": 999})
-    assert r.status_code == 400
-    # 员工：正确登录（先拿酒店 id）
+    assert r.status_code == 200
+    assert r.json()["user"]["hotel_name"].endswith("西湖店")
+    # 超级管理员：角色与文案（登录页无独立管理员入口，同一个表单进）
     r = client.post("/api/auth/login", json={"username": "admin", "password": "123456"})
     assert r.status_code == 200
     admin = r.json()
     assert admin["user"]["role"] == "platform_admin"
+    assert admin["user"]["role_label"] == "超级管理员"
+    assert admin["user"]["hotel_ids"] == []
+    # 超级管理员看全部酒店；员工只看绑定集合
     r = client.get("/api/hotels", headers=_headers(admin["token"]))
     assert r.status_code == 200
-    west_lake = next(h for h in r.json() if "西湖店" in h["name"])
-    data = _login("zhouqi", hotel_id=west_lake["id"])
-    assert data["user"]["hotel_name"].endswith("西湖店")
-    assert data["hotel_name"].endswith("西湖店")
+    assert len(r.json()) >= 3
+    tok = _headers(_login("zhouqi")["token"])
+    r = client.get("/api/hotels", headers=tok)
+    assert r.status_code == 200
+    assert [h["id"] for h in r.json()] == [1]
 
 
 def test_board_contains_seed_blocks():
-    tok = _login("zhouqi", hotel_id=1)["token"]
+    tok = _login("zhouqi")["token"]
     r = client.get("/api/rooms/board?days=14", headers=_headers(tok))
     assert r.status_code == 200
     data = r.json()
@@ -78,7 +83,7 @@ def test_board_contains_seed_blocks():
 
 
 def test_create_direct_booking_and_conflict():
-    tok = _login("zhouqi", hotel_id=1)["token"]
+    tok = _login("zhouqi")["token"]
     h = _headers(tok)
     r = client.get("/api/rooms", headers=h)
     room_204 = next(x for x in r.json() if x["room_number"] == "204")
@@ -108,7 +113,7 @@ def test_create_direct_booking_and_conflict():
 
 
 def test_checkin_checkout_flow():
-    tok = _login("zhouqi", hotel_id=1)["token"]
+    tok = _login("zhouqi")["token"]
     h = _headers(tok)
     from datetime import date, timedelta
     rooms = client.get("/api/rooms", headers=h).json()
@@ -170,7 +175,7 @@ def test_multi_hotel_isolation():
     assert any(x["status"] == "occupied" for x in w_rooms)
     assert all(x["status"] == "vacant_clean" for x in m_rooms)
     # 员工只能看本店：周琪查询 hotel_id=莫干山 → 被忽略，返回本店数据
-    tok = _login("zhouqi", hotel_id=west["id"])["token"]
+    tok = _login("zhouqi")["token"]
     hh = _headers(tok)
     w2 = client.get(f"/api/rooms?hotel_id={mogan['id']}", headers=hh).json()
     assert any(x["status"] == "occupied" for x in w2)
@@ -178,7 +183,7 @@ def test_multi_hotel_isolation():
 
 def test_channel_config_and_reports():
     from datetime import date
-    tok = _login("zhouqi", hotel_id=1)["token"]
+    tok = _login("zhouqi")["token"]
     h = _headers(tok)
     chs = client.get("/api/channels", headers=h).json()
     assert len(chs) == 6
@@ -200,7 +205,7 @@ def test_board_direct_booking_checkin_flow():
     from app.routers.auth import _login_attempts
     _login_attempts.clear()  # 测试共用 client IP，避免触发每分钟 10 次的登录限流
     from datetime import date, timedelta
-    tok = _login("zhouqi", hotel_id=1)["token"]
+    tok = _login("zhouqi")["token"]
     h = _headers(tok)
     rooms = client.get("/api/rooms", headers=h).json()
     room = next(x for x in rooms if x["status"] == "vacant_clean")
@@ -248,7 +253,7 @@ def test_board_direct_booking_checkin_flow():
 def test_hourly_booking_flow():
     """钟点房全链路：建单→账目→详情→入住→退房；冲突与校验"""
     from datetime import date, timedelta
-    tok = _login("zhouqi", hotel_id=1)["token"]
+    tok = _login("zhouqi")["token"]
     h = _headers(tok)
     types = {t["name"]: t for t in client.get("/api/room-types", headers=h).json()}
     rooms = client.get("/api/rooms", headers=h).json()
@@ -341,7 +346,7 @@ def test_extend_reservation():
     from app.routers.auth import _login_attempts
     _login_attempts.clear()
     from datetime import date, timedelta
-    tok = _login("zhouqi", hotel_id=1)["token"]
+    tok = _login("zhouqi")["token"]
     h = _headers(tok)
     rooms = client.get("/api/rooms", headers=h).json()
     room = next(x for x in rooms if x["room_type_name"] == "大床房" and x["status"] == "vacant_clean")
@@ -423,7 +428,7 @@ def test_extend_reservation():
 def test_reservation_logs_endpoint():
     """预订日志端点：按预订聚合操作留痕，含收款类"""
     from datetime import date, timedelta
-    tok = _login("zhouqi", hotel_id=1)["token"]
+    tok = _login("zhouqi")["token"]
     h = _headers(tok)
     rooms = client.get("/api/rooms", headers=h).json()
     room = next(x for x in rooms if x["status"] == "vacant_clean")
@@ -460,7 +465,7 @@ def test_edit_registration_and_undo_check_in():
     from app.routers.auth import _login_attempts
     _login_attempts.clear()
     from datetime import date, timedelta
-    tok = _login("zhouqi", hotel_id=1)["token"]
+    tok = _login("zhouqi")["token"]
     h = _headers(tok)
     cin = date.today().isoformat()
     cout = (date.today() + timedelta(days=2)).isoformat()
@@ -636,7 +641,7 @@ def test_edit_registration_and_undo_check_in():
 
 def test_early_checkout_resale():
     """回归：提前退房（actual_check_out 早于 check_out）→ 房态盘灰块截断 + 尾段可再售 + 撤销退房恢复"""
-    tok = _login("zhouqi", hotel_id=1)["token"]
+    tok = _login("zhouqi")["token"]
     h = _headers(tok)
     from datetime import date, timedelta
     rooms = client.get("/api/rooms", headers=h).json()
@@ -826,7 +831,7 @@ def test_refresh_rotation_and_logout():
     from app.security import hash_token
     _login_attempts.clear()
 
-    login = _login("zhouqi", hotel_id=1)
+    login = _login("zhouqi")
     rt1 = login["refresh_token"]
 
     # 轮换：拿到新访问令牌与新刷新令牌
@@ -853,7 +858,7 @@ def test_refresh_rotation_and_logout():
     assert r.status_code == 401, r.text  # 全量吊销生效
 
     # 登出：吊销后 refresh 401；重复登出仍 200（不探测令牌是否存在）
-    fresh = _login("zhouqi", hotel_id=1)["refresh_token"]
+    fresh = _login("zhouqi")["refresh_token"]
     r = client.post("/api/auth/logout", json={"refresh_token": fresh})
     assert r.status_code == 200 and r.json()["ok"] is True
     assert client.post("/api/auth/refresh", json={"refresh_token": fresh}).status_code == 401
@@ -866,7 +871,7 @@ def test_pay_methods_config_and_payment_validation():
     """收款方式配置：默认项 / 重名拦截 / 改名 / 停用拦截收款 / 删除保护转停用 / 日志留痕"""
     from datetime import date, timedelta
 
-    tok = _login("wanglin", hotel_id=1)["token"]
+    tok = _login("wanglin")["token"]
     h = _headers(tok)
 
     # 启动补种：默认 4 项齐全（code 与存量 payments.method 对齐）
@@ -928,7 +933,7 @@ def test_pay_methods_config_and_payment_validation():
 
 def test_guest_notes_edit():
     """客户备注编辑：PATCH 更新 + 名单/详情可见"""
-    tok = _login("zhouqi", hotel_id=1)["token"]
+    tok = _login("zhouqi")["token"]
     h = _headers(tok)
     r = client.post("/api/guests", headers=h, json={"name": "备注客", "phone": "13700009999"})
     assert r.status_code == 200, r.text
@@ -942,14 +947,14 @@ def test_guest_notes_edit():
     # 非本店员工不可改（莫干山店员工改西湖店客户 → 404）
     hotels = client.get("/api/hotels", headers=_headers(_login("admin")["token"])).json()
     mogan = next(x["id"] for x in hotels if "莫干山店" in x["name"])
-    tok2 = _login("xumin", hotel_id=mogan)["token"]
+    tok2 = _login("xumin")["token"]
     r = client.patch(f"/api/guests/{gid}", headers=_headers(tok2), json={"notes": "x"})
     assert r.status_code == 404
 
 
 def test_guest_profile_and_dup():
     """客户档案查重与编辑：手机号/证件号同店撞档 400；编辑排除自身；q 支持证件号；跨店同号放行"""
-    tok = _login("zhouqi", hotel_id=1)["token"]
+    tok = _login("zhouqi")["token"]
     h = _headers(tok)
     r = client.post("/api/guests", headers=h, json={
         "name": "查重甲", "phone": "13788880001", "id_number": "330106199001010011"})
@@ -986,7 +991,7 @@ def test_guest_profile_and_dup():
     # 跨店同号放行（查重是同店口径）：莫干山店建同手机号/证件号档案 → 成功
     hotels = client.get("/api/hotels", headers=_headers(_login("admin")["token"])).json()
     mogan = next(x["id"] for x in hotels if "莫干山店" in x["name"])
-    tok2 = _login("xumin", hotel_id=mogan)["token"]
+    tok2 = _login("xumin")["token"]
     r = client.post("/api/guests", headers=_headers(tok2), json={
         "name": "莫干查重客", "phone": "13788880001", "id_number": "330106199001010011"})
     assert r.status_code == 200, r.text
@@ -1001,7 +1006,7 @@ def test_guest_profile_and_dup():
 def test_delete_payment():
     """订单详情收款表行内删除：仅 checked_in/checked_out 可删；物理删除 + payment_delete 日志 + 余额重算"""
     from datetime import date, timedelta
-    tok = _login("zhouqi", hotel_id=1)["token"]
+    tok = _login("zhouqi")["token"]
     h = _headers(tok)
     rooms = client.get("/api/rooms", headers=h).json()
     rid = None
@@ -1058,7 +1063,7 @@ def test_delete_payment():
     assert r.status_code == 404
     hotels = client.get("/api/hotels", headers=_headers(_login("admin")["token"])).json()
     mogan = next(x["id"] for x in hotels if "莫干山店" in x["name"])
-    tok2 = _login("xumin", hotel_id=mogan)["token"]
+    tok2 = _login("xumin")["token"]
     r = client.delete(f"/api/reservations/{rid}/payments/{p1['id']}", headers=_headers(tok2))
     assert r.status_code == 404
 
@@ -1082,7 +1087,7 @@ def test_delete_payment():
 def test_room_edit_and_duplicate_guard():
     from app.routers.auth import _login_attempts
     _login_attempts.clear()  # 测试共用 client IP，避免触发每分钟 10 次的登录限流
-    tok = _login("wanglin", hotel_id=1)["token"]
+    tok = _login("wanglin")["token"]
     h = _headers(tok)
     types = client.get("/api/room-types", headers=h).json()
     assert len(types) >= 2
@@ -1120,7 +1125,7 @@ def test_room_edit_and_duplicate_guard():
     # 跨店隔离：莫干山店员工改西湖店客房 → 404
     hotels = client.get("/api/hotels", headers=_headers(_login("admin")["token"])).json()
     mogan = next(x["id"] for x in hotels if "莫干山店" in x["name"])
-    tok2 = _login("xumin", hotel_id=mogan)["token"]
+    tok2 = _login("xumin")["token"]
     r = client.patch(f"/api/rooms/{room['id']}", headers=_headers(tok2), json={"notes": "跨店"})
     assert r.status_code == 404
 
@@ -1129,7 +1134,7 @@ def test_room_delete_guard():
     """客房删除：无预订可删（记 room_delete 日志）+ 有预订记录（含已取消历史）拒绝 + 再删 404 + 跨店 404"""
     from app.routers.auth import _login_attempts
     _login_attempts.clear()  # 测试共用 client IP，避免触发每分钟 10 次的登录限流
-    tok = _login("wanglin", hotel_id=1)["token"]
+    tok = _login("wanglin")["token"]
     h = _headers(tok)
     types = client.get("/api/room-types", headers=h).json()
     r = client.post("/api/rooms", headers=h, json={"room_number": "9905", "floor": 9, "room_type_id": types[0]["id"]})
@@ -1165,16 +1170,16 @@ def test_room_delete_guard():
     # 跨店隔离：莫干山店员工删西湖店客房 → 404
     hotels = client.get("/api/hotels", headers=_headers(_login("admin")["token"])).json()
     mogan = next(x["id"] for x in hotels if "莫干山店" in x["name"])
-    tok2 = _login("xumin", hotel_id=mogan)["token"]
+    tok2 = _login("xumin")["token"]
     r = client.delete(f"/api/rooms/{room['id']}", headers=_headers(tok2))
     assert r.status_code == 404
 
 
 def test_hotel_edit_and_toggle():
-    """酒店编辑：局部更新 null=不改 + 营业/筹备切换影响登录页下拉 + 空名 400 + 非平台管理员 403"""
+    """酒店编辑：局部更新 null=不改 + 空名 400 + 非超级管理员 403"""
     from app.routers.auth import _login_attempts
     _login_attempts.clear()  # 测试共用 client IP，避免触发每分钟 10 次的登录限流
-    h = _headers(_login("admin")["token"])  # 平台管理员不选酒店
+    h = _headers(_login("admin")["token"])  # 超级管理员不选酒店
     hotels = client.get("/api/hotels", headers=h).json()
     west = next(x for x in hotels if "西湖店" in x["name"])
 
@@ -1186,8 +1191,9 @@ def test_hotel_edit_and_toggle():
     data = r.json()
     assert data["address"] == "西湖区龙井路 99 号" and data["is_active"] is False
 
-    # 停用后登录页下拉不再出现（public 只出启用店）
-    assert all(x["id"] != west["id"] for x in client.get("/api/hotels/public").json())
+    # 登录页酒店下拉已退役（/api/hotels/public 端点随之删除）：停用店不再影响任何登录路径
+    r = client.post("/api/auth/login", json={"username": "zhouqi", "password": "123456"})
+    assert r.status_code == 200
 
     # 局部更新口径：只传 is_active，其余字段不动（null=不改）
     r = client.patch(f"/api/hotels/{west['id']}", headers=h, json={"is_active": True})
@@ -1195,12 +1201,11 @@ def test_hotel_edit_and_toggle():
     data = r.json()
     assert data["is_active"] is True and data["name"] == "云栖酒店 · 西湖店" \
         and data["address"] == "西湖区龙井路 99 号"
-    assert any(x["id"] == west["id"] for x in client.get("/api/hotels/public").json())
 
-    # 空名 → 400；酒店管理员非平台管理员 → 403
+    # 空名 → 400；酒店管理员非超级管理员 → 403
     r = client.patch(f"/api/hotels/{west['id']}", headers=h, json={"name": "  "})
     assert r.status_code == 400
-    tok2 = _login("wanglin", hotel_id=1)["token"]
+    tok2 = _login("wanglin")["token"]
     r = client.patch(f"/api/hotels/{west['id']}", headers=_headers(tok2), json={"name": "越权改名"})
     assert r.status_code == 403
 
@@ -1213,7 +1218,7 @@ def test_pii_field_encryption_and_masking():
     from app.security import decrypt_field
 
     _login_attempts.clear()
-    tok = _headers(_login("zhouqi", hotel_id=1)["token"])
+    tok = _headers(_login("zhouqi")["token"])
 
     # 建档（API 收明文）→ 库内是 enc1: 密文，不含明文片段，解密往返一致
     r = client.post("/api/guests", headers=tok, json={
@@ -1277,7 +1282,7 @@ def test_decimal_amounts():
     from app.routers.auth import _login_attempts
 
     _login_attempts.clear()
-    tok = _headers(_login("zhouqi", hotel_id=1)["token"])
+    tok = _headers(_login("zhouqi")["token"])
     cin = date.today().isoformat()
     cout = (date.today() + timedelta(days=2)).isoformat()
 
@@ -1388,7 +1393,7 @@ def test_hourly_price_is_editable():
     from app.routers.auth import _login_attempts
 
     _login_attempts.clear()
-    h = _headers(_login("zhouqi", hotel_id=1)["token"])
+    h = _headers(_login("zhouqi")["token"])
     cin = date.today().isoformat()
     cout = (date.today() + timedelta(days=1)).isoformat()
     types = {t["name"]: t for t in client.get("/api/room-types", headers=h).json()}
@@ -1456,7 +1461,7 @@ def test_room_type_hourly_tiers_crud():
     from app.routers.auth import _login_attempts
 
     _login_attempts.clear()
-    h = _headers(_login("zhouqi", hotel_id=1)["token"])
+    h = _headers(_login("zhouqi")["token"])
 
     # ① 建房型带 3 档 → 读回一致
     r = client.post("/api/room-types", headers=h, json={
@@ -1566,7 +1571,7 @@ def test_chain_merge():
     from app.routers.auth import _login_attempts
 
     _login_attempts.clear()
-    h = _headers(_login("zhouqi", hotel_id=1)["token"])
+    h = _headers(_login("zhouqi")["token"])
     d0 = date.today() + timedelta(days=40)          # 远离种子数据，避免撞占房
     iso = lambda n: (d0 + timedelta(days=n)).isoformat()
     types = {t["name"]: t for t in client.get("/api/room-types", headers=h).json()}
@@ -1743,7 +1748,7 @@ def test_chain_merge():
     # ---------- ⑥ 跨店隔离：另一家店的员工看不到 / 合不了本店的单（404） ----------
     hotels = client.get("/api/hotels", headers=_headers(_login("admin")["token"])).json()
     mogan = next(x for x in hotels if "莫干山店" in x["name"])
-    h2 = _headers(_login("xumin", hotel_id=mogan["id"])["token"])
+    h2 = _headers(_login("xumin")["token"])
     assert client.post("/api/reservations/merge-chain", headers=h2,
                        json={"ids": [g1["id"], g2["id"]]}).status_code == 404
 
@@ -1754,7 +1759,7 @@ def test_hourly_overtime_alert():
 
     from app.models import Reservation
 
-    tok = _login("zhouqi", hotel_id=1)["token"]
+    tok = _login("zhouqi")["token"]
     h = _headers(tok)
     types = {t["name"]: t for t in client.get("/api/room-types", headers=h).json()}
     cin = date.today().isoformat()
@@ -1784,7 +1789,10 @@ def test_hourly_overtime_alert():
     blk = next(b for grp in board["groups"] for room_ in grp["rooms"]
                for b in room_["blocks"] if b["id"] == res_id)
     assert blk["overtime_minutes"] == 0
-    assert blk["due_at"].startswith(cin)
+    # 应退时刻 = 入住时刻 + 购买小时数（不用 startswith(cin) 锚定：晚间入住 +3h 会跨过午夜）
+    due_dt = datetime.fromisoformat(blk["due_at"])
+    checkin_dt = datetime.fromisoformat(blk["check_in_at"])
+    assert (due_dt - checkin_dt).total_seconds() == 3 * 3600
 
     # 回拨入住时刻 4 小时 → 超时约 60 分钟：board 超时字段 + /overtime 端点命中
     db = SessionLocal()
@@ -1831,7 +1839,7 @@ def test_pending_reservation_edit():
     姓名电话同步客户档案（历史跟随）、手机号同店撞档 400、checked_out 仍 400"""
     from datetime import date, timedelta
 
-    tok = _login("zhouqi", hotel_id=1)["token"]
+    tok = _login("zhouqi")["token"]
     h = _headers(tok)
     cin = (date.today() + timedelta(days=30)).isoformat()
 
@@ -1896,3 +1904,96 @@ def test_pending_reservation_edit():
     assert r.status_code == 200, r.text  # cancelled 也不可
     r = client.patch(f"/api/reservations/{res_id}", headers=h, json={"notes": "x"})
     assert r.status_code == 400 and "当前状态不可调整" in r.json()["detail"]
+
+
+def test_multi_hotel_staff_binding():
+    """多店绑定：建号绑 2 店 → 直登默认主店 → 切店访问 B 店（resolve + can_access_hotel）
+    → 减绑后 B 店 404 → 酒店 admin 越权绑他店 400"""
+    from datetime import date
+
+    from app.routers.auth import _login_attempts
+    _login_attempts.clear()
+    admin = _headers(_login("admin")["token"])
+    hotels = client.get("/api/hotels", headers=admin).json()
+    west = next(x for x in hotels if "西湖店" in x["name"])
+    mogan = next(x for x in hotels if "莫干山店" in x["name"])
+
+    # 超级管理员建号：绑定 2 店（第一个 = 主店西湖）
+    r = client.post("/api/users", headers=admin, json={
+        "name": "多店客", "username": "duodian", "password": "123456",
+        "role": "receptionist", "hotel_ids": [west["id"], mogan["id"]]})
+    assert r.status_code == 200, r.text
+    u = r.json()
+    assert [x["id"] for x in u["hotels"]] == [west["id"], mogan["id"]]
+    assert u["hotel_id"] == west["id"]  # 主店 = 第一个
+
+    # 直登：默认主店，hotel_ids 含两店
+    d = _login("duodian")
+    assert d["user"]["hotel_id"] == west["id"]
+    assert d["user"]["hotel_ids"] == [west["id"], mogan["id"]]
+    h2 = _headers(d["token"])
+
+    # GET /api/hotels 恰好两家（绑定集合过滤）
+    r = client.get("/api/hotels", headers=h2)
+    assert sorted(x["id"] for x in r.json()) == sorted([west["id"], mogan["id"]])
+
+    # 显式切店访问 B 店 board（resolve_hotel_id 放行绑定集合内的店）
+    cin = date.today().isoformat()
+    r = client.get(f"/api/rooms/board?start={cin}&days=1&hotel_id={mogan['id']}", headers=h2)
+    assert r.status_code == 200, r.text
+
+    # 切店后 B 店详情类端点可访问（can_access_hotel 放行）——先由 B 店管理员建一笔预订
+    tok_m = _headers(_login("xumin")["token"])  # B 店（莫干山）酒店管理员
+    from datetime import timedelta
+    types_m = client.get("/api/room-types", headers=tok_m).json()
+    t_big = next(t for t in types_m if t["name"] == "大床房")
+    r = client.post("/api/reservations", headers=tok_m, json={
+        "guest_name": "莫干客", "guest_phone": "13755556666",
+        "check_in": cin, "check_out": (date.today() + timedelta(days=1)).isoformat(),
+        "room_type_id": t_big["id"], "status": "confirmed",
+    })
+    assert r.status_code == 200, r.text
+    rid = r.json()["id"]
+    r = client.get(f"/api/reservations/{rid}", headers=h2)
+    assert r.status_code == 200, r.text
+
+    # 越权店（千岛湖）：resolve 对未绑定店回落主店（不报错），但该店数据 404
+    qiandao = next(x for x in hotels if "千岛湖店" in x["name"])
+    # 千岛湖大床房里建一笔预订（由超级管理员操作），越权员工取详情应 404
+    types_q = client.get(f"/api/room-types?hotel_id={qiandao['id']}", headers=admin).json()
+    t_big_q = next(t for t in types_q if t["name"] == "大床房")
+    r = client.post(f"/api/reservations?hotel_id={qiandao['id']}", headers=admin, json={
+        "guest_name": "千岛客", "guest_phone": "13755557777",
+        "check_in": cin, "check_out": (date.today() + timedelta(days=1)).isoformat(),
+        "room_type_id": t_big_q["id"], "status": "confirmed",
+    })
+    assert r.status_code == 200, r.text
+    rid_q = r.json()["id"]
+    r = client.get(f"/api/reservations/{rid_q}", headers=h2)
+    assert r.status_code == 404  # 未绑定的店 → can_access_hotel 拒绝
+
+    # 减绑到单店：B 店下线
+    r = client.patch(f"/api/users/{u['id']}", headers=admin, json={"hotel_ids": [west["id"]]})
+    assert r.status_code == 200, r.text
+    assert [x["id"] for x in r.json()["hotels"]] == [west["id"]]
+    r = client.get(f"/api/reservations/{rid}", headers=h2)
+    assert r.status_code == 404  # 原本可访问的莫干山预订，减绑后 404
+
+    # 主店顺延：把西湖从集合里拿掉 → 主店变莫干山
+    r = client.patch(f"/api/users/{u['id']}", headers=admin, json={"hotel_ids": [mogan["id"]]})
+    assert r.status_code == 200, r.text
+    assert r.json()["hotel_id"] == mogan["id"]
+    d2 = _login("duodian")
+    assert d2["user"]["hotel_name"].endswith("莫干山店")
+
+    # 酒店 admin 建号越权绑他店 → 400；员工列表带绑定集合
+    wanglin = _headers(_login("wanglin")["token"])
+    r = client.post("/api/users", headers=wanglin, json={
+        "name": "越权客", "username": "yuequan", "password": "123456",
+        "role": "receptionist", "hotel_ids": [west["id"], mogan["id"]]})
+    assert r.status_code == 400
+    users = client.get("/api/users", headers=admin).json()
+    duodian = next(x for x in users if x["username"] == "duodian")
+    assert [x["id"] for x in duodian["hotels"]] == [mogan["id"]]
+
+    # 清理：取消不影响（该测试只建了账号，没建预订）

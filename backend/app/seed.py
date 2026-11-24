@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from app import config
 from app.deps import fmt_money, money
 from app.models import (Channel, FolioItem, Guest, Hotel, HourlyRate,
-                        OperationLog, Payment, Reservation, Room, RoomType, User)
+                        OperationLog, Payment, Reservation, Room, RoomType, User, UserHotel)
 from app.security import encrypt_field, hash_password
 
 
@@ -74,6 +74,10 @@ def ensure_seed(db: Session) -> None:
     db.add_all(users)
     db.flush()
     u_platform, u_lin, u_qi, u_lu, u_zhang, _, _, _ = users
+    # 账号-酒店绑定：演示员工按 hotel_id 各绑一店（与主店一致；admin 不参与绑定恒可全店访问）
+    for u in users:
+        if u.hotel_id is not None:
+            db.add(UserHotel(user_id=u.id, hotel_id=u.hotel_id))
 
     # ---------- 渠道（每店同套配置） ----------
     channel_defs = [

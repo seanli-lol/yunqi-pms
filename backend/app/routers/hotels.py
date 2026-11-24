@@ -4,8 +4,8 @@ from sqlalchemy.orm import Session
 
 from app.config import ROLE_LABELS
 from app.db import get_db
-from app.deps import get_current_user, log_op, require_platform_admin
-from app.models import Hotel, Room, User
+from app.deps import can_access_hotel, get_current_user, log_op, require_platform_admin
+from app.models import Hotel, Room, User, UserHotel
 from app.routers.payment_methods import ensure_default_methods
 from app.schemas import HotelBody, HotelOut, HotelPatch, UserBody, UserOut, UserPatch
 from app.security import hash_password
@@ -13,18 +13,46 @@ from app.security import hash_password
 router = APIRouter(prefix="/api", tags=["hotels & users"])
 
 
-@router.get("/hotels/public")
-def public_hotels(db: Session = Depends(get_db)):
-    """登录页使用：无需认证的酒店下拉列表"""
-    hotels = db.query(Hotel).filter(Hotel.is_active).order_by(Hotel.id).all()
-    return [{"id": h.id, "name": h.name} for h in hotels]
+def _bound_ids(db: Session, u: User) -> list[int]:
+    """员工绑定集合（主店兜底在前）；platform_admin 恒空"""
+    if u.role == "platform_admin":
+        return []
+    ids: list[int] = []
+    if u.hotel_id is not None:
+        ids.append(u.hotel_id)
+    for r in db.query(UserHotel).filter(UserHotel.user_id == u.id).all():
+        if r.hotel_id not in ids:
+            ids.append(r.hotel_id)
+    return ids
+
+
+def _user_out(db: Session, u: User) -> UserOut:
+    """序列化员工：绑定集合一次查询（主店在前），hotel_name = 主店名"""
+    h = db.get(Hotel, u.hotel_id) if u.hotel_id else None
+    bound = _bound_ids(db, u)
+    names = {x.id: x.name for x in db.query(Hotel).filter(Hotel.id.in_(bound)).all()} if bound else {}
+    return UserOut(
+        id=u.id, name=u.name, username=u.username, role=u.role,
+        role_label=ROLE_LABELS.get(u.role, u.role),
+        hotel_id=u.hotel_id, hotel_name=h.name if h else None,
+        hotels=[{"id": hid, "name": names[hid]} for hid in bound if hid in names],
+        is_active=u.is_active, last_login_at=u.last_login_at,
+    )
+
+
+def _apply_hotel_bindings(db: Session, target: User, hotel_ids: list[int]) -> None:
+    """整体替换绑定集合（调用方先做校验与变更摘要；去重保序，第一个即主店）"""
+    db.query(UserHotel).filter(UserHotel.user_id == target.id).delete(synchronize_session=False)
+    for hid in dict.fromkeys(hotel_ids):
+        db.add(UserHotel(user_id=target.id, hotel_id=hid))
 
 
 @router.get("/hotels", response_model=list[HotelOut])
 def list_hotels(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     q = db.query(Hotel)
     if user.role != "platform_admin":
-        q = q.filter(Hotel.id == user.hotel_id)
+        # 员工看主店 + 绑定集合内的酒店（多店员工登录后顶栏切换）
+        q = q.filter(Hotel.id.in_(_bound_ids(db, user)))
     hotels = q.order_by(Hotel.id).all()
     out = []
     for h in hotels:
@@ -97,37 +125,41 @@ def list_users(hotel_id: int | None = None, user: User = Depends(get_current_use
         if hotel_id:
             q = q.filter(User.hotel_id == hotel_id)
     else:
-        q = q.filter(User.hotel_id == user.hotel_id)
+        # 酒店 admin 看绑定集合内酒店的员工（多店 admin 可跨店查看）
+        bound = _bound_ids(db, user)
+        q = q.filter(User.hotel_id.in_(bound))
     users = q.order_by(User.id).all()
-    out = []
-    for u in users:
-        h = db.get(Hotel, u.hotel_id) if u.hotel_id else None
-        out.append(UserOut(
-            id=u.id, name=u.name, username=u.username, role=u.role,
-            role_label=ROLE_LABELS.get(u.role, u.role),
-            hotel_id=u.hotel_id, hotel_name=h.name if h else None,
-            is_active=u.is_active, last_login_at=u.last_login_at,
-        ))
-    return out
+    return [_user_out(db, u) for u in users]
 
 
 @router.post("/users", response_model=UserOut)
 def create_user(body: UserBody, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    # 平台管理员可为任意酒店建号；酒店管理员只能为本店建号
+    # 平台管理员可为任意酒店建号（可绑多店）；酒店管理员只能为本店建号
     if user.role == "platform_admin":
-        if body.hotel_id is None:
+        if body.hotel_id is None and not body.hotel_ids:
             raise HTTPException(400, "请选择所属酒店")
-        hotel_id = body.hotel_id
     elif user.role == "admin":
-        hotel_id = user.hotel_id
+        # 酒店 admin 建号：绑定集合只允许本店（主店）
+        if body.hotel_ids and set(body.hotel_ids) - {user.hotel_id}:
+            raise HTTPException(400, "酒店管理员只能为本店创建员工账号")
     else:
         raise HTTPException(403, "无权限创建员工账号")
+
+    # 绑定集合：hotel_ids 优先（第一个 = 主店）；缺省回落单店语义（body.hotel_id，再回落操作人本店）
+    ids = list(dict.fromkeys(body.hotel_ids)) if body.hotel_ids else [body.hotel_id or user.hotel_id]
+    if not ids or ids[0] is None:
+        raise HTTPException(400, "请选择所属酒店")
+    for hid in ids:
+        if not db.get(Hotel, hid):
+            raise HTTPException(400, f"酒店 {hid} 不存在")
+    hotel_ids = ids
+
     if db.query(User).filter(User.username == body.username.strip()).first():
         raise HTTPException(400, "登录账号已存在")
     if len(body.password) < 6:
         raise HTTPException(400, "密码至少 6 位")
     u = User(
-        hotel_id=hotel_id,
+        hotel_id=hotel_ids[0],  # 主店 = 绑定集合第一个
         username=body.username.strip(),
         password_hash=hash_password(body.password),
         name=body.name,
@@ -135,17 +167,13 @@ def create_user(body: UserBody, user: User = Depends(get_current_user), db: Sess
     )
     db.add(u)
     db.flush()
-    h = db.get(Hotel, hotel_id)
-    log_op(db, hotel_id, user, "user_create", "user", u.id,
-           f"创建员工账号 {u.username}（{ROLE_LABELS.get(u.role, u.role)}）· {h.name if h else ''}")
+    _apply_hotel_bindings(db, u, hotel_ids)
+    h = db.get(Hotel, u.hotel_id)
+    log_op(db, u.hotel_id, user, "user_create", "user", u.id,
+           f"创建员工账号 {u.username}（{ROLE_LABELS.get(u.role, u.role)}）· {h.name if h else ''}"
+           + (f" · 绑定 {len(hotel_ids)} 家酒店" if len(hotel_ids) > 1 else ""))
     db.commit()
-    h = db.get(Hotel, u.hotel_id) if u.hotel_id else None
-    return UserOut(
-        id=u.id, name=u.name, username=u.username, role=u.role,
-        role_label=ROLE_LABELS.get(u.role, u.role),
-        hotel_id=u.hotel_id, hotel_name=h.name if h else None,
-        is_active=u.is_active, last_login_at=u.last_login_at,
-    )
+    return _user_out(db, u)
 
 
 @router.patch("/users/{user_id}", response_model=UserOut)
@@ -153,24 +181,42 @@ def patch_user(user_id: int, body: UserPatch, user: User = Depends(get_current_u
     u = db.get(User, user_id)
     if not u:
         raise HTTPException(404, "员工不存在")
-    if user.role == "platform_admin":
-        pass
-    elif user.role == "admin" and u.hotel_id == user.hotel_id:
-        pass
-    else:
+    if not can_access_hotel(db, user, u.hotel_id):
         raise HTTPException(403, "无权限编辑该员工")
-    if body.name is not None:
+    changes: list[str] = []
+    if body.name is not None and body.name != u.name:
+        changes.append(f"姓名 {u.name}→{body.name}")
         u.name = body.name
-    if body.role is not None:
+    if body.role is not None and body.role != u.role:
+        changes.append(f"角色 {ROLE_LABELS.get(u.role, u.role)}→{ROLE_LABELS.get(body.role, body.role)}")
         u.role = body.role
-    if body.is_active is not None:
+    if body.is_active is not None and body.is_active != u.is_active:
+        changes.append("状态 启用→停用" if not body.is_active else "状态 停用→启用")
         u.is_active = body.is_active
-    log_op(db, u.hotel_id, user, "user_update", "user", u.id, f"更新员工 {u.name}（{u.username}）")
+    if body.hotel_ids is not None and u.role != "platform_admin":
+        # 整体替换绑定集合；第一个 = 新主店（users.hotel_id 跟随顺延）
+        hotel_ids = list(dict.fromkeys(body.hotel_ids))
+        if not hotel_ids:
+            raise HTTPException(400, "至少绑定一家酒店")
+        for hid in hotel_ids:
+            if not db.get(Hotel, hid):
+                raise HTTPException(400, f"酒店 {hid} 不存在")
+        # 酒店 admin 只能在自己绑定集合内分配（通常=本店）
+        if user.role == "admin" and set(hotel_ids) - set(_bound_ids(db, user)):
+            raise HTTPException(400, "酒店管理员只能分配自己所属酒店的绑定")
+        old = _bound_ids(db, u)
+        if hotel_ids != old:
+            hotels_rows = db.query(Hotel).filter(Hotel.id.in_(list(set(hotel_ids) | set(old)))).all()
+            names = {x.id: x.name for x in hotels_rows}
+            old_s = ",".join(names.get(i, str(i)) for i in old)
+            new_s = ",".join(names.get(i, str(i)) for i in hotel_ids)
+            changes.append(f"绑定酒店 {old_s}→{new_s}")
+            _apply_hotel_bindings(db, u, hotel_ids)
+            if u.hotel_id not in hotel_ids:
+                changes.append(f"主店 {names.get(u.hotel_id, u.hotel_id)}→{names.get(hotel_ids[0], hotel_ids[0])}")
+                u.hotel_id = hotel_ids[0]
+    if not changes:
+        return _user_out(db, u)
+    log_op(db, u.hotel_id, user, "user_update", "user", u.id, f"更新员工 {u.name}（{u.username}）：{' · '.join(changes)}")
     db.commit()
-    h = db.get(Hotel, u.hotel_id) if u.hotel_id else None
-    return UserOut(
-        id=u.id, name=u.name, username=u.username, role=u.role,
-        role_label=ROLE_LABELS.get(u.role, u.role),
-        hotel_id=u.hotel_id, hotel_name=h.name if h else None,
-        is_active=u.is_active, last_login_at=u.last_login_at,
-    )
+    return _user_out(db, u)

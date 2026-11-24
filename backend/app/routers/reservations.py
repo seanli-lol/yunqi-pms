@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.db import get_db
-from app.deps import (balance_of, blocking_ids, fmt_money, folio_totals, free_rooms,
+from app.deps import (balance_of, blocking_ids, can_access_hotel, fmt_money, folio_totals, free_rooms,
                       get_current_user, log_op, money, resolve_hotel_id)
 from app.models import (Channel, FolioItem, Guest, HourlyRate, OperationLog,
                         Payment, Reservation, Room, RoomType, User)
@@ -281,7 +281,7 @@ def list_reservations(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    hid = resolve_hotel_id(user, hotel_id)
+    hid = resolve_hotel_id(db, user, hotel_id)
     qy = db.query(Reservation).filter(Reservation.hotel_id == hid)
     if date_str:
         d = date.fromisoformat(date_str)
@@ -307,7 +307,7 @@ def list_reservations(
 @router.post("")
 def create_reservation(body: ReservationBody, hotel_id: int | None = None,
                        user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    hid = resolve_hotel_id(user, hotel_id)
+    hid = resolve_hotel_id(db, user, hotel_id)
     if body.check_out <= body.check_in:
         raise HTTPException(400, "离店日期必须晚于入住日期")
     if body.rate is not None and body.rate < 0:
@@ -436,7 +436,7 @@ def create_reservation(body: ReservationBody, hotel_id: int | None = None,
 def move_reservation(res_id: int, body: ReservationPatch,
                      user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     r = db.get(Reservation, res_id)
-    if not r or (user.role != "platform_admin" and r.hotel_id != user.hotel_id):
+    if not r or (not can_access_hotel(db, user, r.hotel_id)):
         raise HTTPException(404, "预订不存在")
     if r.status not in ("pending", "confirmed", "checked_in"):
         raise HTTPException(400, "当前状态不可调整（仅待确认 / 已确认 / 在住可拖动）")
@@ -516,7 +516,7 @@ def move_reservation(res_id: int, body: ReservationPatch,
 @router.post("/{res_id}/confirm")
 def confirm_reservation(res_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     r = db.get(Reservation, res_id)
-    if not r or (user.role != "platform_admin" and r.hotel_id != user.hotel_id):
+    if not r or (not can_access_hotel(db, user, r.hotel_id)):
         raise HTTPException(404, "预订不存在")
     if r.status != "pending":
         raise HTTPException(400, "仅「待确认」预订需要确认")
@@ -532,7 +532,7 @@ def confirm_reservation(res_id: int, user: User = Depends(get_current_user), db:
 @router.post("/{res_id}/cancel")
 def cancel_reservation(res_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     r = db.get(Reservation, res_id)
-    if not r or (user.role != "platform_admin" and r.hotel_id != user.hotel_id):
+    if not r or (not can_access_hotel(db, user, r.hotel_id)):
         raise HTTPException(404, "预订不存在")
     if r.status not in ("pending", "confirmed"):
         raise HTTPException(400, "仅待确认 / 已确认的预订可取消")
@@ -561,7 +561,7 @@ def hourly_overtime(user: User = Depends(get_current_user), db: Session = Depend
 
     前端 OvertimeAlert 每 30s 轮询本端点；延住（hours 累加）/撤销入住（时刻清空）/
     退房（状态离开 checked_in）都会让预订自然退出本列表。"""
-    hid = resolve_hotel_id(user, hotel_id)
+    hid = resolve_hotel_id(db, user, hotel_id)
     if hid is None:
         return []
     rows = (db.query(Reservation)
@@ -601,7 +601,7 @@ def hourly_overtime(user: User = Depends(get_current_user), db: Session = Depend
 @router.post("/{res_id}/check-in")
 def check_in(res_id: int, body: CheckInBody, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     r = db.get(Reservation, res_id)
-    if not r or (user.role != "platform_admin" and r.hotel_id != user.hotel_id):
+    if not r or (not can_access_hotel(db, user, r.hotel_id)):
         raise HTTPException(404, "预订不存在")
     if r.status not in ("pending", "confirmed"):
         raise HTTPException(400, "仅待确认 / 已确认的预订可办理入住")
@@ -651,7 +651,7 @@ def check_in(res_id: int, body: CheckInBody, user: User = Depends(get_current_us
 def edit_registration(res_id: int, body: RegistrationBody,
                       user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     r = db.get(Reservation, res_id)
-    if not r or (user.role != "platform_admin" and r.hotel_id != user.hotel_id):
+    if not r or (not can_access_hotel(db, user, r.hotel_id)):
         raise HTTPException(404, "预订不存在")
     if r.status != "checked_in":
         raise HTTPException(400, "仅「在住」预订可编辑登记信息")
@@ -707,7 +707,7 @@ def edit_registration(res_id: int, body: RegistrationBody,
 @router.post("/{res_id}/undo-check-in")
 def undo_check_in(res_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     r = db.get(Reservation, res_id)
-    if not r or (user.role != "platform_admin" and r.hotel_id != user.hotel_id):
+    if not r or (not can_access_hotel(db, user, r.hotel_id)):
         raise HTTPException(404, "预订不存在")
     if r.status != "checked_in":
         raise HTTPException(400, "仅「在住」预订可撤销入住")
@@ -745,7 +745,7 @@ def undo_check_in(res_id: int, user: User = Depends(get_current_user), db: Sessi
 @router.post("/{res_id}/undo-check-out")
 def undo_check_out(res_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     r = db.get(Reservation, res_id)
-    if not r or (user.role != "platform_admin" and r.hotel_id != user.hotel_id):
+    if not r or (not can_access_hotel(db, user, r.hotel_id)):
         raise HTTPException(404, "预订不存在")
     if r.status != "checked_out":
         raise HTTPException(400, "仅「已退房」预订可撤销退房")
@@ -796,7 +796,7 @@ def undo_check_out(res_id: int, user: User = Depends(get_current_user), db: Sess
 def adjust_paid_total(res_id: int, body: PaidTotalBody,
                       user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     r = db.get(Reservation, res_id)
-    if not r or (user.role != "platform_admin" and r.hotel_id != user.hotel_id):
+    if not r or (not can_access_hotel(db, user, r.hotel_id)):
         raise HTTPException(404, "预订不存在")
     if r.status not in ("checked_in", "checked_out"):
         raise HTTPException(400, "仅「在住 / 已退房」预订可更正实收")
@@ -844,7 +844,7 @@ def adjust_paid_total(res_id: int, body: PaidTotalBody,
 @router.post("/{res_id}/check-out")
 def check_out(res_id: int, body: CheckOutBody, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     r = db.get(Reservation, res_id)
-    if not r or (user.role != "platform_admin" and r.hotel_id != user.hotel_id):
+    if not r or (not can_access_hotel(db, user, r.hotel_id)):
         raise HTTPException(404, "预订不存在")
     if r.status != "checked_in":
         raise HTTPException(400, "仅「在住」预订可办理退房")
@@ -905,7 +905,7 @@ def check_out(res_id: int, body: CheckOutBody, user: User = Depends(get_current_
 def extend_reservation(res_id: int, body: ExtendBody,
                        user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     r = db.get(Reservation, res_id)
-    if not r or (user.role != "platform_admin" and r.hotel_id != user.hotel_id):
+    if not r or (not can_access_hotel(db, user, r.hotel_id)):
         raise HTTPException(404, "预订不存在")
     if r.status != "checked_in":
         raise HTTPException(400, "仅「在住」预订可延住")
@@ -971,7 +971,7 @@ def merge_chain(body: MergeChainBody,
     rows: list[Reservation] = []
     for rid in ids:
         r = db.get(Reservation, rid)
-        if not r or (user.role != "platform_admin" and r.hotel_id != user.hotel_id):
+        if not r or (not can_access_hotel(db, user, r.hotel_id)):
             raise HTTPException(404, "预订不存在")
         rows.append(r)
 
@@ -1047,7 +1047,7 @@ def merge_chain(body: MergeChainBody,
 def reservation_logs(res_id: int,
                      user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     r = db.get(Reservation, res_id)
-    if not r or (user.role != "platform_admin" and r.hotel_id != user.hotel_id):
+    if not r or (not can_access_hotel(db, user, r.hotel_id)):
         raise HTTPException(404, "预订不存在")
     # payment 类日志的 object_id 同样存预订 id，一并纳入
     ops = (db.query(OperationLog)
@@ -1070,7 +1070,7 @@ def reservation_logs(res_id: int,
 @router.get("/{res_id}")
 def get_reservation(res_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     r = db.get(Reservation, res_id)
-    if not r or (user.role != "platform_admin" and r.hotel_id != user.hotel_id):
+    if not r or (not can_access_hotel(db, user, r.hotel_id)):
         raise HTTPException(404, "预订不存在")
     return res_out(db, r)
 
@@ -1079,7 +1079,7 @@ def get_reservation(res_id: int, user: User = Depends(get_current_user), db: Ses
 @router.get("/{res_id}/folio")
 def get_folio(res_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     r = db.get(Reservation, res_id)
-    if not r or (user.role != "platform_admin" and r.hotel_id != user.hotel_id):
+    if not r or (not can_access_hotel(db, user, r.hotel_id)):
         raise HTTPException(404, "预订不存在")
     items = db.query(FolioItem).filter(FolioItem.reservation_id == res_id).order_by(FolioItem.created_at, FolioItem.id).all()
     pays = db.query(Payment).filter(Payment.reservation_id == res_id).order_by(Payment.created_at, Payment.id).all()
@@ -1104,7 +1104,7 @@ def get_folio(res_id: int, user: User = Depends(get_current_user), db: Session =
 def add_folio_item(res_id: int, body: FolioItemBody,
                    user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     r = db.get(Reservation, res_id)
-    if not r or (user.role != "platform_admin" and r.hotel_id != user.hotel_id):
+    if not r or (not can_access_hotel(db, user, r.hotel_id)):
         raise HTTPException(404, "预订不存在")
     if r.status not in ("checked_in", "confirmed", "pending"):
         raise HTTPException(400, "当前状态不可加收费用")
@@ -1123,7 +1123,7 @@ def add_folio_item(res_id: int, body: FolioItemBody,
 def add_payment(res_id: int, body: PaymentBody,
                 user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     r = db.get(Reservation, res_id)
-    if not r or (user.role != "platform_admin" and r.hotel_id != user.hotel_id):
+    if not r or (not can_access_hotel(db, user, r.hotel_id)):
         raise HTTPException(404, "预订不存在")
     if body.amount <= 0:
         raise HTTPException(400, "收款金额需大于 0")
@@ -1148,7 +1148,7 @@ def delete_payment(res_id: int, payment_id: int,
     口径对齐 paid-total——仅「在住 / 已退房」可操作；pending/confirmed 的款项走取消预订统一清除。
     物理删除该笔 Payment，写 payment_delete 日志（object_type=payment，object_id 存预订 id）。"""
     r = db.get(Reservation, res_id)
-    if not r or (user.role != "platform_admin" and r.hotel_id != user.hotel_id):
+    if not r or (not can_access_hotel(db, user, r.hotel_id)):
         raise HTTPException(404, "预订不存在")
     if r.status not in ("checked_in", "checked_out"):
         raise HTTPException(400, "仅「在住 / 已退房」预订可删除收款记录")

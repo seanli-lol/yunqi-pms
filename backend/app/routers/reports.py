@@ -6,7 +6,7 @@ from sqlalchemy import func as sa_func
 from sqlalchemy.orm import Session
 
 from app.db import get_db
-from app.deps import get_current_user, money, resolve_hotel_id
+from app.deps import can_access_hotel, get_current_user, money, resolve_hotel_id
 from app.models import (Channel, FolioItem, Guest, OperationLog,
                         Payment, Reservation, Room, RoomType)
 
@@ -70,7 +70,7 @@ def _charges(db: Session, hotel_id: int, frm: date, to: date):
 def reports_summary(from_date: str | None = None, to_date: str | None = None,
                     hotel_id: int | None = None,
                     user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    hid = resolve_hotel_id(user, hotel_id)
+    hid = resolve_hotel_id(db, user, hotel_id)
     frm, to = _range_params(from_date, to_date)
     days = (to - frm).days + 1
     total_rooms = db.query(Room).filter(Room.hotel_id == hid).count()
@@ -92,7 +92,7 @@ def reports_summary(from_date: str | None = None, to_date: str | None = None,
 def reports_trends(from_date: str | None = None, to_date: str | None = None,
                    hotel_id: int | None = None,
                    user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    hid = resolve_hotel_id(user, hotel_id)
+    hid = resolve_hotel_id(db, user, hotel_id)
     frm, to = _range_params(from_date, to_date)
     total_rooms = db.query(Room).filter(Room.hotel_id == hid).count()
     per_day, _, _ = _charges(db, hid, frm, to)
@@ -126,7 +126,7 @@ def reports_trends(from_date: str | None = None, to_date: str | None = None,
 def reports_room_types(from_date: str | None = None, to_date: str | None = None,
                        hotel_id: int | None = None,
                        user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    hid = resolve_hotel_id(user, hotel_id)
+    hid = resolve_hotel_id(db, user, hotel_id)
     frm, to = _range_params(from_date, to_date)
     types = db.query(RoomType).filter(RoomType.hotel_id == hid).all()
     out = []
@@ -160,7 +160,7 @@ def reports_room_types(from_date: str | None = None, to_date: str | None = None,
 @router.get("/reports/day")
 def reports_day(day: str, hotel_id: int | None = None,
                 user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    hid = resolve_hotel_id(user, hotel_id)
+    hid = resolve_hotel_id(db, user, hotel_id)
     try:
         d = date.fromisoformat(day)
     except ValueError:
@@ -207,7 +207,7 @@ def reports_day(day: str, hotel_id: int | None = None,
 @router.get("/dashboard")
 def dashboard(hotel_id: int | None = None,
               user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    hid = resolve_hotel_id(user, hotel_id)
+    hid = resolve_hotel_id(db, user, hotel_id)
     today = date.today()
     rooms = db.query(Room).filter(Room.hotel_id == hid).all()
     total = len(rooms)

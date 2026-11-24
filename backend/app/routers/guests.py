@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.db import get_db
-from app.deps import get_current_user, log_op, money, resolve_hotel_id
+from app.deps import can_access_hotel, get_current_user, log_op, money, resolve_hotel_id
 from app.models import Guest, Reservation, Room, User
 from app.schemas import GuestBody, GuestDetail, GuestOut, GuestUpdateBody
 from app.security import decrypt_field, encrypt_field, mask_id_number
@@ -38,7 +38,7 @@ def _dup_check(db: Session, hotel_id: int, *, phone: str | None = None,
 def list_guests(q: str | None = None, vip: str | None = None,
                 hotel_id: int | None = None,
                 user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    hid = resolve_hotel_id(user, hotel_id)
+    hid = resolve_hotel_id(db, user, hotel_id)
     guests = db.query(Guest).filter(Guest.hotel_id == hid).order_by(Guest.id).all()
     res_list = db.query(Reservation).filter(
         Reservation.hotel_id == hid,
@@ -75,7 +75,7 @@ def list_guests(q: str | None = None, vip: str | None = None,
 @router.get("/{guest_id}", response_model=GuestDetail)
 def guest_detail(guest_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     g = db.get(Guest, guest_id)
-    if not g or (user.role != "platform_admin" and g.hotel_id != user.hotel_id):
+    if not g or (not can_access_hotel(db, user, g.hotel_id)):
         raise HTTPException(404, "客户不存在")
     stays = (db.query(Reservation)
              .filter(Reservation.guest_id == g.id,
@@ -108,7 +108,7 @@ def guest_detail(guest_id: int, user: User = Depends(get_current_user), db: Sess
 @router.post("")
 def create_guest(body: GuestBody, hotel_id: int | None = None,
                  user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    hid = resolve_hotel_id(user, hotel_id)
+    hid = resolve_hotel_id(db, user, hotel_id)
     _dup_check(db, hid, phone=body.phone.strip(), id_number=body.id_number.strip())
     g = Guest(hotel_id=hid, name=body.name.strip(), phone=body.phone.strip(),
               id_number=encrypt_field(body.id_number.strip()), vip_level=body.vip_level, notes=body.notes)
@@ -123,7 +123,7 @@ def create_guest(body: GuestBody, hotel_id: int | None = None,
 def update_guest(guest_id: int, body: GuestUpdateBody,
                  user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     g = db.get(Guest, guest_id)
-    if not g or (user.role != "platform_admin" and g.hotel_id != user.hotel_id):
+    if not g or (not can_access_hotel(db, user, g.hotel_id)):
         raise HTTPException(404, "客户不存在")
 
     new_name = body.name.strip() if body.name is not None else None

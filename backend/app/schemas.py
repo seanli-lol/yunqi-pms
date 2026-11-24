@@ -17,6 +17,7 @@ Money = Annotated[float, AfterValidator(_to_money)]
 
 # ---------- auth ----------
 class LoginBody(BaseModel):
+    # hotel_id 已废弃：登录一律按账号密码识别，员工默认主店（历史客户端/dev-login 传入会被忽略）
     hotel_id: int | None = None
     username: str
     password: str
@@ -71,6 +72,8 @@ class UserInfo(BaseModel):
     role_label: str
     hotel_id: int | None = None
     hotel_name: str | None = None
+    # 员工可访问的酒店 id 集合（主店在前）；platform_admin 为空列表（恒可访问全部）
+    hotel_ids: list[int] = []
 
 
 # ---------- hotels ----------
@@ -104,13 +107,22 @@ class UserBody(BaseModel):
     username: str
     password: str
     role: Literal["admin", "receptionist", "housekeeper"]
-    hotel_id: int | None = None
+    hotel_id: int | None = None  # 主店（未传时取 hotel_ids 第一个）
+    # 绑定酒店集合（可多店；第一个 = 主店）。缺省时按单店语义 = [hotel_id]
+    hotel_ids: list[int] | None = None
 
 
 class UserPatch(BaseModel):
     name: str | None = None
     role: Literal["admin", "receptionist", "housekeeper"] | None = None
     is_active: bool | None = None
+    hotel_ids: list[int] | None = None  # 传了则整体替换绑定集合（第一个 = 主店）
+
+
+class HotelBrief(BaseModel):
+    """员工绑定集合里的酒店摘要（员工列表「所属酒店」列展示）"""
+    id: int
+    name: str
 
 
 class UserOut(BaseModel):
@@ -121,6 +133,7 @@ class UserOut(BaseModel):
     role_label: str
     hotel_id: int | None
     hotel_name: str | None = None
+    hotels: list[HotelBrief] = []  # 绑定集合（主店在前）；platform_admin 为空
     is_active: bool
     last_login_at: datetime | None = None
 

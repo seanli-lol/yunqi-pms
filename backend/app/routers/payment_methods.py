@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.db import get_db
-from app.deps import get_current_user, log_op, resolve_hotel_id
+from app.deps import can_access_hotel, get_current_user, log_op, resolve_hotel_id
 from app.models import Payment, PayMethod, User
 from app.schemas import PayMethodBody, PayMethodOut, PayMethodPatch
 
@@ -59,7 +59,7 @@ def list_pay_methods(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    hid = resolve_hotel_id(user, hotel_id)
+    hid = resolve_hotel_id(db, user, hotel_id)
     q = db.query(PayMethod).filter(PayMethod.hotel_id == hid)
     if not include_inactive:
         q = q.filter(PayMethod.is_active)
@@ -69,7 +69,7 @@ def list_pay_methods(
 @router.post("", response_model=PayMethodOut)
 def create_pay_method(body: PayMethodBody, hotel_id: int | None = None,
                       user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    hid = resolve_hotel_id(user, hotel_id)
+    hid = resolve_hotel_id(db, user, hotel_id)
     name = body.name.strip()
     if not name:
         raise HTTPException(400, "请输入收款方式名称")
@@ -93,7 +93,7 @@ def create_pay_method(body: PayMethodBody, hotel_id: int | None = None,
 def patch_pay_method(method_id: int, body: PayMethodPatch,
                      user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     m = db.get(PayMethod, method_id)
-    if not m or (user.role != "platform_admin" and m.hotel_id != user.hotel_id):
+    if not m or (not can_access_hotel(db, user, m.hotel_id)):
         raise HTTPException(404, "收款方式不存在")
     if body.name is not None:
         name = body.name.strip()
@@ -121,7 +121,7 @@ def patch_pay_method(method_id: int, body: PayMethodPatch,
 def delete_pay_method(method_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     """有收款记录的方式不可物理删除：改为停用"""
     m = db.get(PayMethod, method_id)
-    if not m or (user.role != "platform_admin" and m.hotel_id != user.hotel_id):
+    if not m or (not can_access_hotel(db, user, m.hotel_id)):
         raise HTTPException(404, "收款方式不存在")
     # 判定依据：该方式名下（同店）是否有历史收款
     used = db.query(Payment).filter(

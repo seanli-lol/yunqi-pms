@@ -100,3 +100,23 @@ def backfill_encrypted_fields(db: Session) -> None:
         g.id_number = encrypt_field(g.id_number)
     if rows:
         db.commit()
+
+
+def backfill_user_hotels(db: Session) -> None:
+    """存量员工补账号-酒店绑定行（幂等：已有绑定集的用户跳过）。
+
+    main.lifespan 在 ensure_seed 之前调用；users.hotel_id 即主店恒在集合内，
+    存量单店用户回填后仍只有 1 行，行为不变。UserHotel 延迟导入防成环（同上）。
+    """
+    from app.models import UserHotel  # noqa: PLC0415
+    from app.models import User  # noqa: PLC0415
+
+    existing = {row[0] for row in db.query(UserHotel.user_id).all()}
+    rows = []
+    for u in db.query(User).filter(User.hotel_id.isnot(None)).all():
+        if u.id in existing:
+            continue
+        rows.append(UserHotel(user_id=u.id, hotel_id=u.hotel_id))
+    if rows:
+        db.add_all(rows)
+        db.commit()

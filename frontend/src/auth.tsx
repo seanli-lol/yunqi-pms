@@ -6,10 +6,10 @@ import {
 
 interface AuthState {
   user: LoginUser | null
-  /** 平台管理员当前操作的酒店；员工为固定本店 */
+  /** 当前操作酒店：员工默认主店（绑定多店可在顶栏切换）；超级管理员必须选店 */
   activeHotelId: number | null
   activeHotelName: string | null
-  login: (hotelId: number | null, username: string, password: string, captchaToken?: string | null) => Promise<void>
+  login: (username: string, password: string, captchaToken?: string | null) => Promise<void>
   logout: () => void
   setActiveHotel: (id: number, name: string) => void
 }
@@ -37,9 +37,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     else localStorage.removeItem('pms_user')
   }, [])
 
-  const login = useCallback(async (hotelId: number | null, username: string, password: string, captchaToken?: string | null) => {
+  const login = useCallback(async (username: string, password: string, captchaToken?: string | null) => {
     const body: any = { username, password }
-    if (hotelId !== null) body.hotel_id = hotelId
     if (captchaToken) body.captcha_token = captchaToken
     const r = await api.post('/api/auth/login', body, { skipHotel: true })
     setAuthToken(r.token)

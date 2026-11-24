@@ -16,7 +16,10 @@ export default function Settings() {
   const hotels = useQuery({ queryKey: ['hotels'], queryFn: () => api.get<Hotel[]>('/api/hotels') })
   const users = useQuery({ queryKey: ['users'], queryFn: () => api.get<UserRow[]>('/api/users') })
 
-  // 平台管理员首次进入：自动选中第一家酒店作为业务上下文
+  // 谁能看到切店下拉：超级管理员恒可；员工绑定 ≥2 家酒店（与顶栏同口径）
+  const canSwitch = user?.role === 'platform_admin' || (user?.hotel_ids?.length ?? 0) > 1
+
+  // 超级管理员首次进入：自动选中第一家酒店作为业务上下文
   useEffect(() => {
     if (user?.role === 'platform_admin' && !activeHotelId && hotels.data?.length) {
       setActiveHotel(hotels.data[0].id, hotels.data[0].name)
@@ -30,11 +33,13 @@ export default function Settings() {
         desc="酒店（多店隔离）、来源渠道、收款方式、房型、客房与员工账号"
       />
 
-      {user?.role === 'platform_admin' && (
+      {canSwitch && (
         <div className="card card-pad mb-24" style={{ padding: '14px 24px' }}>
           <div className="flex-between">
             <span className="hint" style={{ fontSize: 13 }}>
-              平台管理员视角：请先选择要管理的酒店，下方各业务 Tab 的数据将随所选酒店切换。
+              {user?.role === 'platform_admin'
+                ? '超级管理员视角：请先选择要管理的酒店，下方各业务 Tab 的数据将随所选酒店切换。'
+                : '多店账号：请选择要管理的酒店，下方各业务 Tab 的数据将随所选酒店切换。'}
             </span>
             <select
               className="select" style={{ width: 240, height: 38 }}
@@ -127,7 +132,7 @@ function HotelsTab({ data, loading, isAdmin }: { data?: Hotel[]; loading: boolea
       </div>
       <p className="hint mt-16">
         {isAdmin
-          ? '仅平台管理员可添加酒店；每家酒店拥有独立的房态、预订、账务与报表数据，互不干扰。'
+          ? '仅超级管理员可添加酒店；每家酒店拥有独立的房态、预订、账务与报表数据，互不干扰。'
           : '您管理的酒店数据与其他门店完全隔离。'}
       </p>
 
@@ -834,21 +839,83 @@ function RoomsTab() {
 }
 
 /* ==================== 员工 ==================== */
+/** 绑定酒店多选卡片组：勾选顺序即主店（第一个勾选 = 主店，登录后默认进入） */
+function HotelPicks({ hotels, selected, onChange }: {
+  hotels: Hotel[]
+  selected: number[]
+  onChange: (ids: number[]) => void
+}) {
+  const toggle = (id: number) => {
+    if (selected.includes(id)) {
+      onChange(selected.filter(x => x !== id))
+    } else {
+      onChange([...selected, id])
+    }
+  }
+  if (!hotels.length) return <Spinner />
+  return (
+    <>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+        {hotels.map(h => {
+          const idx = selected.indexOf(h.id)
+          const isMain = idx === 0
+          return (
+            <label
+              key={h.id}
+              style={{
+                display: 'inline-flex', alignItems: 'center', gap: 7,
+                border: `1px solid ${idx >= 0 ? 'var(--accent-line)' : 'var(--hairline-soft)'}`,
+                background: idx >= 0 ? 'var(--accent-soft)' : 'transparent',
+                borderRadius: 999, padding: '8px 14px', fontSize: 14,
+                cursor: 'pointer', userSelect: 'none', transition: 'border-color .15s, background .15s',
+              }}
+            >
+              <input
+                type="checkbox"
+                checked={idx >= 0}
+                onChange={() => toggle(h.id)}
+                style={{ accentColor: 'var(--accent)', margin: 0 }}
+              />
+              <span>{h.name}</span>
+              {isMain && (
+                <span style={{ fontSize: 11, color: 'var(--on-accent)', background: 'var(--accent)', borderRadius: 999, padding: '1.5px 7px' }}>主店</span>
+              )}
+            </label>
+          )
+        })}
+      </div>
+      <span className="hint" style={{ display: 'block', marginTop: 6 }}>
+        可勾选多家；第一个勾选的为<b>主店</b>（登录后默认进入）。绑定多店的账号登录后可在顶栏切换酒店。
+      </span>
+    </>
+  )
+}
+
 function StaffTab({ users, loading }: { users?: UserRow[]; loading: boolean }) {
   const toast = useToast()
   const qc = useQueryClient()
   const { user, activeHotelId } = useAuth()
   const hotels = useQuery({ queryKey: ['hotels'], queryFn: () => api.get<Hotel[]>('/api/hotels') })
   const [addOpen, setAddOpen] = useState(false)
+  const [editTarget, setEditTarget] = useState<UserRow | null>(null)
+  const invalidate = () => {
+    qc.invalidateQueries({ queryKey: ['users'] })
+    qc.invalidateQueries({ queryKey: ['hotels'] })
+  }
   const mut = useMutation({
     mutationFn: (body: any) => api.post('/api/users', body),
-    onSuccess: () => { toast('员工账号已创建'); setAddOpen(false); qc.invalidateQueries({ queryKey: ['users'] }) },
+    onSuccess: () => { toast('员工账号已创建'); setAddOpen(false); invalidate() },
     onError: (e: any) => toast(e.message ?? '创建失败'),
   })
   const toggleMut = useMutation({
     mutationFn: (p: { id: number; is_active: boolean }) => api.patch(`/api/users/${p.id}`, { is_active: p.is_active }),
     onSuccess: () => { toast('员工状态已更新'); qc.invalidateQueries({ queryKey: ['users'] }) },
     onError: (e: any) => toast(e.message ?? '操作失败'),
+  })
+  const bindMut = useMutation({
+    mutationFn: (p: { id: number; hotel_ids: number[] }) => api.patch(`/api/users/${p.id}`, { hotel_ids: p.hotel_ids }),
+    onSuccess: () => { toast('员工绑定已保存'); setEditTarget(null); invalidate() },
+    onError: (e: any) => toast(e.message ?? '保存失败'),
   })
   const canCreate = user?.role === 'platform_admin' || user?.role === 'admin'
 
@@ -875,16 +942,38 @@ function StaffTab({ users, loading }: { users?: UserRow[]; loading: boolean }) {
                       </div>
                     </td>
                     <td data-label="账号">{u.username}</td>
-                    <td data-label="所属酒店">{u.hotel_name ?? '平台'}</td>
+                    <td data-label="所属酒店">
+                      {u.hotels?.length
+                        ? (
+                          <span style={{ fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+                            {u.hotels.map((h, i) => (
+                              <span key={h.id}>
+                                {i > 0 && ' · '}
+                                <span>{h.name}</span>
+                                {i === 0 && (
+                                  <span style={{ fontSize: 11, color: 'var(--on-accent)', background: 'var(--accent)', borderRadius: 999, padding: '1px 6px', marginLeft: 4 }}>主店</span>
+                                )}
+                              </span>
+                            ))}
+                          </span>
+                        )
+                        : (u.hotel_name ?? '平台')}
+                    </td>
                     <td data-label="角色"><Badge color="gray">{u.role_label}</Badge></td>
                     <td data-label="状态">{u.is_active ? <Badge color="green">启用</Badge> : <Badge color="orange">停用</Badge>}</td>
                     <td data-label="最近登录">{u.last_login_at ? u.last_login_at.slice(5, 16).replace('T', ' ') : '—'}</td>
                     <td className="no-label">
                       {u.id !== user?.id && (
-                        <button
-                          className="btn btn-quiet btn-sm"
-                          onClick={() => toggleMut.mutate({ id: u.id, is_active: !u.is_active })}
-                        >{u.is_active ? '停用' : '启用'}</button>
+                        <>
+                          <button
+                            className="btn btn-quiet btn-sm"
+                            onClick={() => setEditTarget(u)}
+                          >绑定</button>
+                          <button
+                            className="btn btn-quiet btn-sm"
+                            onClick={() => toggleMut.mutate({ id: u.id, is_active: !u.is_active })}
+                          >{u.is_active ? '停用' : '启用'}</button>
+                        </>
                       )}
                     </td>
                   </tr>
@@ -894,7 +983,7 @@ function StaffTab({ users, loading }: { users?: UserRow[]; loading: boolean }) {
           </div>
         )}
       </div>
-      <p className="hint mt-16">权限说明：平台管理员可管理全部酒店；酒店管理员可管理本店员工与配置；前台可操作房态、预订、入住退房与收款。</p>
+      <p className="hint mt-16">权限说明：超级管理员可管理全部酒店与员工绑定；酒店管理员可管理本店员工与配置；前台可操作房态、预订、入住退房与收款。</p>
 
       <AddStaffDialog
         open={addOpen} onClose={() => setAddOpen(false)}
@@ -902,6 +991,14 @@ function StaffTab({ users, loading }: { users?: UserRow[]; loading: boolean }) {
         canPickHotel={user?.role === 'platform_admin'}
         defaultHotelId={activeHotelId}
         onSubmit={(b) => mut.mutate(b)}
+      />
+      <EditStaffDialog
+        target={editTarget}
+        hotels={hotels.data ?? []}
+        canEdit={user?.role === 'platform_admin'}
+        onClose={() => setEditTarget(null)}
+        onSubmit={(ids) => bindMut.mutate({ id: editTarget!.id, hotel_ids: ids })}
+        busy={bindMut.isPending}
       />
     </>
   )
@@ -915,11 +1012,14 @@ function AddStaffDialog({ open, onClose, hotels, canPickHotel, defaultHotelId, o
   const toast = useToast()
   const [name, setName] = useState('')
   const [username, setUsername] = useState('')
-  const [hotelId, setHotelId] = useState<number | null>(defaultHotelId)
+  const [hotelIds, setHotelIds] = useState<number[]>([])
   const [role, setRole] = useState('receptionist')
   const [pwd, setPwd] = useState('yunqi123')
   useEffect(() => {
-    if (open) { setName(''); setUsername(''); setRole('receptionist'); setPwd('yunqi123'); setHotelId(defaultHotelId) }
+    if (open) {
+      setName(''); setUsername(''); setRole('receptionist'); setPwd('yunqi123')
+      setHotelIds(defaultHotelId ? [defaultHotelId] : [])
+    }
   }, [open, defaultHotelId])
 
   return (
@@ -933,8 +1033,8 @@ function AddStaffDialog({ open, onClose, hotels, canPickHotel, defaultHotelId, o
             className="btn btn-primary"
             onClick={() => {
               if (!name.trim() || !username.trim()) { toast('请填写姓名与账号'); return }
-              if (canPickHotel && !hotelId) { toast('请选择所属酒店'); return }
-              onSubmit({ name, username, password: pwd, role, hotel_id: hotelId })
+              if (canPickHotel && !hotelIds.length) { toast('请选择所属酒店'); return }
+              onSubmit({ name, username, password: pwd, role, hotel_ids: hotelIds })
             }}
           >创建账号</button>
         </>
@@ -945,10 +1045,8 @@ function AddStaffDialog({ open, onClose, hotels, canPickHotel, defaultHotelId, o
         <Field label="登录账号" required><input className="input" value={username} onChange={e => setUsername(e.target.value)} placeholder="字母或拼音" /></Field>
       </div>
       {canPickHotel && (
-        <Field label="所属酒店" required hint="员工登录时选择所属酒店；只能访问该酒店的数据。">
-          <select className="select" value={hotelId ?? ''} onChange={e => setHotelId(Number(e.target.value))}>
-            {hotels.map(h => <option key={h.id} value={h.id}>{h.name}</option>)}
-          </select>
+        <Field label="所属酒店" required>
+          <HotelPicks hotels={hotels} selected={hotelIds} onChange={setHotelIds} />
         </Field>
       )}
       <div className="form-row">
@@ -960,6 +1058,49 @@ function AddStaffDialog({ open, onClose, hotels, canPickHotel, defaultHotelId, o
         <Field label="初始密码"><input className="input" value={pwd} onChange={e => setPwd(e.target.value)} /></Field>
       </div>
       <p className="hint">密码至少 6 位；创建后请提醒员工首次登录修改密码。</p>
+    </Dialog>
+  )
+}
+
+/** 编辑员工绑定：仅超级管理员可改（酒店管理员越权提交会被后端 400 拦截） */
+function EditStaffDialog({ target, hotels, canEdit, onClose, onSubmit, busy }: {
+  target: UserRow | null
+  hotels: Hotel[]
+  canEdit: boolean
+  onClose: () => void
+  onSubmit: (ids: number[]) => void
+  busy: boolean
+}) {
+  const toast = useToast()
+  const [ids, setIds] = useState<number[]>([])
+  useEffect(() => {
+    if (target) setIds(target.hotels?.length ? target.hotels.map(h => h.id) : (target.hotel_id ? [target.hotel_id] : []))
+  }, [target])
+
+  return (
+    <Dialog
+      open={!!target} onClose={onClose} title="编辑员工绑定"
+      foot={
+        <>
+          <span className="hint" style={{ marginRight: 'auto' }}>
+            {canEdit ? '减绑后员工将无法再访问被移除酒店的数据' : '仅超级管理员可修改员工绑定'}
+          </span>
+          <button className="btn btn-ghost" onClick={onClose}>取消</button>
+          <button
+            className="btn btn-primary"
+            disabled={!canEdit || busy}
+            onClick={() => {
+              if (!ids.length) { toast('至少绑定一家酒店'); return }
+              onSubmit(ids)
+            }}
+          >保存绑定</button>
+        </>
+      }
+    >
+      <Field label="员工"><input className="input" value={target?.name ?? ''} disabled /></Field>
+      <Field label="绑定酒店" required>
+        <HotelPicks hotels={hotels} selected={ids} onChange={setIds} />
+      </Field>
     </Dialog>
   )
 }
