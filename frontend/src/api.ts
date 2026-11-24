@@ -342,7 +342,7 @@ export function usePayMethods() {
 /** 操作日志 action → 中文标签（报表页与预订详情共用） */
 export const OP_ACTION_LABEL: Record<string, string> = {
   reservation_create: '创建预订', reservation_confirm: '确认预订', reservation_cancel: '取消预订',
-  reservation_move: '调整预订', reservation_extend: '延住', reservation_edit: '编辑登记',
+  reservation_move: '编辑预订', reservation_extend: '延住', reservation_edit: '编辑登记',
   reservation_merge: '连住并入',
   check_in: '办理入住', check_in_undo: '撤销入住', check_out: '退房结算', check_out_undo: '撤销退房',
   payment: '收款', payment_adjust: '更正实收', payment_delete: '删除收款', folio_add: '加收费用',

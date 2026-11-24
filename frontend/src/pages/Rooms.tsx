@@ -11,7 +11,7 @@ import {
   type PaidTotalBody, type RegistrationBody, type Reservation, type Room,
 } from '../api'
 import { Badge, ConfirmDialog, Dialog, Drawer, Field, PageHead, Segmented, Spinner, useToast, RES_STATUS_BADGE } from '../ui'
-import { CheckInDialog, ExtendDialog } from '../dialogs'
+import { CheckInDialog, EditBookingDialog, ExtendDialog } from '../dialogs'
 import { GuestNameInput } from '../GuestNameInput'
 
 /** 真实住期晚数（按日期算）：board 的 nights 是「窗口内可见格数」，被窗口裁过，
@@ -823,17 +823,18 @@ export default function Rooms() {
     onError: (e: any) => toast(e.message ?? '删除失败'),
   })
 
-  /* ---------- 调整预订（待确认 / 已确认：改日期、天数、总价） ---------- */
+  /* ---------- 编辑预订（待确认 / 已确认：客人、日期天数、总价、来源备注） ---------- */
   const adjustMut = useMutation({
-    mutationFn: (p: { id: number; body: { check_in?: string; check_out?: string; rate: number } }) =>
+    mutationFn: (p: { id: number; body: { guest_name?: string; guest_phone?: string; check_in?: string; check_out?: string; rate?: number; channel_id?: number | null; notes?: string } }) =>
       api.patch<Reservation>(`/api/reservations/${p.id}`, p.body),
     onSuccess: () => {
-      toast('预订已调整，操作已留痕')
+      toast('预订已更新，操作已留痕')
       setAdjustRes(null)
       qc.invalidateQueries({ queryKey: ['reservation'] })
+      qc.invalidateQueries({ queryKey: ['reservations'] })
       invalidate()
     },
-    onError: (e: any) => toast(e.message ?? '调整失败'),
+    onError: (e: any) => toast(e.message ?? '保存失败'),
   })
 
   /* ---------- 连住合并（浮卡「合并为一笔」：多笔单晚 → 一笔普通多晚订单） ---------- */
@@ -1326,7 +1327,7 @@ export default function Rooms() {
                     <button className="btn btn-ghost" onClick={() => resMut.mutate({ path: `${detailR.id}/confirm`, label: '预订已确认' })}>确认预订</button>
                   )}
                   {(detailR.status === 'pending' || detailR.status === 'confirmed') && (
-                    <button className="btn btn-ghost" onClick={() => { setAdjustRes(detailR); setDetailRes(null) }}>调整预订</button>
+                    <button className="btn btn-ghost" onClick={() => { setAdjustRes(detailR); setDetailRes(null) }}>编辑</button>
                   )}
                   {(detailR.status === 'pending' || detailR.status === 'confirmed') && detailR.check_in <= todayIso() && (
                     <button className="btn btn-primary" onClick={() => setCheckinRes(detailR)}>办理入住</button>
@@ -1718,10 +1719,10 @@ export default function Rooms() {
         document.body,
       )}
 
-      {/* ---------- 调整预订（待确认 / 已确认） ---------- */}
+      {/* ---------- 编辑预订（待确认 / 已确认；预订列表页与房态盘共用 EditBookingDialog） ---------- */}
       {adjustRes && (
-        <EditReservationDialog
-          res={adjustRes} busy={adjustMut.isPending}
+        <EditBookingDialog
+          res={adjustRes} channels={channelList} busy={adjustMut.isPending}
           onClose={() => { setAdjustRes(null); setDetailRes(adjustRes) }}
           onConfirm={(body) => adjustMut.mutate({ id: adjustRes.id, body })}
         />
@@ -2077,83 +2078,6 @@ function EditPaidDialog({ res, folio, busy, onClose, onConfirm }: {
         </select>
       </Field>
       <p className="hint warn">减少已收会冲减收款记录（从最新一笔起），不生成退款凭证；全过程写入预订日志。</p>
-    </Drawer>
-  )
-}
-
-/* ---------- 调整预订（待确认 / 已确认：入住日、天数、总价） ---------- */
-function EditReservationDialog({ res, busy, onClose, onConfirm }: {
-  res: Reservation
-  busy: boolean
-  onClose: () => void
-  onConfirm: (body: { check_in?: string; check_out?: string; rate: number }) => void
-}) {
-  const hourly = res.stay_type === 'hourly'
-  const [checkIn, setCheckIn] = useState(res.check_in)
-  const [nightsText, setNightsText] = useState(String(res.nights))
-  // 初值取房费合计（分段计价的合并单不能拿单价 × 晚数推算）
-  const [totalText, setTotalText] = useState(
-    String(round2(res.room_charge_total ?? res.rate * (hourly ? res.hours : res.nights))),
-  )
-
-  const nights = Math.max(1, Math.round(Number(nightsText) || 1))
-  const units = hourly ? res.hours : nights
-  const unitLabel = hourly ? '小时' : '晚'
-  const total = Math.max(0, round2(Number(totalText) || 0))
-  const unitPrice = units > 0 ? round2(total / units) : 0
-  const finalTotal = round2(unitPrice * units)
-
-  /** 改天数时按折合单价重算总额 */
-  const onNightsChange = (v: string) => {
-    const digits = v.replace(/[^\d]/g, '')
-    setNightsText(digits)
-    const n = Math.max(1, Math.round(Number(digits) || 1))
-    const prevUnit = round2(total / (units || 1)) || res.rate
-    setTotalText(String(round2(n * prevUnit)))
-  }
-
-  return (
-    <Drawer
-      open passthrough onClose={onClose}
-      title="调整预订"
-      sub={`${res.room_number ?? res.room_type_name} · ${res.guest_name} · ${res.code}`}
-      foot={
-        <>
-          <button className="btn btn-ghost" onClick={onClose}>取消</button>
-          <button
-            className="btn btn-primary" disabled={busy}
-            onClick={() => onConfirm(hourly
-              // 钟点房占整日固定：只提交总价折算的单价，不携带日期（后端对改期显式 400）
-              ? { rate: unitPrice }
-              : { check_in: checkIn, check_out: addDaysIso(checkIn, nights), rate: unitPrice })}
-          >保存修改</button>
-        </>
-      }
-    >
-      <div className="form-row">
-        <Field label="入住日期" required>
-          <input className="input" type="date" value={checkIn} onChange={e => setCheckIn(e.target.value)} />
-        </Field>
-        {!hourly ? (
-          <Field label="入住天数" hint={`离店日 ${md(addDaysIso(checkIn, nights))}；房号锁定，冲突会提示。`}>
-            <input className="input" inputMode="numeric" value={nightsText} onChange={e => onNightsChange(e.target.value)} />
-          </Field>
-        ) : (
-          <Field label="钟点时长">
-            <input className="input" value={`${res.hours} 小时`} disabled />
-          </Field>
-        )}
-      </div>
-      <Field
-        label="房价总额（整单，元）"
-        hint={`折合 ${fmtMoney(unitPrice)}/${unitLabel}（${units} ${unitLabel}）· 最终应收 ${fmtMoney(finalTotal)}${res.room_charge_total != null && Math.abs(res.room_charge_total - round2(res.rate * (hourly ? res.hours : res.nights))) > 0.005 ? ' · 本单分段计价，改总额会把各段房费合并为按此额度整段重算' : ''}。`}
-      >
-        <input
-          className="input" inputMode="decimal" value={totalText}
-          onChange={e => setTotalText(moneyInputText(e.target.value))}
-        />
-      </Field>
-      <p className="hint">钟点房占整日固定，只能调整总价；改日期请重新开单或延住。</p>
     </Drawer>
   )
 }

@@ -152,6 +152,47 @@ def _notes_append(old: str, new: str) -> str:
     return joined[:200]
 
 
+def apply_guest_identity_changes(db: Session, r: Reservation, g: Guest | None,
+                                 new_name: str | None, new_phone: str | None,
+                                 changes: list[str]) -> None:
+    """客人姓名 / 手机号更正：改的是 guests 档案本身（该客人全部订单跟随更新）。
+
+    空姓名 400；手机号同店撞其他档案 400（按手机号复用档案是预订创建的联动口径，
+    同店两档案共用一个号码会让自动挂档无所适从）。变更摘要追加进 changes。"""
+    if new_name is not None and not new_name:
+        raise HTTPException(400, "客人姓名不能为空")
+    if new_phone is not None and new_phone and g:
+        dup = (db.query(Guest)
+               .filter(Guest.hotel_id == r.hotel_id, Guest.phone == new_phone,
+                       Guest.id != g.id)
+               .first())
+        if dup:
+            raise HTTPException(400, f"手机号已属于客户档案「{dup.name}」，请核对后再改")
+    if g:
+        if new_name is not None and new_name != g.name:
+            changes.append(f"姓名 {g.name}→{new_name}")
+            g.name = new_name
+        if new_phone is not None and new_phone != g.phone:
+            changes.append(f"手机号 {g.phone or '未留'}→{new_phone or '未留'}")
+            g.phone = new_phone
+
+
+def apply_channel_and_notes_changes(db: Session, r: Reservation,
+                                    channel_id: int | None, notes: str | None,
+                                    changes: list[str]) -> None:
+    """预订来源 / 备注（编辑预订与在住登记编辑共用：本店校验、变更摘要）。"""
+    if channel_id is not None and channel_id != r.channel_id:
+        ch = db.get(Channel, channel_id)
+        if not ch or ch.hotel_id != r.hotel_id:
+            raise HTTPException(400, "来源渠道不存在")
+        old = db.get(Channel, r.channel_id) if r.channel_id else None
+        changes.append(f"来源 {old.name if old else '未填'}→{ch.name}")
+        r.channel_id = ch.id
+    if notes is not None and notes != r.notes:
+        changes.append(f"备注「{r.notes or '空'}」→「{notes or '空'}」")
+        r.notes = notes
+
+
 def join_chain_target(db: Session, *, hotel_id: int, guest_id: int,
                       channel_id: int | None, room_id: int | None,
                       room_type_id: int, check_in: date, check_out: date) -> Reservation | None:
@@ -390,7 +431,7 @@ def create_reservation(body: ReservationBody, hotel_id: int | None = None,
     return res_out(db, r)
 
 
-# ---------- 拖动改期 / 换房 / 调整预订（日期、房价） ----------
+# ---------- 编辑预订（拖动改期 / 换房 / 日期房价 / 客人姓名手机号 / 来源备注） ----------
 @router.patch("/{res_id}")
 def move_reservation(res_id: int, body: ReservationPatch,
                      user: User = Depends(get_current_user), db: Session = Depends(get_db)):
@@ -447,6 +488,16 @@ def move_reservation(res_id: int, body: ReservationPatch,
     if span_changed or rate_changed:
         recalc_room_charge(db, r)
 
+    # ---- 客人姓名 / 手机号 / 来源 / 备注（编辑预订；口径同在住登记编辑）----
+    guest = db.get(Guest, r.guest_id)
+    changes: list[str] = []
+    apply_guest_identity_changes(
+        db, r, guest,
+        body.guest_name.strip() if body.guest_name is not None else None,
+        body.guest_phone.strip() if body.guest_phone is not None else None,
+        changes)
+    apply_channel_and_notes_changes(db, r, body.channel_id, body.notes, changes)
+
     detail = []
     if room_changed:
         detail.append(f"{old_room.room_number if old_room else '—'} → {room.room_number if room else '—'}")
@@ -454,9 +505,9 @@ def move_reservation(res_id: int, body: ReservationPatch,
         detail.append(f"{cin:%m/%d}–{cout:%m/%d}")
     if rate_changed:
         detail.append(f"房价 ¥{fmt_money(body.rate)}/晚")
-    guest = db.get(Guest, r.guest_id)
+    detail.extend(changes)
     log_op(db, r.hotel_id, user, "reservation_move", "reservation", r.id,
-           f"调整预订 {r.code}（{guest.name if guest else ''}）：{' · '.join(detail) or '无变化'}")
+           f"编辑预订 {r.code}（{guest.name if guest else ''}）：{' · '.join(detail) or '无变化'}")
     db.commit()
     return res_out(db, r)
 
@@ -611,22 +662,7 @@ def edit_registration(res_id: int, body: RegistrationBody,
     # ---- 客人姓名 / 手机号：同步客户档案 ----
     new_name = body.guest_name.strip() if body.guest_name is not None else None
     new_phone = body.guest_phone.strip() if body.guest_phone is not None else None
-    if new_name is not None and not new_name:
-        raise HTTPException(400, "客人姓名不能为空")
-    if new_phone is not None and new_phone:
-        dup = (db.query(Guest)
-               .filter(Guest.hotel_id == r.hotel_id, Guest.phone == new_phone,
-                       Guest.id != g.id)
-               .first())
-        if dup:
-            raise HTTPException(400, f"手机号已属于客户档案「{dup.name}」，请核对后再改")
-    if g:
-        if new_name is not None and new_name != g.name:
-            changes.append(f"姓名 {g.name}→{new_name}")
-            g.name = new_name
-        if new_phone is not None and new_phone != g.phone:
-            changes.append(f"手机号 {g.phone or '未留'}→{new_phone or '未留'}")
-            g.phone = new_phone
+    apply_guest_identity_changes(db, r, g, new_name, new_phone, changes)
 
     # ---- 入住天数（仅普通房）：离店日 = 入住日 + 天数，冲突只按未到店预订计 ----
     if body.nights is not None:
@@ -655,19 +691,8 @@ def edit_registration(res_id: int, body: RegistrationBody,
     if rate_changed or body.nights is not None:
         recalc_room_charge(db, r)
 
-    # ---- 来源渠道 ----
-    if body.channel_id is not None and body.channel_id != r.channel_id:
-        ch = db.get(Channel, body.channel_id)
-        if not ch or ch.hotel_id != r.hotel_id:
-            raise HTTPException(400, "来源渠道不存在")
-        old = db.get(Channel, r.channel_id) if r.channel_id else None
-        changes.append(f"来源 {old.name if old else '未填'}→{ch.name}")
-        r.channel_id = ch.id
-
-    # ---- 备注 ----
-    if body.notes is not None and body.notes != r.notes:
-        changes.append(f"备注「{r.notes or '空'}」→「{body.notes or '空'}」")
-        r.notes = body.notes
+    # ---- 来源渠道 / 备注（与「编辑预订」共用 helper）----
+    apply_channel_and_notes_changes(db, r, body.channel_id, body.notes, changes)
 
     if not changes:
         return res_out(db, r)

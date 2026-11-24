@@ -1824,3 +1824,75 @@ def test_hourly_overtime_alert():
     # 种子的超时演示单（301）应出现在超时列表里（seed 相对 now 回溯 140 分钟）
     seeded = [x for x in client.get("/api/reservations/overtime", headers=h).json()]
     assert any(x["room_number"] == "301" for x in seeded)
+
+
+def test_pending_reservation_edit():
+    """编辑预订（pending/confirmed）：姓名/手机号/来源/备注 + 天数混合提交；
+    姓名电话同步客户档案（历史跟随）、手机号同店撞档 400、checked_out 仍 400"""
+    from datetime import date, timedelta
+
+    tok = _login("zhouqi", hotel_id=1)["token"]
+    h = _headers(tok)
+    cin = (date.today() + timedelta(days=30)).isoformat()
+
+    # 建一张待确认单（按房型，不锁房号；13900003 号段未被他测占用）
+    r = client.post("/api/reservations", headers=h, json={
+        "guest_name": "编辑客甲", "guest_phone": "13900003111",
+        "check_in": cin, "check_out": (date.today() + timedelta(days=32)).isoformat(),
+        "room_type_id": 1, "status": "pending"})
+    assert r.status_code == 200, r.text
+    res = r.json()
+    res_id = res["id"]
+    assert res["status"] == "pending"
+
+    # 建另一张老客档案占住手机号（同店撞档用）
+    r = client.post("/api/guests", headers=h, json={"name": "编辑老客", "phone": "13900003222"})
+    assert r.status_code == 200, r.text
+
+    # pending 一次提交：姓名 / 手机号（撞档 → 400）
+    r = client.patch(f"/api/reservations/{res_id}", headers=h,
+                     json={"guest_phone": "13900003222"})
+    assert r.status_code == 400 and "手机号已属于客户档案" in r.json()["detail"]
+    r = client.patch(f"/api/reservations/{res_id}", headers=h,
+                     json={"guest_name": "  "})
+    assert r.status_code == 400 and "客人姓名不能为空" in r.json()["detail"]
+    # 渠道不存在 → 400
+    r = client.patch(f"/api/reservations/{res_id}", headers=h, json={"channel_id": 99999})
+    assert r.status_code == 400 and "来源渠道不存在" in r.json()["detail"]
+
+    # 混合提交：姓名 / 手机号 / 天数 / 备注 / 来源（改动都生效，档案同步）
+    chans = client.get("/api/channels", headers=h).json()
+    ch_id = chans[0]["id"]
+    new_out = (date.today() + timedelta(days=33)).isoformat()
+    r = client.patch(f"/api/reservations/{res_id}", headers=h, json={
+        "guest_name": "编辑客甲改", "guest_phone": "13900003112",
+        "check_out": new_out, "notes": "改签：高楼层", "channel_id": ch_id})
+    assert r.status_code == 200, r.text
+    out = r.json()
+    assert out["guest_name"] == "编辑客甲改" and out["guest_phone"] == "13900003112"
+    assert out["check_out"] == new_out and out["nights"] == 3
+    assert out["notes"] == "改签：高楼层" and out["channel_id"] == ch_id
+    # 档案同步：按新手机号能搜到改名后的档案（历史跟随）
+    g = client.get("/api/guests?q=13900003112", headers=h).json()
+    assert any(x["name"] == "编辑客甲改" for x in g)
+    # 房费账目按新晚数重算为一条（2 晚 → 3 晚）
+    folio = client.get(f"/api/reservations/{res_id}/folio", headers=h).json()
+    fees = [x for x in folio["items"] if x["category"] == "room_charge"]
+    assert len(fees) == 1 and fees[0]["amount"] == out["room_charge_total"]
+
+    # 操作日志：编辑预订 + 变更摘要
+    logs = client.get(f"/api/reservations/{res_id}/logs", headers=h).json()
+    assert any(l["action"] == "reservation_move" and "姓名 编辑客甲→编辑客甲改" in l["summary"]
+               and "手机号 13900003111→13900003112" in l["summary"] for l in logs)
+
+    # confirmed 状态同样可编辑
+    r = client.post(f"/api/reservations/{res_id}/confirm", headers=h)
+    assert r.status_code == 200, r.text
+    r = client.patch(f"/api/reservations/{res_id}", headers=h, json={"notes": "已确认后补充备注"})
+    assert r.status_code == 200 and r.json()["notes"] == "已确认后补充备注"
+
+    # checked_out 仍不可调整
+    r = client.post(f"/api/reservations/{res_id}/cancel", headers=h)
+    assert r.status_code == 200, r.text  # cancelled 也不可
+    r = client.patch(f"/api/reservations/{res_id}", headers=h, json={"notes": "x"})
+    assert r.status_code == 400 and "当前状态不可调整" in r.json()["detail"]

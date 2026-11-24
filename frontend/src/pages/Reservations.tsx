@@ -6,6 +6,7 @@ import {
   type Channel, type Reservation, type RoomType,
 } from '../api'
 import { ConfirmDialog, Dialog, Field, PageHead, Segmented, Spinner, useToast, RES_STATUS_BADGE } from '../ui'
+import { EditBookingDialog } from '../dialogs'
 import { GuestNameInput } from '../GuestNameInput'
 
 const STATUS_TABS = [
@@ -27,6 +28,8 @@ export default function Reservations() {
   const [newOpen, setNewOpen] = useState(false)
   /** 取消预订确认弹层（应用内弹层替代 window.confirm） */
   const [cancelRes, setCancelRes] = useState<Reservation | null>(null)
+  /** 编辑预订（待确认 / 已确认；与房态盘详情抽屉共用 EditBookingDialog） */
+  const [editRes, setEditRes] = useState<Reservation | null>(null)
 
   useEffect(() => {
     const st = (loc.state as any)?.status
@@ -67,6 +70,18 @@ export default function Reservations() {
   if (status === 'all') {
     for (const r of rows) counts[r.status] = (counts[r.status] ?? 0) + 1
   }
+
+  /* ---------- 编辑预订（PATCH /api/reservations/{id}，后端同步客户档案与房费） ---------- */
+  const editMut = useMutation({
+    mutationFn: (p: { id: number; body: { guest_name?: string; guest_phone?: string; check_in?: string; check_out?: string; rate?: number; channel_id?: number | null; notes?: string } }) =>
+      api.patch<Reservation>(`/api/reservations/${p.id}`, p.body),
+    onSuccess: () => {
+      toast('预订已更新，操作已留痕')
+      setEditRes(null)
+      qc.invalidateQueries({ queryKey: ['reservations'] })
+    },
+    onError: (e: any) => toast(e.message ?? '保存失败'),
+  })
 
   return (
     <>
@@ -135,14 +150,14 @@ export default function Reservations() {
                     </td>
                     <td data-label="操作人">{r.operator_name ?? '—'}</td>
                     <td className="no-label">
-                      {r.status === 'pending' && (
-                        <>
-                          <button className="btn btn-quiet btn-sm" onClick={() => mut.mutate({ path: `/api/reservations/${r.id}/confirm`, label: '预订已确认' })}>确认</button>
-                          <button className="btn btn-danger-ghost btn-sm" onClick={() => setCancelRes(r)}>取消</button>
-                        </>
+                      {(r.status === 'pending' || r.status === 'confirmed') && (
+                        <button className="btn btn-quiet btn-sm" onClick={() => setEditRes(r)}>编辑</button>
                       )}
-                      {r.status === 'confirmed' && (
-                        <button className="btn btn-quiet btn-sm" onClick={() => setCancelRes(r)}>取消</button>
+                      {r.status === 'pending' && (
+                        <button className="btn btn-quiet btn-sm" onClick={() => mut.mutate({ path: `/api/reservations/${r.id}/confirm`, label: '预订已确认' })}>确认</button>
+                      )}
+                      {(r.status === 'pending' || r.status === 'confirmed') && (
+                        <button className="btn btn-danger-ghost btn-sm" onClick={() => setCancelRes(r)}>取消</button>
                       )}
                       {(r.status === 'checked_in' || r.status === 'checked_out') && r.balance_due > 0 && <span className="badge badge-red" style={{ marginRight: 6 }}>欠 {fmtMoney(r.balance_due)}</span>}
                     </td>
@@ -163,6 +178,15 @@ export default function Reservations() {
           <p className="confirm-msg">确定取消该预订吗？</p>
           <div className="danger-note">取消会清除该预订已收取的款项（不生成退款凭证），且不可恢复。</div>
         </ConfirmDialog>
+      )}
+
+      {/* 编辑预订（待确认 / 已确认；与房态盘详情抽屉共用弹层） */}
+      {editRes && (
+        <EditBookingDialog
+          res={editRes} channels={channels.data ?? []} busy={editMut.isPending}
+          onClose={() => setEditRes(null)}
+          onConfirm={(body) => editMut.mutate({ id: editRes.id, body })}
+        />
       )}
 
       <NewReservationDialog

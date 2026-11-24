@@ -237,11 +237,17 @@ class ReservationBody(BaseModel):
 
 
 class ReservationPatch(BaseModel):
-    """拖动换房 / 改期 / 调整预订（日期、房价）"""
+    """编辑预订：换房 / 改期 / 房价 / 客人姓名手机号（同步客户档案）/ 来源 / 备注。
+
+    字段为 None 表示不修改（口径同 RegistrationBody）。"""
     room_id: int | None = None
     check_in: date | None = None
     check_out: date | None = None
     rate: Money | None = None        # 房价单价（前端按整单总额折算）
+    guest_name: str | None = None
+    guest_phone: str | None = None
+    channel_id: int | None = None
+    notes: str | None = None
 
 
 class RegistrationBody(BaseModel):
