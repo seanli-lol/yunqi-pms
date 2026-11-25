@@ -53,7 +53,6 @@ export default function Billing() {
       <PageHead
         title="账务"
         desc={`未结清 ${unpaid.length} 笔 · 应收 ${fmtMoney(unpaidAmount)}`}
-        actions={<button className="btn btn-ghost" onClick={() => toast('账单已导出为 CSV（演示）')}>导出</button>}
       />
 
       <div className="stats">
@@ -127,15 +126,9 @@ export default function Billing() {
         foot={
           detail && folio.data && folio.data.balance_due > 0 ? (
             <>
-              <button className="btn btn-ghost" onClick={() => toast('账单已发送至打印机（演示）')}>打印账单</button>
               <button className="btn btn-primary" onClick={() => setPayOpen(true)}>立即收款 {fmtMoney(folio.data.balance_due)}</button>
             </>
-          ) : (
-            <>
-              <span className="hint" style={{ marginRight: 'auto' }}>操作人：当前登录账号</span>
-              <button className="btn btn-ghost" onClick={() => toast('账单已发送至打印机（演示）')}>打印账单</button>
-            </>
-          )
+          ) : null
         }
       >
         {folio.isLoading || !folio.data ? <Spinner /> : (
@@ -193,7 +186,6 @@ export default function Billing() {
         sub={detail ? `${detail.guest_name} · ${detail.code}` : ''}
         foot={
           <>
-            <span className="hint" style={{ marginRight: 'auto' }}>操作人：当前登录账号</span>
             <button className="btn btn-ghost" onClick={() => setPayOpen(false)}>取消</button>
             <button
               className="btn btn-primary"
@@ -208,7 +200,6 @@ export default function Billing() {
             {(pms.data ?? []).map(m => <option key={m.code} value={m.code}>{m.name}</option>)}
           </select>
         </Field>
-        <p className="hint">默认收取全部未结金额 {folio.data ? fmtMoney(folio.data.balance_due) : ''}。</p>
       </Dialog>
     </>
   )

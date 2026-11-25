@@ -76,7 +76,7 @@ export default function Reservations() {
     mutationFn: (p: { id: number; body: { guest_name?: string; guest_phone?: string; check_in?: string; check_out?: string; rate?: number; channel_id?: number | null; notes?: string } }) =>
       api.patch<Reservation>(`/api/reservations/${p.id}`, p.body),
     onSuccess: () => {
-      toast('预订已更新，操作已留痕')
+      toast('预订已更新')
       setEditRes(null)
       qc.invalidateQueries({ queryKey: ['reservations'] })
     },
@@ -87,7 +87,7 @@ export default function Reservations() {
     <>
       <PageHead
         title="预订管理"
-        desc={`共 ${rows.length} 条预订 · 操作留痕可追溯`}
+        desc={`共 ${rows.length} 条预订`}
         actions={<button className="btn btn-primary" onClick={() => setNewOpen(true)}>新建预订</button>}
       />
 
@@ -312,7 +312,6 @@ function NewReservationDialog({ open, onClose, channels, types, onSubmit, onDone
       open={open} onClose={onClose} wide title="新建预订"
       foot={
         <>
-          <span className="hint" style={{ marginRight: 'auto' }}>操作人：当前登录账号 · 创建后将记录到预订日志</span>
           <button className="btn btn-ghost" onClick={onClose}>取消</button>
           <button className="btn btn-primary" onClick={submit} disabled={creating}>确认创建</button>
         </>
@@ -322,7 +321,7 @@ function NewReservationDialog({ open, onClose, channels, types, onSubmit, onDone
         <Field label="客人姓名" required>
           <GuestNameInput value={name} onChange={setName} onPick={g => { setName(g.name); setPhone(g.phone || '') }} />
         </Field>
-        <Field label="手机号（选填）" hint="填写后用于接收确认短信；未填写则到店补录。">
+        <Field label="手机号（选填）">
           <input className="input" value={phone} onChange={e => setPhone(e.target.value)} placeholder="可留空，到店时补录" />
         </Field>
       </div>
@@ -348,7 +347,6 @@ function NewReservationDialog({ open, onClose, channels, types, onSubmit, onDone
               if (!(tiers.some(t => t.hours === hours)) && tiers.length) setHours(tiers[0].hours)
             }}>钟点</button>
           </div>
-          <span className="hint">钟点档位：{tiers.map(t => `${t.hours}小时 ${fmtMoney(t.price)}`).join(' · ')}；钟点房按入住日占整日，时长 {hours} 小时。</span>
         </Field>
       )}
       {hourlyAvail && stayType === 'hourly' && (
@@ -361,10 +359,10 @@ function NewReservationDialog({ open, onClose, channels, types, onSubmit, onDone
         </Field>
       )}
       <div className="form-row">
-        <Field label="入住日期" required hint="默认为今天，可修改。">
+        <Field label="入住日期" required>
           <input className="input" type="date" value={cin} onChange={e => { setCin(e.target.value); setCout(addDaysIso(e.target.value, nights)) }} />
         </Field>
-        <Field label="入住天数" required hint="改天数后离店日期自动重算；也可直接改离店日期。">
+        <Field label="入住天数" required>
           <input className="input" inputMode="numeric" value={nightsText} onChange={e => onNightsChange(e.target.value)} />
         </Field>
       </div>
@@ -384,8 +382,8 @@ function NewReservationDialog({ open, onClose, channels, types, onSubmit, onDone
       </div>
       <p className="hint">
         {stayType === 'hourly' && hourlyAvail
-          ? `钟点房费 ${fmtMoney(finalTotal)}（${hours} 小时 × ${fmtMoney(unitPrice)}）· 按入住日占用整天，创建后将自动预留空净房。`
-          : type ? `共 ${nights} 晚 · 折合 ${fmtMoney(unitPrice)}/晚 · 应收 ${fmtMoney(finalTotal)} · 预订后将自动预留空净房，入住时可改派。` : '请选择房型与日期。'}
+          ? `钟点房费 ${fmtMoney(finalTotal)}（${hours} 小时 × ${fmtMoney(unitPrice)}）`
+          : type ? `共 ${nights} 晚 · 折合 ${fmtMoney(unitPrice)}/晚 · 应收 ${fmtMoney(finalTotal)}` : '请选择房型与日期。'}
       </p>
       <div className="form-row mt-16">
         <Field label="来源">

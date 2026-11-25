@@ -30,17 +30,11 @@ export default function Settings() {
     <>
       <PageHead
         title="系统设置"
-        desc="酒店（多店隔离）、来源渠道、收款方式、房型、客房与员工账号"
       />
 
       {canSwitch && (
         <div className="card card-pad mb-24" style={{ padding: '14px 24px' }}>
           <div className="flex-between">
-            <span className="hint" style={{ fontSize: 13 }}>
-              {user?.role === 'platform_admin'
-                ? '超级管理员视角：请先选择要管理的酒店，下方各业务 Tab 的数据将随所选酒店切换。'
-                : '多店账号：请选择要管理的酒店，下方各业务 Tab 的数据将随所选酒店切换。'}
-            </span>
             <select
               className="select" style={{ width: 240, height: 38 }}
               value={activeHotelId ?? ''}
@@ -104,7 +98,7 @@ function HotelsTab({ data, loading, isAdmin }: { data?: Hotel[]; loading: boolea
       <div className="card">
         <div className="card-head">
           <div className="section-sub" style={{ fontSize: 13.5 }}>
-            共 {data?.length ?? 0} 家酒店 · 各店数据完全隔离（房态、预订、账务、报表互不可见）
+            共 {data?.length ?? 0} 家酒店
           </div>
           {isAdmin && <button className="btn btn-primary btn-sm" onClick={() => setAddOpen(true)}>添加酒店</button>}
         </div>
@@ -130,11 +124,6 @@ function HotelsTab({ data, loading, isAdmin }: { data?: Hotel[]; loading: boolea
           </div>
         )}
       </div>
-      <p className="hint mt-16">
-        {isAdmin
-          ? '仅超级管理员可添加酒店；每家酒店拥有独立的房态、预订、账务与报表数据，互不干扰。'
-          : '您管理的酒店数据与其他门店完全隔离。'}
-      </p>
 
       <AddHotelDialog open={addOpen} onClose={() => setAddOpen(false)} onSubmit={(b) => mut.mutate(b)} busy={mut.isPending} />
       <EditHotelDialog
@@ -177,7 +166,6 @@ function AddHotelDialog({ open, onClose, onSubmit, busy }: {
         <Field label="店长姓名"><input className="input" value={contact} onChange={e => setContact(e.target.value)} placeholder="创建首个管理员账号时使用" /></Field>
       </div>
       <Field label="地址"><input className="input" value={addr} onChange={e => setAddr(e.target.value)} /></Field>
-      <p className="hint">创建后可在「员工账号」中为该酒店添加员工；新酒店默认为空，房型与客房需单独配置。</p>
     </Dialog>
   )
 }
@@ -322,7 +310,6 @@ function ChannelsTab() {
             </div>
           ))}
         </div>
-        <p className="hint mt-8">调整颜色或顺序后，房态盘日历、预订列表与下拉选项实时生效。</p>
       </div>
 
       <AddChannelDialog open={addOpen} onClose={() => setAddOpen(false)} onSubmit={(b) => mut.mutate({ method: 'post', path: '/api/channels', body: b })} />
@@ -452,7 +439,6 @@ function PayMethodsTab() {
             <button key={m.id} className={i === 0 ? 'active' : ''}>{m.name}</button>
           ))}
         </div>
-        <p className="hint mt-8">新增或停用后，前台收款、入住登记与账务明细中的收款方式选项实时生效；有收款记录的方式不可删除，仅可停用。</p>
       </div>
 
       <PayMethodDialog
@@ -647,7 +633,7 @@ function TypesTab() {
             ))}
           </div>
           <button type="button" className="btn btn-ghost btn-sm" onClick={addTier} style={{ alignSelf: 'flex-start' }}>＋ 添加档位</button>
-          <span className="hint">每档 = 「时长 / 该时长的整单总价」，如 2 小时 ¥80。开单时长只提供已配档位，总额可议价；全部删除即该房型不支持钟点房。同房型时长不可重复，1–12 小时。支持到分。</span>
+          <span className="hint">每档为该时长的<b>整单总价</b>（非每小时），如 2 小时 ¥80；全部删除即该房型不支持钟点房。</span>
         </Field>
         <Field label="说明"><textarea className="input" rows={2} value={fDesc} onChange={e => setFDesc(e.target.value)} placeholder="床型、景观、设施等" /></Field>
       </Dialog>
@@ -819,7 +805,6 @@ function RoomsTab() {
         <Field label="备注">
           <textarea className="input" rows={2} value={edNotes} onChange={e => setEdNotes(e.target.value)} placeholder="选填，如 空调检修，预计 11/20 恢复" />
         </Field>
-        <p className="hint mt-8">房号需全店唯一，不可与现有客房重复；修改保存后即时生效。</p>
       </Dialog>
 
       <ConfirmDialog
@@ -885,7 +870,7 @@ function HotelPicks({ hotels, selected, onChange }: {
         })}
       </div>
       <span className="hint" style={{ display: 'block', marginTop: 6 }}>
-        可勾选多家；第一个勾选的为<b>主店</b>（登录后默认进入）。绑定多店的账号登录后可在顶栏切换酒店。
+        第一个勾选的为<b>主店</b>（登录后默认进入）。
       </span>
     </>
   )
@@ -983,7 +968,6 @@ function StaffTab({ users, loading }: { users?: UserRow[]; loading: boolean }) {
           </div>
         )}
       </div>
-      <p className="hint mt-16">权限说明：超级管理员可管理全部酒店与员工绑定；酒店管理员可管理本店员工与配置；前台可操作房态、预订、入住退房与收款。</p>
 
       <AddStaffDialog
         open={addOpen} onClose={() => setAddOpen(false)}
@@ -1027,7 +1011,6 @@ function AddStaffDialog({ open, onClose, hotels, canPickHotel, defaultHotelId, o
       open={open} onClose={onClose} title="添加员工"
       foot={
         <>
-          <span className="hint" style={{ marginRight: 'auto' }}>操作人：当前登录账号</span>
           <button className="btn btn-ghost" onClick={onClose}>取消</button>
           <button
             className="btn btn-primary"
@@ -1057,7 +1040,7 @@ function AddStaffDialog({ open, onClose, hotels, canPickHotel, defaultHotelId, o
         </Field>
         <Field label="初始密码"><input className="input" value={pwd} onChange={e => setPwd(e.target.value)} /></Field>
       </div>
-      <p className="hint">密码至少 6 位；创建后请提醒员工首次登录修改密码。</p>
+      <p className="hint">密码至少 6 位。</p>
     </Dialog>
   )
 }
@@ -1083,7 +1066,7 @@ function EditStaffDialog({ target, hotels, canEdit, onClose, onSubmit, busy }: {
       foot={
         <>
           <span className="hint" style={{ marginRight: 'auto' }}>
-            {canEdit ? '减绑后员工将无法再访问被移除酒店的数据' : '仅超级管理员可修改员工绑定'}
+            {!canEdit && '仅超级管理员可修改员工绑定'}
           </span>
           <button className="btn btn-ghost" onClick={onClose}>取消</button>
           <button

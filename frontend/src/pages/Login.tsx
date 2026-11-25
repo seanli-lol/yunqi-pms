@@ -66,7 +66,6 @@ export default function Login() {
           <span className="brand-mark" style={{ width: 44, height: 44, borderRadius: 12, fontSize: 19 }}>云</span>
         </div>
         <h1 style={{ fontSize: 24, fontWeight: 600, letterSpacing: '-0.02em' }}>登录云栖 PMS</h1>
-        <p style={{ marginTop: 6, fontSize: 14, color: 'var(--text-secondary)' }}>账号密码直接登录 · 绑定多店的账号登录后可在顶栏切换酒店</p>
 
         <form style={{ marginTop: 22, textAlign: 'left' }} onSubmit={(e) => { e.preventDefault(); submit() }}>
           <div className="field">

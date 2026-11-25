@@ -189,7 +189,6 @@ function CheckOutDialog({ res, onClose, onConfirm }: {
       sub={`${res.guest_name} · ${md(res.check_in)} – ${md(res.check_out)} · 共 ${res.nights} 晚`}
       foot={
         <>
-          <span className="hint" style={{ marginRight: 'auto' }}>操作人：当前登录账号</span>
           <button className="btn btn-ghost" onClick={onClose}>暂不结算</button>
           <button
             className="btn btn-primary"
@@ -223,7 +222,6 @@ function CheckOutDialog({ res, onClose, onConfirm }: {
               </select>
             </Field>
           )}
-          <p className="hint warn">结算完成后，房态将转为空脏，前台可在房态盘点「设净」恢复为净房。</p>
         </>
       ) : <Spinner />}
     </Dialog>

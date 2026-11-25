@@ -43,7 +43,6 @@ export default function OvertimeAlert() {
       <div className="ot-head">
         <span className="ot-dot" />
         <span>钟点房到时 · {items.length} 间</span>
-        <span className="sub">每 30 秒检查</span>
         <button
           type="button" className="ot-close" aria-label="关闭到时提醒"
           onClick={() => setDismissed(new Set((q.data ?? []).map(x => x.reservation_id)))}

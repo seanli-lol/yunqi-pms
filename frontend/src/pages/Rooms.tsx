@@ -534,7 +534,7 @@ export default function Rooms() {
   const moveMut = useMutation({
     mutationFn: (p: { id: number; body: { room_id: number; check_in: string; check_out: string }; label: string }) =>
       api.patch(`/api/reservations/${p.id}`, p.body),
-    onSuccess: (_d, p) => toast(`已调整：${p.label}（演示环境实时生效）`),
+    onSuccess: (_d, p) => toast(`已调整：${p.label}`),
     onError: (e: any) => toast(e.message ?? '调整失败'),
     onSettled: invalidate,
   })
@@ -750,7 +750,7 @@ export default function Rooms() {
       await api.patch<Reservation>(`/api/reservations/${p.id}/paid-total`, p.paid)
     },
     onSuccess: () => {
-      toast('登记信息与实收已更新，操作已留痕')
+      toast('登记信息与实收已更新')
       setEditRes(null)
       setDetailRes(null)
       qc.invalidateQueries({ queryKey: ['reservation'] })
@@ -791,7 +791,7 @@ export default function Rooms() {
     mutationFn: (p: { id: number; body: PaidTotalBody }) =>
       api.patch<Reservation>(`/api/reservations/${p.id}/paid-total`, p.body),
     onSuccess: () => {
-      toast('实收总额已更正，操作已留痕')
+      toast('实收总额已更正')
       setPaidRes(null)
       qc.invalidateQueries({ queryKey: ['folio'] })
       invalidate()
@@ -828,7 +828,7 @@ export default function Rooms() {
     mutationFn: (p: { id: number; body: { guest_name?: string; guest_phone?: string; check_in?: string; check_out?: string; rate?: number; channel_id?: number | null; notes?: string } }) =>
       api.patch<Reservation>(`/api/reservations/${p.id}`, p.body),
     onSuccess: () => {
-      toast('预订已更新，操作已留痕')
+      toast('预订已更新')
       setAdjustRes(null)
       qc.invalidateQueries({ queryKey: ['reservation'] })
       qc.invalidateQueries({ queryKey: ['reservations'] })
@@ -917,7 +917,6 @@ export default function Rooms() {
     <>
       <PageHead
         title="房态盘"
-        desc="点击空白格/拖选多天开单（可累积多间）· 拖动方块换房/改期"
       />
 
       <div className="filter-bar">
@@ -1160,9 +1159,7 @@ export default function Rooms() {
       </div>
       </div>
           <p className="hint mt-16 cal-legend">
-            图例：<Badge color="blue">在住</Badge> <Badge color="orange">未来抵店</Badge> <Badge color="red">欠</Badge> 在住/已离店未结清 · <Badge color="purple">超</Badge> 实付超过应收（多收待退）· 灰块 = 已离店（离店日格子只压左 1/3，当天下午起腾空，空白即可售，含当日钟点房）· 方块右上角<b style={{ color: 'var(--text-primary)' }}>钟表图标</b> = 钟点房（时长见方块第二行「渠道 · 时长」，退房后不再显示、改显格子右上角退房图标）· <b style={{ color: 'var(--danger-deep)' }}>方块变红 + 闹钟图标</b> = 钟点房已到时（超时分钟数见右下角提醒卡，延住/退房后自动恢复）· 格子右上角<b style={{ color: 'var(--text-primary)' }}>退房图标</b> = 当日有客人退房，悬停看明细、<b>点按展开详情并可编辑</b>（更正实收 / 撤销退房；同列有方块时让位到右下角）·
-            方块最前端竖条颜色 = 预订来源（可在「设置 → 来源渠道」配置）。<b>拖动方块换房/改期（冲突自动回弹）· 点击空白格直接开单 · 房号旁「设净/设脏」一键切换房态</b>。
-            <b>同一客人同房首尾相接的多笔预订自动合并为一笔订单</b>（新开单直接并入原单；存量逐笔单点长条看明细并可「合并为一笔」，合并后与普通多晚订单完全一致，点开即订单详情）。
+            图例：<Badge color="blue">在住</Badge> <Badge color="orange">未来抵店</Badge> · <Badge color="red">欠</Badge> 未结清 · <Badge color="purple">超</Badge> 多收待退 · 灰块 = 已离店（离店日格子只压左 1/3，空白即可售）· 右上角<b style={{ color: 'var(--text-primary)' }}>钟表</b> = 钟点房（第二行「渠道 · 时长」）· <b style={{ color: 'var(--danger-deep)' }}>红块 + 闹钟</b> = 钟点房已到时 · 格角<b style={{ color: 'var(--text-primary)' }}>退房图标</b> = 当日退房（点按看明细）· 方块左缘竖条颜色 = 预订来源
           </p>
         </div>
       ) : (
@@ -1245,7 +1242,6 @@ export default function Rooms() {
         sub={vacantRoom ? `${vacantRoom.floor}楼 · ${ROOM_STATUS_LABEL[vacantRoom.status]}` : ''}
         foot={
           <>
-            <span className="hint" style={{ marginRight: 'auto' }}>操作人：当前登录账号</span>
             {vacantRoom?.status === 'maintenance' ? (
               <button
                 className="btn btn-primary"
@@ -1535,7 +1531,7 @@ export default function Rooms() {
           <div className="info-row"><span>收款时间</span><span>{mdt(delPay.pay.created_at)}</span></div>
           {delPay.pay.remark && <div className="info-row"><span>备注</span><span>{delPay.pay.remark}</span></div>}
           <div className="danger-note">
-            删除后账单余额将增加 <b>{fmtMoney(delPay.pay.amount)}</b>，且不生成退款凭证（操作全程写入预订日志）。
+            删除后账单余额将增加 <b>{fmtMoney(delPay.pay.amount)}</b>，且不生成退款凭证。
           </div>
         </ConfirmDialog>
       )}
@@ -1883,7 +1879,7 @@ function EditDrawer({ res, channels, busy, onClose, onConfirm }: {
       </div>
       <div className="form-row">
         {!hourly && (
-          <Field label="入住天数" hint="改天数后离店日 = 入住日 + 天数，首条房费随之重算；延住追加的账目不动。">
+          <Field label="入住天数">
             <input
               className="input" inputMode="numeric" value={nightsText}
               onChange={e => onNightsChange(e.target.value)}
@@ -1931,7 +1927,7 @@ function EditDrawer({ res, channels, busy, onClose, onConfirm }: {
           {(pms.data ?? []).map(m => <option key={m.code} value={m.code}>{m.name}</option>)}
         </select>
       </Field>
-      <p className="hint warn">减少已收会冲减收款记录（从最新一笔起），不生成退款凭证；保存后登记与实收均写入预订日志。</p>
+      <p className="hint warn">减少已收会冲减收款记录（从最新一笔起），不生成退款凭证。</p>
     </Drawer>
   )
 }
@@ -1975,7 +1971,6 @@ function UndoCheckInDialog({ res, paid, busy, onClose, onConfirm }: {
             需更正金额请用「编辑实收」；
           </li>
           <li>预订恢复为「已确认」，原锁定房号 {res.room_number ?? '—'} 仍保留；</li>
-          <li>全程写入操作日志，可在预订详情「操作日志」中追溯。</li>
         </ul>
       </div>
     </Drawer>
@@ -2014,7 +2009,6 @@ function UndoCheckOutDialog({ res, paid, busy, onClose, onConfirm }: {
           <li>房态恢复为「在住」，可重新办理退房；</li>
           <li>已收款项原样保留，账单余额按现有账目重算，不生成退款；</li>
           <li>若该房间已安排新客入住，系统按「前客未退」并存，请先核实房间情况；</li>
-          <li>全程写入操作日志，可在预订详情「操作日志」中追溯。</li>
         </ul>
       </div>
     </Drawer>
@@ -2077,7 +2071,7 @@ function EditPaidDialog({ res, folio, busy, onClose, onConfirm }: {
           {(pms.data ?? []).map(m => <option key={m.code} value={m.code}>{m.name}</option>)}
         </select>
       </Field>
-      <p className="hint warn">减少已收会冲减收款记录（从最新一笔起），不生成退款凭证；全过程写入预订日志。</p>
+      <p className="hint warn">减少已收会冲减收款记录（从最新一笔起），不生成退款凭证。</p>
     </Drawer>
   )
 }
@@ -2209,7 +2203,6 @@ function BookDrawer({ open, lines, channels, busy, onClose, onChangeLines, onSub
     <Drawer
       open={open} passthrough onClose={onClose}
       title={`直接预订 · ${lines.length} 间`}
-      sub="点击/拖选日历空白格追加房间；同一单共用客人与来源"
       foot={
         <>
           <span className="hint" style={{ marginRight: 'auto' }}>共 {lines.length} 间 · 合计 {fmtMoney(grandTotal)}</span>
@@ -2225,7 +2218,7 @@ function BookDrawer({ open, lines, channels, busy, onClose, onChangeLines, onSub
         <Field label="客人姓名" required>
           <GuestNameInput value={name} onChange={setName} onPick={g => { setName(g.name); setPhone(g.phone || '') }} />
         </Field>
-        <Field label="手机号（选填）" hint="填写后用于接收确认短信；未填写则到店补录。">
+        <Field label="手机号（选填）">
           <input className="input" value={phone} onChange={e => setPhone(e.target.value)} placeholder="可留空，到店时补录" />
         </Field>
       </div>
@@ -2240,7 +2233,6 @@ function BookDrawer({ open, lines, channels, busy, onClose, onChangeLines, onSub
               onChangeLines([{ ...lines[0], totalText: String(tier ? tier.price : 0), unitRef: null }])
             }}>钟点</button>
           </div>
-          <span className="hint">钟点档位：{tiers.map(t => `${t.hours}小时 ${fmtMoney(t.price)}`).join(' · ')}（设置 → 房型 中配置）· 时长按档位选择，总额可手改议价；钟点房占用当日整天，创建后不可拖动改期。多间房仅支持整晚。</span>
         </Field>
       )}
       {isHourly && (
@@ -2295,9 +2287,6 @@ function BookDrawer({ open, lines, channels, busy, onClose, onChangeLines, onSub
           )
         })}
       </div>
-      <p className="hint" style={{ marginTop: 10 }}>
-        逐间提交，任一间失败（如时段冲突）即中止，已成功的保留；金额填每间整单总额，{isHourly ? '按钟点小时数折合单价入账。' : '按天数折合单价入账。'}来源选项与顺序来自「设置 → 来源渠道」。
-      </p>
       <Field label="来源">
         <select className="select" value={channelId ?? ''} onChange={e => setChannelId(e.target.value ? Number(e.target.value) : null)}>
           {channels.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}

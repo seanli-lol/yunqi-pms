@@ -96,7 +96,6 @@ export default function Guests() {
         title="客户档案"
         foot={
           <>
-            <span className="hint" style={{ marginRight: 'auto' }}>操作人：当前登录账号</span>
             <button className="btn btn-primary" onClick={() => setDetail(null)}>关闭</button>
           </>
         }
@@ -233,7 +232,6 @@ function EditGuestDialog({ guest, busy, onClose, onSubmit }: {
       <Field label="备注" hint="偏好、忌口、熟客习惯等，仅本店员工可见。">
         <textarea className="input" rows={3} value={notes} onChange={e => setNotes(e.target.value)} placeholder="例如：喜欢高楼层、忌辣" />
       </Field>
-      <p className="hint">保存时校验手机号 / 证件号是否已属于其他客户档案，撞档将提示并拒绝保存。</p>
     </Dialog>
   )
 }

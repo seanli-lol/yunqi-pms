@@ -82,7 +82,6 @@ export default function Reports() {
               ]}
               onChange={(v) => setPreset(v as Preset)}
             />
-            <button className="btn btn-ghost" onClick={() => toast('报表已导出为 PDF（演示）')}>导出</button>
           </>
         }
       />
@@ -106,7 +105,6 @@ export default function Reports() {
                 toast('已应用自定义时间范围')
               }}
             >应用</button>
-            <span className="hint">支持任意起止日期；图表与统计将按所选范围重新计算。</span>
           </div>
         </div>
       )}

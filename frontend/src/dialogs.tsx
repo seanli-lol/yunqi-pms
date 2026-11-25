@@ -62,7 +62,6 @@ export function CheckInDialog({ res, busy, drawer = false, onClose, onConfirm }:
       {lockedNotReady && (
         <p className="hint warn">预订已锁定 {res.room_number}，该房当前不可入住（维修中），可改派其他房间。</p>
       )}
-      <p className="hint">脏房 / 前客未退的房间也可直接入住，选房时已标注，请酌情安排。</p>
       <div className="form-row mt-24">
         <Field label="实收金额（整单总额）">
           <input
@@ -110,7 +109,6 @@ export function CheckInDialog({ res, busy, drawer = false, onClose, onConfirm }:
       sub={`${res.code} · ${res.room_type_name} · ${md(res.check_in)} – ${md(res.check_out)} · 共 ${res.nights} 晚 · ${fmtMoney(res.rate)}/晚`}
       foot={
         <>
-          <span className="hint" style={{ marginRight: 'auto' }}>操作人：当前登录账号 · 入住将记录到预订日志</span>
           <button className="btn btn-ghost" onClick={onClose}>取消</button>
           <button
             className="btn btn-primary" disabled={busy || roomId === null}
@@ -219,7 +217,6 @@ export function ExtendDialog({ res, busy, drawer = false, onClose, onConfirm }: 
         : `${res.code} · ${res.room_number ?? ''} · 现 ${md(res.check_in)} – ${md(res.check_out)} · ${fmtMoney(res.rate)}/晚`}
       foot={
         <>
-          <span className="hint" style={{ marginRight: 'auto' }}>应收将追加到账单，不改原房费</span>
           <button className="btn btn-ghost" onClick={onClose}>取消</button>
           <button className="btn btn-primary" disabled={disabled} onClick={() => onConfirm(body, okLabel)}>确认延住</button>
         </>
@@ -362,7 +359,9 @@ export function EditBookingDialog({ res, channels, busy, onClose, onConfirm }: {
           <input className="input" value={notes} onChange={e => setNotes(e.target.value)} placeholder="如：高楼层、无烟房" />
         </Field>
       </div>
-      <p className="hint">保存后修改写入预订日志；钟点房占整日固定，改日期请延住或重新开单。</p>
+      {res.stay_type === 'hourly' && (
+        <p className="hint">钟点房不可改期，如需调整请延住或重新开单。</p>
+      )}
     </>
   )
 
@@ -373,7 +372,6 @@ export function EditBookingDialog({ res, channels, busy, onClose, onConfirm }: {
       sub={`${res.code} · ${res.guest_name} · ${md(res.check_in)} – ${md(res.check_out)}${res.room_number ? ` · ${res.room_number}` : ''}`}
       foot={
         <>
-          <span className="hint" style={{ marginRight: 'auto' }}>操作人：当前登录账号 · 修改将记录到预订日志</span>
           <button className="btn btn-ghost" onClick={onClose}>取消</button>
           <button className="btn btn-primary" disabled={busy || !name.trim()} onClick={submit}>保存修改</button>
         </>
