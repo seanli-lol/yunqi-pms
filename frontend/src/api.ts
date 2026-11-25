@@ -221,6 +221,8 @@ export interface Reservation {
   channel_id: number | null; channel_name: string | null; channel_color: string | null
   rate: number; stay_type: string; hours: number
   notes: string; balance_due: number
+  /** 已收合计（Σ payments）：预订阶段提前收款（押金/预付款）后列表「已收」徽章据此展示 */
+  paid_total?: number
   /** 房费合计（Σ room_charge 账目）：连住合并/分段计价后 ≠ rate × nights，
       「房费」展示与「房价总额」初值一律取它 */
   room_charge_total?: number

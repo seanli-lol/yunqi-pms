@@ -2,11 +2,12 @@ import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useLocation } from 'react-router-dom'
 import {
-  api, addDaysIso, fmtMoney, maskPhone, md, moneyInputText, round2, todayIso, RES_STATUS_LABEL,
+  api, addDaysIso, fmtMoney, maskPhone, md, moneyInputText, round2, todayIso,
+  usePayMethods, RES_STATUS_LABEL,
   type Channel, type Reservation, type RoomType,
 } from '../api'
 import { ConfirmDialog, Dialog, Field, PageHead, Segmented, Spinner, useToast, RES_STATUS_BADGE } from '../ui'
-import { EditBookingDialog } from '../dialogs'
+import { AddPaymentDialog, EditBookingDialog } from '../dialogs'
 import { GuestNameInput } from '../GuestNameInput'
 
 const STATUS_TABS = [
@@ -30,6 +31,8 @@ export default function Reservations() {
   const [cancelRes, setCancelRes] = useState<Reservation | null>(null)
   /** 编辑预订（待确认 / 已确认；与房态盘详情抽屉共用 EditBookingDialog） */
   const [editRes, setEditRes] = useState<Reservation | null>(null)
+  /** 收款（预订阶段提前收款：押金/订金/预付全款；与房态盘共用 AddPaymentDialog） */
+  const [payRes, setPayRes] = useState<Reservation | null>(null)
 
   useEffect(() => {
     const st = (loc.state as any)?.status
@@ -81,6 +84,18 @@ export default function Reservations() {
       qc.invalidateQueries({ queryKey: ['reservations'] })
     },
     onError: (e: any) => toast(e.message ?? '保存失败'),
+  })
+
+  /* ---------- 收款（POST /api/reservations/{id}/payments；pending/confirmed 本就放行） ---------- */
+  const payMut = useMutation({
+    mutationFn: (p: { id: number; body: { method: string; amount: number; remark: string } }) =>
+      api.post<{ ok: boolean; balance_due: number }>(`/api/reservations/${p.id}/payments`, p.body),
+    onSuccess: (_data, p) => {
+      toast(`已收款 ${fmtMoney(p.body.amount)}${p.body.remark ? `（${p.body.remark}）` : ''}`)
+      setPayRes(null)
+      qc.invalidateQueries({ queryKey: ['reservations'] })
+    },
+    onError: (e: any) => toast(e.message ?? '收款失败'),
   })
 
   return (
@@ -151,6 +166,9 @@ export default function Reservations() {
                     <td data-label="操作人">{r.operator_name ?? '—'}</td>
                     <td className="no-label">
                       {(r.status === 'pending' || r.status === 'confirmed') && (
+                        <button className="btn btn-quiet btn-sm" onClick={() => setPayRes(r)}>收款</button>
+                      )}
+                      {(r.status === 'pending' || r.status === 'confirmed') && (
                         <button className="btn btn-quiet btn-sm" onClick={() => setEditRes(r)}>编辑</button>
                       )}
                       {r.status === 'pending' && (
@@ -158,6 +176,10 @@ export default function Reservations() {
                       )}
                       {(r.status === 'pending' || r.status === 'confirmed') && (
                         <button className="btn btn-danger-ghost btn-sm" onClick={() => setCancelRes(r)}>取消</button>
+                      )}
+                      {/* 预收款徽章（pending/confirmed）：提前收款（押金/预付款）后亮已收金额，与在住/已退的「欠」对位 */}
+                      {(r.status === 'pending' || r.status === 'confirmed') && (r.paid_total ?? 0) > 0 && (
+                        <span className="badge badge-green" style={{ marginRight: 6 }}>已收 {fmtMoney(r.paid_total ?? 0)}</span>
                       )}
                       {(r.status === 'checked_in' || r.status === 'checked_out') && r.balance_due > 0 && <span className="badge badge-red" style={{ marginRight: 6 }}>欠 {fmtMoney(r.balance_due)}</span>}
                     </td>
@@ -170,14 +192,26 @@ export default function Reservations() {
         </div>
       )}
 
-      {/* 取消预订确认（应用内弹层替代 window.confirm） */}
+      {/* 取消预订确认（应用内弹层替代 window.confirm；有已收款时亮金额——取消将清除全部款项） */}
       {cancelRes && (
         <ConfirmDialog open onClose={() => setCancelRes(null)} busy={mut.isPending}
           title="取消预订" sub={`${cancelRes.guest_name} · ${cancelRes.code}`} confirmText="确认取消"
           onConfirm={() => { setCancelRes(null); mut.mutate({ path: `/api/reservations/${cancelRes.id}/cancel`, label: '预订已取消' }) }}>
           <p className="confirm-msg">确定取消该预订吗？</p>
+          {(cancelRes.paid_total ?? 0) > 0 && (
+            <div className="info-row"><span>已收款</span><span>{fmtMoney(cancelRes.paid_total ?? 0)}</span></div>
+          )}
           <div className="danger-note">取消会清除该预订已收取的款项（不生成退款凭证），且不可恢复。</div>
         </ConfirmDialog>
+      )}
+
+      {/* 收款（预订阶段提前收款：押金 / 订金 / 预付全款；与房态盘订单详情共用 AddPaymentDialog） */}
+      {payRes && (
+        <AddPaymentDialog
+          res={payRes} busy={payMut.isPending}
+          onClose={() => setPayRes(null)}
+          onSubmit={({ method, amount, remark }) => payMut.mutate({ id: payRes.id, body: { method, amount, remark } })}
+        />
       )}
 
       {/* 编辑预订（待确认 / 已确认；与房态盘详情抽屉共用弹层） */}
@@ -227,6 +261,11 @@ function NewReservationDialog({ open, onClose, channels, types, onSubmit, onDone
   const [hours, setHours] = useState(3)
   /** 协议总价（整单）：单价由总额按天数折算后提交 */
   const [totalText, setTotalText] = useState('')
+  /** 预收款（选填）：创建时同步收押金/订金/预付款，金额 > 0 才提交（含方式与款项备注） */
+  const [depositText, setDepositText] = useState('')
+  const [depositMethod, setDepositMethod] = useState('cash')
+  const [depositRemark, setDepositRemark] = useState('代收押金')
+  const payMethods = usePayMethods()
 
   const type = types.find(t => t.id === typeId)
   const nights = Math.max(1, Math.round(Number(nightsText) || 1))
@@ -241,8 +280,16 @@ function NewReservationDialog({ open, onClose, channels, types, onSubmit, onDone
       setName(''); setPhone(''); setChannelId(null); setNotes(''); setStayType('normal'); setHours(3)
       setCin(todayIso()); setCout(addDaysIso(todayIso(), 1))
       setNightsText('1'); setTotalText(''); setTotalTouched(false)
+      setDepositText(''); setDepositMethod('cash'); setDepositRemark('代收押金')
     }
   }, [open])
+
+  // 收款方式默认值同步进 state（沿用来源下拉坑规则：显示即选中的下拉不能只靠渲染兜底）
+  useEffect(() => {
+    if (!open) return
+    const codes = (payMethods.data ?? []).map(m => m.code)
+    setDepositMethod(prev => (codes.length && !codes.includes(prev) ? codes[0] : prev))
+  }, [open, payMethods.data])
 
   // 来源下拉没有「未指定」项：默认选中第一个渠道并同步到状态，
   // 否则界面显示美团、提交 channel_id=null（列表来源列空白、方块竖条落灰色默认值）
@@ -271,6 +318,8 @@ function NewReservationDialog({ open, onClose, channels, types, onSubmit, onDone
   const total = Math.max(0, round2(Number(totalText) || 0))
   const unitPrice = units > 0 ? round2(total / units) : 0
   const finalTotal = round2(unitPrice * units)
+  /** 预收款金额：> 0 才随创建提交 */
+  const deposit = round2(Number(depositText) || 0)
 
   /** 改天数：离店日与总额（按折合单价）一起重算 */
   const onNightsChange = (v: string) => {
@@ -303,6 +352,11 @@ function NewReservationDialog({ open, onClose, channels, types, onSubmit, onDone
       stay_type: stayType, hours: stayType === 'hourly' ? hours : 0,
       rate: unitPrice,
       status: 'confirmed',
+      // 预收款：金额 > 0 才提交（后端 amount<=0 视为未填，双保险）
+      ...(deposit > 0 ? {
+        deposit_amount: deposit, deposit_method: depositMethod,
+        deposit_remark: depositRemark.trim(),
+      } : {}),
     })
     onDone()
   }
@@ -395,6 +449,36 @@ function NewReservationDialog({ open, onClose, channels, types, onSubmit, onDone
           <input className="input" value={notes} onChange={e => setNotes(e.target.value)} placeholder="如：高楼层、无烟房" />
         </Field>
       </div>
+      {/* 预收款（选填）：预订阶段直接收押金/订金/预付款，创建时一并入账 */}
+      <Field
+        label="预收款（选填，元）"
+        hint="预订阶段可提前收款（押金 / 订金 / 预付全款），创建时一并入账。"
+      >
+        <input
+          className="input" inputMode="decimal" value={depositText}
+          placeholder="如：500（押金）· 留空则到店结清"
+          onChange={e => setDepositText(moneyInputText(e.target.value))}
+        />
+      </Field>
+      {deposit > 0 && (
+        <div className="form-row">
+          <Field label="收款方式">
+            <select className="select" value={depositMethod} onChange={e => setDepositMethod(e.target.value)}>
+              {(payMethods.data ?? []).map(m => <option key={m.code} value={m.code}>{m.name}</option>)}
+            </select>
+          </Field>
+          <Field label="款项备注">
+            <input className="input" value={depositRemark} maxLength={120} onChange={e => setDepositRemark(e.target.value)} placeholder="如：代收押金、订金、预付全款" />
+          </Field>
+        </div>
+      )}
+      {deposit > 0 && (
+        <p className="hint">
+          {stayType === 'hourly' && hourlyAvail
+            ? `创建后入账 ${fmtMoney(deposit)} · 钟点房费 ${fmtMoney(finalTotal)} · 余款到店结清`
+            : `创建后入账 ${fmtMoney(deposit)} · 应收 ${fmtMoney(finalTotal)} · 余款 ${fmtMoney(Math.max(0, round2(finalTotal - deposit)))} 到店结清`}
+        </p>
+      )}
     </Dialog>
   )
 }

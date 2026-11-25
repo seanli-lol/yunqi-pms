@@ -11,7 +11,7 @@ import {
   type PaidTotalBody, type RegistrationBody, type Reservation, type Room,
 } from '../api'
 import { Badge, ConfirmDialog, Dialog, Drawer, Field, PageHead, Segmented, Spinner, useToast, RES_STATUS_BADGE } from '../ui'
-import { CheckInDialog, EditBookingDialog, ExtendDialog } from '../dialogs'
+import { AddPaymentDialog, CheckInDialog, EditBookingDialog, ExtendDialog } from '../dialogs'
 import { GuestNameInput } from '../GuestNameInput'
 
 /** 真实住期晚数（按日期算）：board 的 nights 是「窗口内可见格数」，被窗口裁过，
@@ -664,6 +664,8 @@ export default function Rooms() {
       guest_name: string; guest_phone: string; channel_id: number | null; notes: string
       /** 每行独立提交体：房号/日期/单价/天数已在 BookDrawer 内折算 */
       lines: { room_id: number; check_in: string; check_out: string; rate: number; nights: number; stay_type: 'normal' | 'hourly'; hours: number }[]
+      /** 预收款（选填）：只随第一行提交（一单收一次） */
+      deposit?: { amount: number; method: string; remark: string }
     }) => {
       const created: Reservation[] = []
       for (let i = 0; i < p.lines.length; i++) {
@@ -674,6 +676,10 @@ export default function Rooms() {
             room_id: l.room_id, check_in: l.check_in, check_out: l.check_out,
             channel_id: p.channel_id, notes: p.notes,
             stay_type: l.stay_type, hours: l.hours, rate: l.rate,
+            // 预收款只随第一行（多间预订一单收一次，不逐间重复入账）
+            ...(i === 0 && p.deposit ? {
+              deposit_amount: p.deposit.amount, deposit_method: p.deposit.method, deposit_remark: p.deposit.remark,
+            } : {}),
           })
           created.push(r)
         } catch (e: any) {
@@ -1422,15 +1428,13 @@ export default function Rooms() {
               </div>
             </div>
 
-            {/* 收款金额折叠区（默认展开）：明细 + 行内删除 + ＋收款（仅在住/已退，口径对齐 paid-total） */}
+            {/* 收款金额折叠区（默认展开）：明细 + 行内删除 + ＋收款（全状态可用：预订阶段提前收款，在住/已退补收） */}
             <div className={`fold${payFoldOpen ? ' open' : ''}`}>
               <div className="fold-head" onClick={() => setPayFoldOpen(v => !v)}>
                 <span className="arr">▸</span>
                 <b>收款金额：<span style={{ fontVariantNumeric: 'tabular-nums' }}>{fmtMoney(detailFolioData.total_paid)}</span></b>
                 <span className="side">
-                  {!(detailR.status === 'pending' || detailR.status === 'confirmed') && (
-                    <button className="link-btn" onClick={(e) => { e.stopPropagation(); setPayAdd(true) }}>＋ 收款</button>
-                  )}
+                  <button className="link-btn" onClick={(e) => { e.stopPropagation(); setPayAdd(true) }}>＋ 收款</button>
                 </span>
               </div>
               {payFoldOpen && (
@@ -1515,6 +1519,7 @@ export default function Rooms() {
       {/* ---------- 收款小弹层（订单详情折叠区「＋收款」；确认后详情保持打开并刷新三栏） ---------- */}
       {payAdd && detailR && (
         <AddPaymentDialog
+          res={detailR}
           onClose={() => setPayAdd(false)}
           onSubmit={(p) => addPayMut.mutate({ id: detailR.id, method: p.method, amount: p.amount, remark: p.remark })}
           busy={addPayMut.isPending}
@@ -1542,6 +1547,9 @@ export default function Rooms() {
           title="取消预订" sub={`${cancelRes.guest_name} · ${cancelRes.code}`} confirmText="确认取消"
           onConfirm={() => { setCancelRes(null); resMut.mutate({ path: `${cancelRes.id}/cancel`, label: '预订已取消' }) }}>
           <p className="confirm-msg">确定取消该预订吗？</p>
+          {(cancelRes.paid_total ?? 0) > 0 && (
+            <div className="info-row"><span>已收款</span><span>{fmtMoney(cancelRes.paid_total ?? 0)}</span></div>
+          )}
           <div className="danger-note">取消会清除该预订已收取的款项（不生成退款凭证），且不可恢复。</div>
         </ConfirmDialog>
       )}
@@ -1727,63 +1735,7 @@ export default function Rooms() {
   )
 }
 
-/* ---------- 收款小弹层（订单详情「＋收款」）：金额 + 收款方式 + 选填备注，方式来自设置配置 ---------- */
-function AddPaymentDialog({ onClose, onSubmit, busy }: {
-  onClose: () => void
-  onSubmit: (p: { method: string; amount: number; remark: string }) => void
-  busy: boolean
-}) {
-  const pms = usePayMethods()
-  const [method, setMethod] = useState('')
-  const [amount, setAmount] = useState('')
-  const [remark, setRemark] = useState('')
-  // 默认值必须同步进 state（来源默认值坑规则）：不能只靠 select 的渲染兜底
-  useEffect(() => {
-    const codes = pms.data?.map(m => m.code) ?? []
-    if (codes.length && !codes.includes(method)) setMethod(codes[0])
-  }, [pms.data, method])
-  const n = round2(Number(amount))
-  return (
-    <Dialog
-      open
-      onClose={onClose}
-      title="收款"
-      sub="向当前订单补收款项 · 收款后余额 = 应收 − 已收总额"
-      foot={
-        <>
-          <button className="btn btn-ghost" onClick={onClose}>取消</button>
-          <button
-            className="btn btn-primary"
-            disabled={busy || !n || n <= 0 || !method}
-            onClick={() => onSubmit({ method, amount: n, remark: remark.trim() })}
-          >确认收款</button>
-        </>
-      }
-    >
-      <Field label="收款金额（元）" required hint="在住/已退订单可随时补收；取消预订才会清除已收款。">
-        <input
-          className="input" inputMode="decimal" autoFocus
-          placeholder="如：572.50"
-          value={amount}
-          onChange={e => setAmount(moneyInputText(e.target.value))}
-        />
-      </Field>
-      <Field label="收款方式" hint="选项与顺序来自「设置 → 收款方式」配置。">
-        <select className="select" value={method} onChange={e => setMethod(e.target.value)}>
-          {(pms.data ?? []).map(m => <option key={m.code} value={m.code}>{m.name}</option>)}
-        </select>
-      </Field>
-      <Field label="备注" hint="选填 · 展示在收款明细与操作日志，最多 120 字。">
-        <input
-          className="input" maxLength={120}
-          placeholder="如：代收押金、楼层调整差价"
-          value={remark}
-          onChange={e => setRemark(e.target.value)}
-        />
-      </Field>
-    </Dialog>
-  )
-}
+/* ---------- 收款小弹层已移入 dialogs.tsx 共享（AddPaymentDialog）：预订列表与订单详情两处入口 ---------- */
 
 /* ---------- 统一编辑抽屉（在住：登记信息 + 实收总额同页，一次保存） ---------- */
 function EditDrawer({ res, channels, busy, onClose, onConfirm }: {
@@ -2097,6 +2049,8 @@ function BookDrawer({ open, lines, channels, busy, onClose, onChangeLines, onSub
   onSubmit: (p: {
     guest_name: string; guest_phone: string; channel_id: number | null; notes: string
     lines: { room_id: number; check_in: string; check_out: string; rate: number; nights: number; stay_type: 'normal' | 'hourly'; hours: number }[]
+    /** 预收款（选填）：只随第一行提交（一单收一次）；金额 > 0 才带 */
+    deposit?: { amount: number; method: string; remark: string }
   }) => void
 }) {
   const [name, setName] = useState('')
@@ -2106,10 +2060,22 @@ function BookDrawer({ open, lines, channels, busy, onClose, onChangeLines, onSub
   const [stayType, setStayType] = useState<'normal' | 'hourly'>('normal')
   /** 钟点时长默认 3 小时（所选房型无 3 小时档时切钟点回落首档，见「钟点」按钮 onClick） */
   const [hours, setHours] = useState(3)
+  /** 预收款（选填）：押金/订金/预付款，金额 > 0 时随创建入账（方式与款项备注随之展开） */
+  const [depositText, setDepositText] = useState('')
+  const [depositMethod, setDepositMethod] = useState('')
+  const [depositRemark, setDepositRemark] = useState('代收押金')
+  const payMethods = usePayMethods()
 
   useEffect(() => {
-    if (open) { setName(''); setPhone(''); setChannelId(null); setStayType('normal'); setHours(3) }
+    if (open) { setName(''); setPhone(''); setChannelId(null); setStayType('normal'); setHours(3); setDepositText(''); setDepositRemark('代收押金') }
   }, [open])
+
+  // 收款方式默认值同步进 state（来源下拉坑规则：显示即选中的下拉不能只靠渲染兜底）
+  useEffect(() => {
+    if (!open) return
+    const codes = (payMethods.data ?? []).map(m => m.code)
+    setDepositMethod(prev => (codes.length && !codes.includes(prev) ? codes[0] : prev))
+  }, [open, payMethods.data])
 
   // 来源没有「未指定」选项：下拉框必显示第一项（设置里的第一个渠道，通常为美团），
   // 状态必须同步选中它，否则会出现「显示美团、提交 null、方块竖条落成灰色默认值」的错位
@@ -2183,6 +2149,7 @@ function BookDrawer({ open, lines, channels, busy, onClose, onChangeLines, onSub
   }
 
   const submit = () => {
+    const deposit = round2(Number(depositText) || 0)
     onSubmit({
       guest_name: name, guest_phone: phone, channel_id: channelId, notes: '',
       lines: lines.map(l => {
@@ -2196,6 +2163,8 @@ function BookDrawer({ open, lines, channels, busy, onClose, onChangeLines, onSub
         }
         return { room_id: l.room.id, check_in: l.checkIn, check_out: addDaysIso(l.checkIn, n), rate, nights: n, stay_type: 'normal' as const, hours: 0 }
       }),
+      // 预收款只随第一行（一单收一次，不逐间重复入账）；金额 > 0 才带
+      ...(deposit > 0 ? { deposit: { amount: deposit, method: depositMethod, remark: depositRemark.trim() } } : {}),
     })
   }
 
@@ -2205,7 +2174,10 @@ function BookDrawer({ open, lines, channels, busy, onClose, onChangeLines, onSub
       title={`直接预订 · ${lines.length} 间`}
       foot={
         <>
-          <span className="hint" style={{ marginRight: 'auto' }}>共 {lines.length} 间 · 合计 {fmtMoney(grandTotal)}</span>
+          <span className="hint" style={{ marginRight: 'auto' }}>
+            共 {lines.length} 间 · 合计 {fmtMoney(grandTotal)}
+            {round2(Number(depositText) || 0) > 0 ? ` · 创建后入账 ${fmtMoney(round2(Number(depositText) || 0))}` : ''}
+          </span>
           <button className="btn btn-ghost" onClick={onClose}>取消</button>
           <button
             className="btn btn-primary" disabled={busy || !name.trim() || linesInvalid || lines.length === 0}
@@ -2292,6 +2264,27 @@ function BookDrawer({ open, lines, channels, busy, onClose, onChangeLines, onSub
           {channels.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
         </select>
       </Field>
+      {/* 预收款（选填）：押金/订金/预付款，创建时一并入账；多间预订只收一次（随第一行） */}
+      <Field label={`预收款（选填，元）${lines.length > 1 ? ' · 整单收一次' : ''}`}
+             hint="预订阶段可提前收款（押金 / 订金 / 预付全款），创建时一并入账。">
+        <input
+          className="input" inputMode="decimal" value={depositText}
+          placeholder="如：500（押金）· 留空则到店结清"
+          onChange={e => setDepositText(moneyInputText(e.target.value))}
+        />
+      </Field>
+      {round2(Number(depositText) || 0) > 0 && (
+        <div className="form-row">
+          <Field label="收款方式">
+            <select className="select" value={depositMethod} onChange={e => setDepositMethod(e.target.value)}>
+              {(payMethods.data ?? []).map(m => <option key={m.code} value={m.code}>{m.name}</option>)}
+            </select>
+          </Field>
+          <Field label="款项备注">
+            <input className="input" value={depositRemark} maxLength={120} onChange={e => setDepositRemark(e.target.value)} placeholder="如：代收押金、订金、预付全款" />
+          </Field>
+        </div>
+      )}
     </Drawer>
   )
 }

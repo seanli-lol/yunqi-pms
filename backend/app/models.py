@@ -182,6 +182,9 @@ class Reservation(Base):
     stay_type: Mapped[str] = mapped_column(String(10), default="normal")
     hours: Mapped[int] = mapped_column(Integer, default=0)
     notes: Mapped[str] = mapped_column(String(200), default="")
+    # 外部渠道订单号（OTA 同步写入，格式「渠道单号#间序号」，如美团多间单 #1/#2）——
+    # 同步幂等与按单号取消的唯一依据；手工开单为 NULL
+    external_ref: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTimeMS, default=datetime.now)
 
@@ -227,3 +230,21 @@ class OperationLog(Base):
     object_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     summary: Mapped[str] = mapped_column(String(200), default="")
     created_at: Mapped[datetime] = mapped_column(DateTimeMS, default=datetime.now)
+
+
+class OtaAlert(Base):
+    """OTA 同步提醒：无房可排 / 已入住订单被渠道取消 / 房型未映射 / 同步异常——需前台人工处理。
+
+    同店同渠道同单号同类型的未处理提醒只保留一条（插件重试不刷屏）；resolved_at 非空即已处理。"""
+    __tablename__ = "ota_alerts"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    hotel_id: Mapped[int] = mapped_column(ForeignKey("hotels.id"), index=True)
+    channel_id: Mapped[int | None] = mapped_column(ForeignKey("channels.id"), nullable=True)
+    external_ref: Mapped[str] = mapped_column(String(64), default="")  # 渠道单号（不含 #间序号）
+    kind: Mapped[str] = mapped_column(String(20))  # no_room / cancel_manual / unmapped / sync_error
+    title: Mapped[str] = mapped_column(String(120), default="")
+    detail: Mapped[str] = mapped_column(String(500), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTimeMS, default=datetime.now)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTimeMS, nullable=True)
+    resolved_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)

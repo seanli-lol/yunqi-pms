@@ -8,7 +8,7 @@ from app.config import FRONTEND_ORIGINS
 from app.db import Base, SessionLocal, engine, backfill_encrypted_fields, backfill_user_hotels, run_db_migrations
 from app.models import Hotel
 from app.routers import auth, channels, guests, hotels, reports, reservations, rooms
-from app.routers import payment_methods
+from app.routers import ota, payment_methods
 from app.routers.payment_methods import ensure_default_methods
 from app.seed import backfill_hourly_tiers, ensure_seed
 
@@ -50,6 +50,7 @@ app.include_router(rooms.router)
 app.include_router(reservations.router)
 app.include_router(guests.router)
 app.include_router(reports.router)
+app.include_router(ota.router)
 
 
 @app.get("/api/health")

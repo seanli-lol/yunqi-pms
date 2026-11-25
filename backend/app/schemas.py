@@ -247,6 +247,10 @@ class ReservationBody(BaseModel):
     hours: int = 0                    # 钟点房：入住时长（小时）
     notes: str = ""
     status: Literal["pending", "confirmed"] = "confirmed"
+    # 预收款（选填）：创建时同步收押金/订金/预付款，直接写一笔 Payment（amount<=0 视为未填）
+    deposit_amount: Money | None = None
+    deposit_method: str = "cash"       # 收款方式 code；写入时按本店 payment_methods 校验
+    deposit_remark: str = ""           # 款项备注（同 PaymentBody.remark 口径，≤120 字）
 
 
 class ReservationPatch(BaseModel):
@@ -348,13 +352,55 @@ class ReservationOut(BaseModel):
     hours: int
     notes: str
     balance_due: float
+    # 已收合计（Σ payments）：预订阶段提前收款（押金/预付款）后列表/徽章据此展示，取代前端推算
+    paid_total: float = 0
     # 房费合计（Σ category='room_charge' 账目）：连住合并/分段计价后 ≠ rate × nights，
     # 前端所有「房费」展示与「房价总额」初值一律取它，不要用单价乘晚数推算
     room_charge_total: float = 0
     # 仅创建响应的提示位：本次开单被并入已有连住订单（未新建订单）
     merged: bool = False
+    # OTA 同步写入的外部渠道单号（「单号#间序号」），手工开单为 None
+    external_ref: str | None = None
     operator_name: str | None
     created_at: datetime
+
+
+# ---------- OTA 同步（美团插件） ----------
+class OtaOrderBody(BaseModel):
+    """渠道新订单：按 external_ref 幂等，多间单逐间排房（间序号 #1..#n）"""
+    channel_id: int
+    external_ref: str                 # 渠道订单号（不含 #）
+    guest_name: str
+    guest_phone: str = ""
+    room_type_id: int
+    room_count: int = 1
+    check_in: date
+    check_out: date
+    stay_type: Literal["normal", "hourly"] = "normal"
+    hours: int = 0
+    settle_total: Money               # 整单结算价合计（元），按间均摊、再按晚/小时折单价
+    remark: str = ""
+
+
+class OtaCancelBody(BaseModel):
+    channel_id: int
+    external_ref: str
+
+
+class OtaGuestBody(BaseModel):
+    """更正渠道订单的客人姓名：建单时渠道只给了打码名（刘*），之后读到全名再补"""
+    channel_id: int
+    external_ref: str
+    guest_name: str
+
+
+class OtaAlertBody(BaseModel):
+    """插件侧上报的提醒（房型未映射 / 解析或写入异常）"""
+    channel_id: int
+    external_ref: str = ""
+    kind: Literal["unmapped", "sync_error"]
+    title: str
+    detail: str = ""
 
 
 # ---------- guests ----------

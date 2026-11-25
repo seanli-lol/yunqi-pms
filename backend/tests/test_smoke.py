@@ -1979,6 +1979,92 @@ def test_multi_hotel_staff_binding():
     r = client.get(f"/api/reservations/{rid}", headers=h2)
     assert r.status_code == 404  # 原本可访问的莫干山预订，减绑后 404
 
+
+def test_advance_payment():
+    """预订阶段提前收款（押金/预付款）：创建时随单收款 + 事后收款 + paid_total 外显
+    + 删款全状态放行 + 取消清除亮金额；confirmed 同验"""
+    from datetime import date, timedelta
+
+    tok = _login("zhouqi")["token"]
+    h = _headers(tok)
+    cin = (date.today() + timedelta(days=40)).isoformat()
+    cout = (date.today() + timedelta(days=42)).isoformat()
+
+    # 1) 创建时随单收押金 500（现金）：Payment 落账 + paid_total 外显 + 创建日志注明预收款
+    r = client.post("/api/reservations", headers=h, json={
+        "guest_name": "押金客", "guest_phone": "13900004111",
+        "check_in": cin, "check_out": cout,
+        "room_type_id": 1, "status": "pending",
+        "deposit_amount": 500, "deposit_method": "cash", "deposit_remark": "代收押金"})
+    assert r.status_code == 200, r.text
+    res = r.json()
+    rid = res["id"]
+    assert res["status"] == "pending"
+    assert res["paid_total"] == 500
+    # balance_due = 应收 960（房型 1 · 2 晚 × 480）− 已收 500 = 460（res_out 钳 0 只对负值超收生效）
+    assert res["balance_due"] == 460
+    folio = client.get(f"/api/reservations/{rid}/folio", headers=h).json()
+    assert folio["total_charge"] == 960 and folio["total_paid"] == 500
+    assert folio["balance_due"] == 460
+    assert len(folio["payments"]) == 1
+    assert folio["payments"][0]["remark"] == "代收押金" and folio["payments"][0]["method"] == "cash"
+    logs = client.get(f"/api/reservations/{rid}/logs", headers=h).json()
+    assert any(l["action"] == "payment" and "预收款 ¥500.00" in l["summary"] and "代收押金" in l["summary"] for l in logs)
+    assert any(l["action"] == "reservation_create" and "预收款 ¥500.00" in l["summary"] for l in logs)
+
+    # 2) 事后再补收 300（微信）：＋收款端点对 pending 本就放行，paid_total 累加
+    r = client.post(f"/api/reservations/{rid}/payments", headers=h,
+                    json={"amount": 300, "method": "wechat", "remark": "补收订金"})
+    assert r.status_code == 200, r.text
+    assert r.json()["balance_due"] == 160
+    r = client.get(f"/api/reservations/{rid}", headers=h)
+    assert r.json()["paid_total"] == 800
+
+    # 3) 删款全状态放行（pending 收错可直接删）：删掉 300 那笔
+    pays = client.get(f"/api/reservations/{rid}/folio", headers=h).json()["payments"]
+    pid = next(p["id"] for p in pays if p["amount"] == 300)
+    r = client.delete(f"/api/reservations/{rid}/payments/{pid}", headers=h)
+    assert r.status_code == 200, r.text
+    assert r.json()["balance_due"] == 460
+    logs = client.get(f"/api/reservations/{rid}/logs", headers=h).json()
+    assert any(l["action"] == "payment_delete" and "¥300.00" in l["summary"] and "补收订金" in l["summary"] for l in logs)
+
+    # 4) 未启用收款方式 → 400
+    r = client.post("/api/reservations", headers=h, json={
+        "guest_name": "押金客二", "guest_phone": "13900004112",
+        "check_in": cin, "check_out": cout, "room_type_id": 1,
+        "deposit_amount": 100, "deposit_method": "nope"})
+    assert r.status_code == 400
+
+    # 5) deposit_amount<=0 视为未填：不写 Payment 也不打日志
+    r = client.post("/api/reservations", headers=h, json={
+        "guest_name": "押金客三", "guest_phone": "13900004113",
+        "check_in": cin, "check_out": cout, "room_type_id": 1,
+        "deposit_amount": 0})
+    assert r.status_code == 200, r.text
+    rid3 = r.json()["id"]
+    assert r.json()["paid_total"] == 0
+    folio3 = client.get(f"/api/reservations/{rid3}/folio", headers=h).json()
+    assert folio3["payments"] == []
+
+    # 6) confirmed 同验：创建时收全款 → 取消清除（日志亮金额）
+    r = client.post("/api/reservations", headers=h, json={
+        "guest_name": "预付客", "guest_phone": "13900004114",
+        "check_in": cin, "check_out": cout,
+        "room_type_id": 1, "status": "confirmed",
+        "deposit_amount": 960, "deposit_method": "alipay", "deposit_remark": "预付全款"})
+    assert r.status_code == 200, r.text
+    rid4 = r.json()["id"]
+    assert r.json()["paid_total"] == 960
+    assert r.json()["balance_due"] == 0  # 960 − 960 = 0
+    r = client.post(f"/api/reservations/{rid4}/cancel", headers=h)
+    assert r.status_code == 200, r.text
+    logs = client.get(f"/api/reservations/{rid4}/logs", headers=h).json()
+    assert any(l["action"] == "reservation_cancel" and "清除已收款 ¥960.00" in l["summary"] for l in logs)
+    folio4 = client.get(f"/api/reservations/{rid4}/folio", headers=h).json()
+    assert folio4["total_paid"] == 0  # 取消清空全部款项
+
+
     # 主店顺延：把西湖从集合里拿掉 → 主店变莫干山
     r = client.patch(f"/api/users/{u['id']}", headers=admin, json={"hotel_ids": [mogan["id"]]})
     assert r.status_code == 200, r.text
@@ -1997,3 +2083,135 @@ def test_multi_hotel_staff_binding():
     assert [x["id"] for x in duodian["hotels"]] == [mogan["id"]]
 
     # 清理：取消不影响（该测试只建了账号，没建预订）
+
+
+def test_ota_order_sync():
+    """美团插件同步：幂等建单、整段排房、多间均摊结算价、无房提醒、取消三态、取消后重推不复活"""
+    from datetime import date, timedelta
+    h = _headers(_login()["token"])
+    meituan = next(c for c in client.get("/api/channels", headers=h).json() if c["name"] == "美团")
+    rt = next(t for t in client.get("/api/room-types", headers=h).json() if t["name"] == "亲子房")
+    cin = date.today() + timedelta(days=200)
+    cout = cin + timedelta(days=2)
+    body = {"channel_id": meituan["id"], "external_ref": "5044043434093207958", "guest_name": "刘新",
+            "room_type_id": rt["id"], "room_count": 1, "check_in": cin.isoformat(),
+            "check_out": cout.isoformat(), "settle_total": 229.74}
+
+    # 连住 2 晚 → 一笔多晚预订，已确认，结算价落账，备注带单号
+    r = client.post("/api/ota/orders", headers=h, json=body)
+    assert r.status_code == 200, r.text
+    out = r.json()
+    assert out["short"] == 0 and len(out["created"]) == 1 and out["alert_id"] is None
+    res = out["created"][0]
+    assert res["status"] == "confirmed" and res["nights"] == 2 and res["room_id"]
+    assert res["external_ref"] == "5044043434093207958#1"
+    assert res["room_charge_total"] == 229.74 and res["channel_id"] == meituan["id"]
+    assert "5044043434093207958" in res["notes"]
+
+    # 重复推送 → 不新建
+    r = client.post("/api/ota/orders", headers=h, json=body)
+    assert r.status_code == 200 and r.json()["created"] == [] and len(r.json()["duplicated"]) == 1
+
+    # 同客同来源首尾相接的新单不被并入（独立建单、另有单号）
+    nxt = {**body, "external_ref": "900001", "check_in": cout.isoformat(),
+           "check_out": (cout + timedelta(days=1)).isoformat(), "settle_total": 100}
+    r = client.post("/api/ota/orders", headers=h, json=nxt)
+    assert r.status_code == 200, r.text
+    assert len(r.json()["created"]) == 1 and r.json()["created"][0]["id"] != res["id"]
+    assert client.get(f"/api/reservations/{res['id']}", headers=h).json()["nights"] == 2
+
+    # 多间单：同房型全部占满 → 排得下的照建，排不下的写 no_room 提醒；结算价按间均摊（分精确）
+    big = {**body, "external_ref": "900002", "room_count": 20, "settle_total": 1000.01}
+    r = client.post("/api/ota/orders", headers=h, json=big)
+    assert r.status_code == 200, r.text
+    big_out = r.json()
+    placed = len(big_out["created"])
+    assert big_out["short"] == 20 - placed > 0 and big_out["alert_id"]
+    rooms = {x["room_id"] for x in big_out["created"]} | {res["room_id"]}
+    assert len(rooms) == placed + 1  # 每间不同房，也没挤占刘新那间
+    # 再来一单同房型同时段 → 一间都排不下，不建单
+    r = client.post("/api/ota/orders", headers=h, json={**body, "external_ref": "900003"})
+    assert r.status_code == 200 and r.json()["created"] == [] and r.json()["short"] == 1
+    alerts = client.get("/api/ota/alerts", headers=h).json()
+    kinds = {(a["external_ref"], a["kind"]) for a in alerts}
+    assert ("900002", "no_room") in kinds and ("900003", "no_room") in kinds
+    # 重推同一单不刷屏：未处理提醒仍只有一条
+    client.post("/api/ota/orders", headers=h, json={**body, "external_ref": "900003"})
+    assert sum(1 for a in client.get("/api/ota/alerts", headers=h).json()
+               if a["external_ref"] == "900003") == 1
+
+    # 取消：已确认 → 自动取消；重复取消幂等；未知单号 404
+    r = client.post("/api/ota/orders/cancel", headers=h, json={"channel_id": meituan["id"], "external_ref": "900002"})
+    assert r.status_code == 200 and len(r.json()["cancelled"]) == placed and r.json()["manual"] == []
+    r = client.post("/api/ota/orders/cancel", headers=h, json={"channel_id": meituan["id"], "external_ref": "900002"})
+    assert r.status_code == 200 and r.json()["cancelled"] == [] and len(r.json()["already"]) == placed
+    r = client.post("/api/ota/orders/cancel", headers=h, json={"channel_id": meituan["id"], "external_ref": "404404"})
+    assert r.status_code == 404
+    # 取消后重推不复活
+    r = client.post("/api/ota/orders", headers=h, json={**big, "room_count": 1})
+    assert r.json()["created"] == [] and r.json()["duplicated"][0]["status"] == "cancelled"
+
+    # 已入住 → 不动，写 cancel_manual 提醒
+    today = date.today()
+    t = {**body, "external_ref": "900004", "check_in": today.isoformat(),
+         "check_out": (today + timedelta(days=1)).isoformat(), "settle_total": 120}
+    r = client.post("/api/ota/orders", headers=h, json=t)
+    assert r.status_code == 200, r.text
+    tr = r.json()["created"][0]
+    r = client.post(f"/api/reservations/{tr['id']}/check-in", headers=h, json={"room_id": tr["room_id"]})
+    assert r.status_code == 200, r.text
+    r = client.post("/api/ota/orders/cancel", headers=h, json={"channel_id": meituan["id"], "external_ref": "900004"})
+    assert r.status_code == 200 and r.json()["cancelled"] == [] and r.json()["manual"] == [tr["code"]]
+    assert client.get(f"/api/reservations/{tr['id']}", headers=h).json()["status"] == "checked_in"
+    alert = next(a for a in client.get("/api/ota/alerts", headers=h).json()
+                 if a["external_ref"] == "900004" and a["kind"] == "cancel_manual")
+    assert alert["reservations"][0]["code"] == tr["code"]
+
+    # 插件上报提醒 + 处理
+    r = client.post("/api/ota/alerts", headers=h, json={"channel_id": meituan["id"], "external_ref": "900005",
+                                                        "kind": "unmapped", "title": "美团房型未映射：兰朵丨特价房"})
+    assert r.status_code == 200, r.text
+    r = client.post(f"/api/ota/alerts/{r.json()['id']}/resolve", headers=h)
+    assert r.status_code == 200 and r.json()["resolved_at"] and r.json()["resolved_by_name"]
+    assert all(a["external_ref"] != "900005" for a in client.get("/api/ota/alerts", headers=h).json())
+
+    # 跨店隔离：别店账号看不到、也处理不了本店提醒
+    other = _headers(_login("xumin")["token"])
+    assert all(a["id"] != alert["id"] for a in client.get("/api/ota/alerts", headers=other).json())
+    assert client.post(f"/api/ota/alerts/{alert['id']}/resolve", headers=other).status_code == 404
+
+    # 清理：撤销入住后取消，其余未来单取消，避免影响其他用例
+    client.post(f"/api/reservations/{tr['id']}/undo-check-in", headers=h)
+    for ref in ("900004", "5044043434093207958", "900001"):
+        client.post("/api/ota/orders/cancel", headers=h, json={"channel_id": meituan["id"], "external_ref": ref})
+
+
+def test_ota_guest_name_fix():
+    """美团建单时只给打码名：读到全名后更正，只改本单、不改共用的打码档案、不覆盖前台手改的名字"""
+    from datetime import date, timedelta
+    h = _headers(_login()["token"])
+    meituan = next(c for c in client.get("/api/channels", headers=h).json() if c["name"] == "美团")
+    rt = next(t for t in client.get("/api/room-types", headers=h).json() if t["name"] == "大床房")
+    cin = date.today() + timedelta(days=230)
+    base = {"channel_id": meituan["id"], "guest_name": "刘*", "room_type_id": rt["id"],
+            "check_in": cin.isoformat(), "check_out": (cin + timedelta(days=1)).isoformat(), "settle_total": 100}
+    a = client.post("/api/ota/orders", headers=h, json={**base, "external_ref": "910001"}).json()["created"][0]
+    b = client.post("/api/ota/orders", headers=h, json={**base, "external_ref": "910002"}).json()["created"][0]
+    assert a["guest_name"] == b["guest_name"] == "刘*"
+
+    fix = {"channel_id": meituan["id"], "external_ref": "910001", "guest_name": "刘新"}
+    r = client.post("/api/ota/orders/guest", headers=h, json=fix)
+    assert r.status_code == 200 and r.json()["updated"] == [a["code"]], r.text
+    assert client.get(f"/api/reservations/{a['id']}", headers=h).json()["guest_name"] == "刘新"
+    assert client.get(f"/api/reservations/{b['id']}", headers=h).json()["guest_name"] == "刘*"
+    # 重复更正幂等
+    assert client.post("/api/ota/orders/guest", headers=h, json=fix).json()["updated"] == []
+    # 打码名 / 空名 400；未知单号 404
+    assert client.post("/api/ota/orders/guest", headers=h, json={**fix, "guest_name": "刘**"}).status_code == 400
+    assert client.post("/api/ota/orders/guest", headers=h, json={**fix, "external_ref": "404405"}).status_code == 404
+    # 前台已把名字改成全名的不覆盖
+    r = client.post("/api/ota/orders/guest", headers=h, json={**fix, "guest_name": "刘欣"})
+    assert r.json()["updated"] == [] and r.json()["skipped"] == [a["code"]]
+
+    for ref in ("910001", "910002"):
+        client.post("/api/ota/orders/cancel", headers=h, json={"channel_id": meituan["id"], "external_ref": ref})

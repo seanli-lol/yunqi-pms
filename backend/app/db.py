@@ -38,6 +38,8 @@ _MIGRATION_COLUMNS = [
     ("reservations", "actual_check_in", "DATETIME NULL"),
     ("guests", "id_number", "VARCHAR(40) NOT NULL DEFAULT ''"),
     ("payments", "remark", "VARCHAR(120) NOT NULL DEFAULT ''"),
+    # OTA 同步：外部渠道订单号（「单号#间序号」），手工开单为 NULL
+    ("reservations", "external_ref", "VARCHAR(64) NULL"),
 ]
 
 # 列类型放宽：仅 MySQL 执行 MODIFY（SQLite 不强制 VARCHAR 长度，无需处理）。

@@ -76,8 +76,10 @@ def res_out(db: Session, r: Reservation, *, merged: bool = False) -> Reservation
         rate=r.rate, stay_type=r.stay_type, hours=r.hours,
         notes=r.notes,
         balance_due=max(0.0, balance_of(db, r.id)),
+        paid_total=folio_totals(db, r.id)[1],
         room_charge_total=room_charge_total_of(db, r.id),
         merged=merged,
+        external_ref=r.external_ref,
         operator_name=op.name if op else None,
         created_at=r.created_at,
     )
@@ -374,6 +376,28 @@ def create_reservation(body: ReservationBody, hotel_id: int | None = None,
 
     guest = upsert_guest(db, hid, body.guest_name, body.guest_phone, body.guest_id_number)
 
+    # 预收款校验提前到写入前（金额/方式/备注任一非法都直接 400，不留半成品订单）；
+    # 实际 Payment 写入在建单或并入之后（两条路径都要收——并入单同样会带押金）
+    deposit_amt = money(body.deposit_amount) if body.deposit_amount is not None else 0.0
+    deposit_remark = ""
+    if deposit_amt > 0:
+        deposit_remark = (body.deposit_remark or "").strip()
+        if len(deposit_remark) > 120:
+            raise HTTPException(400, "备注最多 120 字")
+        assert_method_usable(db, hid, body.deposit_method)
+
+    def _write_deposit(res: Reservation) -> bool:
+        """把预收款落成一笔 Payment + payment 日志（新建与连住并入两条路径共用）。"""
+        if deposit_amt <= 0:
+            return False
+        db.add(Payment(hotel_id=hid, reservation_id=res.id,
+                       method=body.deposit_method, amount=deposit_amt,
+                       remark=deposit_remark, created_by=user.id))
+        db.flush()
+        log_op(db, hid, user, "payment", "payment", res.id,
+               f"预收款 ¥{fmt_money(deposit_amt)} · {pay_method_label(db, hid, body.deposit_method)}{_remark_suffix(deposit_remark)}")
+        return True
+
     # 连住自动并入：同客 / 同来源 / 同房（或同房型）/ 日期首尾相接 且仍在预订或已入住 →
     # 不新建订单，直接扩原单住期并追加一条房费（原房费保留，价格不同也照并）。
     # 钟点房不参与（按小时计不按夜连片），已退房/已取消不参与（历史账目口径不动）。
@@ -384,6 +408,9 @@ def create_reservation(body: ReservationBody, hotel_id: int | None = None,
             check_in=check_in, check_out=check_out)
         if target is not None:
             absorb_into_chain(db, target, body, rate, nights, user)
+            if _write_deposit(target):
+                log_op(db, hid, user, "reservation_extend", "reservation", target.id,
+                       f"连住并入收预收款 ¥{fmt_money(deposit_amt)}（{_remark_suffix(deposit_remark).lstrip(' ·')}）")
             db.commit()
             return res_out(db, target, merged=True)
 
@@ -424,9 +451,12 @@ def create_reservation(body: ReservationBody, hotel_id: int | None = None,
         description=fee_desc,
         amount=fee_amount, created_by=user.id,
     ))
+    # 预收款：校验已在建单前完成（_write_deposit 落账 + payment 日志）
+    deposit_paid = _write_deposit(r)
     stay_tag = " · 钟点" if body.stay_type == "hourly" else ""
     log_op(db, hid, user, "reservation_create", "reservation", r.id,
-           f"创建预订 {r.code} · {guest.name} · {rt.name}{(' · ' + room.room_number + ' 房') if room else ''} · {check_in:%m/%d}–{check_out:%m/%d}{stay_tag}")
+           f"创建预订 {r.code} · {guest.name} · {rt.name}{(' · ' + room.room_number + ' 房') if room else ''} · {check_in:%m/%d}–{check_out:%m/%d}{stay_tag}"
+           + (f" · 预收款 ¥{fmt_money(deposit_amt)}" if deposit_paid else ""))
     db.commit()
     return res_out(db, r)
 
@@ -1144,14 +1174,14 @@ def add_payment(res_id: int, body: PaymentBody,
 @router.delete("/{res_id}/payments/{payment_id}")
 def delete_payment(res_id: int, payment_id: int,
                    user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    """按笔删除收款（订单详情收款表行内删除）：
-    口径对齐 paid-total——仅「在住 / 已退房」可操作；pending/confirmed 的款项走取消预订统一清除。
+    """按笔删除收款（订单详情收款表行内删除 / 预订列表删错押金）：
+    全状态放行（pending/confirmed 的预收款收错可直接删，cancelled 由取消预订统一清除不再单独删）。
     物理删除该笔 Payment，写 payment_delete 日志（object_type=payment，object_id 存预订 id）。"""
     r = db.get(Reservation, res_id)
     if not r or (not can_access_hotel(db, user, r.hotel_id)):
         raise HTTPException(404, "预订不存在")
-    if r.status not in ("checked_in", "checked_out"):
-        raise HTTPException(400, "仅「在住 / 已退房」预订可删除收款记录")
+    if r.status == "cancelled":
+        raise HTTPException(400, "已取消预订的款项不可单独删除（取消时已统一清除）")
     pay = db.get(Payment, payment_id)
     if not pay or pay.reservation_id != res_id:
         raise HTTPException(404, "收款记录不存在")

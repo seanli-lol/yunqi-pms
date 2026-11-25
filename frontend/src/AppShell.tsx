@@ -10,6 +10,7 @@ import { Overlay } from './ui'
 import { useAuth } from './auth'
 import { useTheme, type ThemeMode } from './theme'
 import OvertimeAlert from './OvertimeAlert'
+import OtaSyncListener from './OtaSyncListener'
 
 /** 导航项：desc 是 hover 提示（顶栏只有标题，说明不占版面） */
 type NavItem = {
@@ -352,6 +353,9 @@ export default function AppShell() {
 
       {/* 钟点房到时提醒卡：全局右下角（任何页面可见，portal 挂 body） */}
       <OvertimeAlert />
+
+      {/* 美团同步插件写入后派发事件 → 全部查询重拉，前台不用手动刷新 */}
+      <OtaSyncListener />
 
       <AccountSheet
         open={accountOpen}

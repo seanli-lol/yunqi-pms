@@ -45,3 +45,6 @@ gui-test-screenshots/
 backups/
 *.sql.gz
 *.summary.txt
+
+# 美团插件录制数据（含客人姓名/电话，绝不入库）
+extensions/meituan-sync/captures/

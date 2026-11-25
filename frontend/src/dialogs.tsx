@@ -381,3 +381,75 @@ export function EditBookingDialog({ res, channels, busy, onClose, onConfirm }: {
     </Dialog>
   )
 }
+
+/* ---------- 收款弹层（预订列表「收款」/ 订单详情「＋收款」共用） ----------
+   金额 + 收款方式 + 选填备注，方式来自「设置 → 收款方式」配置。
+   传 res 时副题带订单号与客人、提示文案区分预收款（预订阶段）与补收（在住/已退）。 */
+export function AddPaymentDialog({ res, onClose, onSubmit, busy }: {
+  res?: Reservation
+  onClose: () => void
+  onSubmit: (p: { method: string; amount: number; remark: string }) => void
+  busy: boolean
+}) {
+  const pms = usePayMethods()
+  const [method, setMethod] = useState('')
+  const [amount, setAmount] = useState('')
+  const [remark, setRemark] = useState('')
+  // 默认值必须同步进 state（来源默认值坑规则）：不能只靠 select 的渲染兜底
+  useEffect(() => {
+    const codes = pms.data?.map(m => m.code) ?? []
+    if (codes.length && !codes.includes(method)) setMethod(codes[0])
+  }, [pms.data, method])
+  const n = round2(Number(amount) || 0)
+  const isPrepay = !!res && (res.status === 'pending' || res.status === 'confirmed')
+  return (
+    <Dialog
+      open
+      onClose={onClose}
+      title="收款"
+      sub={res
+        ? `${res.code} · ${res.guest_name} · ${isPrepay ? '预收款' : '订单补收'}`
+        : '向当前订单收款 · 收款后余额 = 应收 − 已收总额'}
+      foot={
+        <>
+          <button className="btn btn-ghost" onClick={onClose}>取消</button>
+          <button
+            className="btn btn-primary"
+            disabled={busy || !n || n <= 0 || !method}
+            onClick={() => onSubmit({ method, amount: n, remark: remark.trim() })}
+          >确认收款</button>
+        </>
+      }
+    >
+      {res && (
+        <>
+          <div className="info-row"><span>房费合计</span><span>{fmtMoney(res.room_charge_total ?? 0)}</span></div>
+          <div className="info-row" style={{ marginBottom: 12 }}><span>已收款</span><span>{fmtMoney(res.paid_total ?? 0)}</span></div>
+        </>
+      )}
+      <Field label="收款金额（元）" required hint={isPrepay
+        ? '预订阶段可提前收款（押金 / 订金 / 预付全款）；建议在备注注明款项性质。'
+        : '订单可随时补收；取消预订才会清除已收款。'}>
+        <input
+          className="input" inputMode="decimal" autoFocus
+          placeholder={isPrepay ? '如：500（押金）或 1740（预付全款）' : '如：572.50'}
+          value={amount}
+          onChange={e => setAmount(moneyInputText(e.target.value))}
+        />
+      </Field>
+      <Field label="收款方式" hint="选项与顺序来自「设置 → 收款方式」配置。">
+        <select className="select" value={method} onChange={e => setMethod(e.target.value)}>
+          {(pms.data ?? []).map(m => <option key={m.code} value={m.code}>{m.name}</option>)}
+        </select>
+      </Field>
+      <Field label="备注" hint="选填 · 展示在收款明细与操作日志，最多 120 字。">
+        <input
+          className="input" maxLength={120}
+          placeholder="如：代收押金、订金、楼层调整差价"
+          value={remark}
+          onChange={e => setRemark(e.target.value)}
+        />
+      </Field>
+    </Dialog>
+  )
+}
