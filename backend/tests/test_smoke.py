@@ -1067,7 +1067,7 @@ def test_delete_payment():
     r = client.delete(f"/api/reservations/{rid}/payments/{p1['id']}", headers=_headers(tok2))
     assert r.status_code == 404
 
-    # 未来 confirmed 预订（定金场景）：状态口径对齐 paid-total → 400
+    # 未来 confirmed 预订（定金场景）：删款全状态放行（预订阶段收错款可直接删，2026-11-25 起）
     rooms2 = client.get("/api/rooms", headers=h).json()
     avail_room = next(x for x in rooms2 if x["status"] == "vacant_clean")
     r = client.post("/api/reservations", headers=h, json={
@@ -1081,7 +1081,8 @@ def test_delete_payment():
     assert r.status_code == 200
     pid2 = client.get(f"/api/reservations/{rid2}/folio", headers=h).json()["payments"][0]["id"]
     r = client.delete(f"/api/reservations/{rid2}/payments/{pid2}", headers=h)
-    assert r.status_code == 400
+    assert r.status_code == 200, r.text  # 预订态删款已放行（守卫仅拦 cancelled，而 cancelled 的款项取消时已清空）
+    assert client.get(f"/api/reservations/{rid2}/folio", headers=h).json()["total_paid"] == 0
 
 
 def test_room_edit_and_duplicate_guard():
@@ -1979,6 +1980,23 @@ def test_multi_hotel_staff_binding():
     r = client.get(f"/api/reservations/{rid}", headers=h2)
     assert r.status_code == 404  # 原本可访问的莫干山预订，减绑后 404
 
+    # 主店顺延：把西湖从集合里拿掉 → 主店变莫干山
+    r = client.patch(f"/api/users/{u['id']}", headers=admin, json={"hotel_ids": [mogan["id"]]})
+    assert r.status_code == 200, r.text
+    assert r.json()["hotel_id"] == mogan["id"]
+    d2 = _login("duodian")
+    assert d2["user"]["hotel_name"].endswith("莫干山店")
+
+    # 酒店 admin 建号越权绑他店 → 400；员工列表带绑定集合
+    wanglin = _headers(_login("wanglin")["token"])
+    r = client.post("/api/users", headers=wanglin, json={
+        "name": "越权客", "username": "yuequan", "password": "123456",
+        "role": "receptionist", "hotel_ids": [west["id"], mogan["id"]]})
+    assert r.status_code == 400
+    users = client.get("/api/users", headers=admin).json()
+    duodian = next(x for x in users if x["username"] == "duodian")
+    assert [x["id"] for x in duodian["hotels"]] == [mogan["id"]]
+
 
 def test_advance_payment():
     """预订阶段提前收款（押金/预付款）：创建时随单收款 + 事后收款 + paid_total 外显
@@ -2063,24 +2081,6 @@ def test_advance_payment():
     assert any(l["action"] == "reservation_cancel" and "清除已收款 ¥960.00" in l["summary"] for l in logs)
     folio4 = client.get(f"/api/reservations/{rid4}/folio", headers=h).json()
     assert folio4["total_paid"] == 0  # 取消清空全部款项
-
-
-    # 主店顺延：把西湖从集合里拿掉 → 主店变莫干山
-    r = client.patch(f"/api/users/{u['id']}", headers=admin, json={"hotel_ids": [mogan["id"]]})
-    assert r.status_code == 200, r.text
-    assert r.json()["hotel_id"] == mogan["id"]
-    d2 = _login("duodian")
-    assert d2["user"]["hotel_name"].endswith("莫干山店")
-
-    # 酒店 admin 建号越权绑他店 → 400；员工列表带绑定集合
-    wanglin = _headers(_login("wanglin")["token"])
-    r = client.post("/api/users", headers=wanglin, json={
-        "name": "越权客", "username": "yuequan", "password": "123456",
-        "role": "receptionist", "hotel_ids": [west["id"], mogan["id"]]})
-    assert r.status_code == 400
-    users = client.get("/api/users", headers=admin).json()
-    duodian = next(x for x in users if x["username"] == "duodian")
-    assert [x["id"] for x in duodian["hotels"]] == [mogan["id"]]
 
     # 清理：取消不影响（该测试只建了账号，没建预订）
 
