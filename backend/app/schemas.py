@@ -43,6 +43,10 @@ class RefreshResult(BaseModel):
     expires_in: int
 
 
+class CaptchaConfigResult(BaseModel):
+    enabled: bool
+
+
 class CaptchaResult(BaseModel):
     enabled: bool
     id: str | None = None
@@ -52,11 +56,14 @@ class CaptchaResult(BaseModel):
     width: int | None = None
     height: int | None = None
     size: int | None = None
+    escalated: bool = False
 
 
 class CaptchaVerifyBody(BaseModel):
     id: str
     x: int
+    duration_ms: int = Field(default=0, ge=0, le=60000)
+    trail: list[tuple[int, int, int]] = Field(default_factory=list, max_length=200)
 
 
 class CaptchaVerifyResult(BaseModel):

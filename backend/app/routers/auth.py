@@ -1,4 +1,5 @@
 """认证：账号密码直登（员工默认主店，绑定多店登录后切换）+ 滑块验证码 + 刷新令牌续期"""
+import hashlib
 import time
 from collections import defaultdict, deque
 from datetime import datetime, timedelta
@@ -12,6 +13,7 @@ from app.deps import bound_hotel_ids, get_current_user
 from app.db import get_db
 from app.models import Hotel, RefreshToken, User
 from app.schemas import (
+    CaptchaConfigResult,
     CaptchaResult,
     CaptchaVerifyBody,
     CaptchaVerifyResult,
@@ -29,6 +31,8 @@ router = APIRouter(prefix="/api/auth", tags=["auth"])
 _login_attempts: dict[str, deque] = defaultdict(lambda: deque(maxlen=10))
 # 验证码出图单独限流：每 IP 每分钟 30 次（防止刷图耗 CPU）
 _captcha_hits: dict[str, deque] = defaultdict(lambda: deque(maxlen=30))
+# 验证码校验独立限流：每 IP 每分钟 20 次（防止暴力碰撞坐标或刷轨迹）
+_captcha_verify_hits: dict[str, deque] = defaultdict(lambda: deque(maxlen=20))
 
 # 刷新令牌轮换宽限期：旧令牌换新后 60s 内仍可用（多标签页并发续期不互相踢下线）
 _REFRESH_GRACE_SECONDS = 60
@@ -51,6 +55,13 @@ def _rate_limited(ip: str) -> bool:
 
 def _client_ip(request: Request) -> str:
     return request.client.host if request.client else "unknown"
+
+
+def _client_fingerprint(request: Request) -> str:
+    """绑定出题/验证/登录三环节的客户端指纹（IP + UA 哈希），防止跨端中继票据"""
+    ip = _client_ip(request)
+    ua = request.headers.get("user-agent", "")
+    return hashlib.sha256(f"{ip}|{ua}".encode()).hexdigest()[:16]
 
 
 def _issue_refresh(db: Session, user: User) -> str:
@@ -85,18 +96,35 @@ def _login_result(db: Session, user: User, hotel_name: str | None) -> LoginResul
     )
 
 
+@router.get("/captcha/config", response_model=CaptchaConfigResult)
+def get_captcha_config():
+    """轻量探测后端是否启用滑块验证码（不触发出图与限流）"""
+    return CaptchaConfigResult(enabled=captcha.enabled())
+
+
 @router.get("/captcha", response_model=CaptchaResult)
 def get_captcha(request: Request):
     if not captcha.enabled():
         return CaptchaResult(enabled=False)
-    if _throttled(_captcha_hits, _client_ip(request), 30):
+    ip = _client_ip(request)
+    if _throttled(_captcha_hits, ip, 30):
         raise HTTPException(429, "请求过于频繁，请稍后再试")
-    return CaptchaResult(enabled=True, **captcha.new_challenge())
+    return CaptchaResult(enabled=True, **captcha.new_challenge(ip, _client_fingerprint(request)))
 
 
 @router.post("/captcha/verify", response_model=CaptchaVerifyResult)
-def verify_captcha(body: CaptchaVerifyBody):
-    ticket = captcha.verify(body.id, body.x)
+def verify_captcha(body: CaptchaVerifyBody, request: Request):
+    ip = _client_ip(request)
+    if _throttled(_captcha_verify_hits, ip, 20):
+        raise HTTPException(429, "验证过于频繁，请稍后再试")
+    ticket = captcha.verify(
+        body.id,
+        body.x,
+        body.duration_ms,
+        body.trail,
+        client_ip=ip,
+        fingerprint=_client_fingerprint(request),
+    )
     if not ticket:
         raise HTTPException(400, "验证未通过，请重试")
     return CaptchaVerifyResult(ok=True, captcha_token=ticket)
@@ -107,8 +135,8 @@ def login(body: LoginBody, request: Request, db: Session = Depends(get_db)):
     client_ip = _client_ip(request)
     if _rate_limited(client_ip):
         raise HTTPException(429, "尝试过于频繁，请稍后再试")
-    # 验证码先于凭据校验（票据一次性：本次登录失败也作废，须重新滑动）
-    if not captcha.consume(body.captcha_token):
+    # 验证码先于凭据校验（票据一次性且绑定客户端指纹：本次登录失败也作废，须重新滑动）
+    if not captcha.consume(body.captcha_token, _client_fingerprint(request)):
         raise HTTPException(400, "请先完成滑块验证")
 
     # 账号密码直登，不再选酒店：员工默认主店，绑定多店的登录后在顶栏切换；

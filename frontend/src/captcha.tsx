@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { ArrowRight, Check, Loader2, RefreshCw, ShieldCheck, X } from 'lucide-react'
 import { api } from './api'
 
-/** 服务端下发的验证码题目（坐标均为逻辑像素，前端按渲染宽度换算） */
+/** 服务端下发的 PNG 拼图题目（坐标均为逻辑像素，前端按渲染宽度比例换算） */
 interface CaptchaQuestion {
   id: string
   bg: string
@@ -10,183 +11,366 @@ interface CaptchaQuestion {
   width: number
   height: number
   size: number
+  escalated: boolean
 }
+
+type TrailPoint = [number, number, number]
 
 interface Props {
-  /** 验证通过回调（传一次性票据）；重置/失败回调 null */
-  onVerified: (token: string | null) => void
-  /** 变化时重新出题（登录失败后由父组件 +1） */
-  resetKey?: number
-  /** 后端是否启用验证码（关闭时父组件不用等滑块） */
-  onEnabled?: (enabled: boolean) => void
+  open: boolean
+  onClose: () => void
+  /** 验证通过后回调一次性票据（调用方自动提交登录） */
+  onVerified: (token: string) => void
 }
 
-const HANDLE = 40   // 滑块边长
-const INSET = 2     // 滑块内缩
-const GAP = 6       // 允许的偏移误差（与后端 captcha.TOLERANCE 一致）
+const HANDLE = 42   // 滑块手柄宽度
+const INSET = 2     // 滑块左右内缩
 
 /**
- * 拼图缺口滑块：服务端出图，前端只能看到缺口高亮位置，拖动对齐后由服务端判定。
- * 通过后拿到一次性票据，随登录请求提交。
+ * 安全验证浮层（点击「登录」触发）：
+ * - 服务端渲染 2× HiDPI PNG 异形凹凸拼图 + 1~2 个干扰假缺口；
+ * - 前端按比例映射拖动并实时采集人机轨迹 [dt_ms, logical_x, dy_px]；
+ * - 校验通过后短暂停留绿标反馈，自动回调提交登录。
  */
-export function SliderCaptcha({ onVerified, resetKey = 0, onEnabled }: Props) {
+export function CaptchaModal({ open, onClose, onVerified }: Props) {
   const [q, setQ] = useState<CaptchaQuestion | null>(null)
-  const [enabled, setEnabled] = useState(true)
-  const [offset, setOffset] = useState(0)          // 滑块位移（渲染像素）
-  const [bounds, setBounds] = useState({ handleMax: 0, pieceMax: 0 })
+  const [loading, setLoading] = useState(false)
+  const [offset, setOffset] = useState(0)
+  const [bounds, setBounds] = useState({ handleMax: 1, pieceMax: 1, stageW: 320 })
+  const [draggingUI, setDraggingUI] = useState(false)
+  const [resetting, setResetting] = useState(false)
+  const [checking, setChecking] = useState(false)
   const [verified, setVerified] = useState(false)
   const [failed, setFailed] = useState(false)
-  const [checking, setChecking] = useState(false)
-  const boxRef = useRef<HTMLDivElement>(null)
-  const dragging = useRef<{ startX: number; base: number } | null>(null)
-  // pointerup 里要读「最新」位移：state 有批处理延迟，同步事件里拿到的是旧值
+  const [banner, setBanner] = useState<{ type: 'ok' | 'fail'; text: string } | null>(null)
+
+  const stageRef = useRef<HTMLDivElement>(null)
+  const trackRef = useRef<HTMLDivElement>(null)
   const offsetRef = useRef(0)
-  const reloadTimer = useRef<number>(0)
+  const boundsRef = useRef(bounds)
+  boundsRef.current = bounds
+
+  const dragRef = useRef<{
+    startX: number
+    startY: number
+    base: number
+    t0: number
+    lastT: number
+    lastX: number
+    trail: TrailPoint[]
+  } | null>(null)
+  const timerRef = useRef<number>(0)
+  const reqIdRef = useRef(0)
+
+  const clearTimers = () => {
+    window.clearTimeout(timerRef.current)
+  }
 
   const load = useCallback(async () => {
+    const rid = ++reqIdRef.current
+    clearTimers()
+    dragRef.current = null
+    offsetRef.current = 0
+    setOffset(0)
+    setDraggingUI(false)
+    setResetting(false)
+    setChecking(false)
     setVerified(false)
     setFailed(false)
-    setOffset(0)
-    onVerified(null)
+    setBanner(null)
+    setLoading(true)
     try {
       const r = await api.get('/api/auth/captcha', { skipHotel: true })
+      if (rid !== reqIdRef.current) return
       if (!r?.enabled) {
-        setEnabled(false)
-        setQ(null)
-        onEnabled?.(false)
+        onVerified('')
         return
       }
-      setEnabled(true)
-      onEnabled?.(true)
-      setQ({ id: r.id, bg: r.bg, piece: r.piece, y: r.y, width: r.width, height: r.height, size: r.size })
-    } catch {
-      // 出图失败不阻塞登录：后端会按「无票据」提示重新验证
-      setQ(null)
-      onEnabled?.(true)
-    }
-    // onVerified / onEnabled 由父组件按引用传入，不进依赖避免反复出图
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [resetKey])
-
-  useEffect(() => { load() }, [load])
-  useEffect(() => () => window.clearTimeout(reloadTimer.current), [])
-
-  // 实测渲染宽度：滑块与拼图块 1:1 跟随手指（同一坐标系），
-  // 只受「拼图块不出背景右边界」约束；提交时用 位移/背景宽*逻辑宽 还原逻辑坐标。
-  useEffect(() => {
-    if (!q || !boxRef.current) return
-    const calc = () => {
-      const w = boxRef.current?.clientWidth || 0
-      const pieceRendered = (q.size / q.width) * w
-      setBounds({
-        handleMax: Math.max(0, w - HANDLE - INSET * 2),
-        pieceMax: Math.max(0, w - pieceRendered),
+      setQ({
+        id: r.id,
+        bg: r.bg,
+        piece: r.piece,
+        y: r.y,
+        width: r.width,
+        height: r.height,
+        size: r.size,
+        escalated: Boolean(r.escalated),
       })
+    } catch (e: any) {
+      if (rid !== reqIdRef.current) return
+      setQ(null)
+      setFailed(true)
+      setBanner({ type: 'fail', text: e?.message || '验证码加载失败，请点击刷新' })
+    } finally {
+      if (rid === reqIdRef.current) setLoading(false)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // 打开浮层时加载新题；关闭时清理定时器与状态
+  useEffect(() => {
+    if (open) {
+      load()
+    } else {
+      reqIdRef.current += 1
+      clearTimers()
+      dragRef.current = null
+      setDraggingUI(false)
+    }
+    return clearTimers
+  }, [open, load])
+
+  // Esc 关闭浮层（校验中 / 已通过时锁定避免误关）
+  useEffect(() => {
+    if (!open) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !checking && !verified) onClose()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [open, checking, verified, onClose])
+
+  // 实测画布与滑轨尺寸：比例映射满行程，兼容任意屏宽
+  useEffect(() => {
+    if (!open || !stageRef.current || !trackRef.current) return
+    const calc = () => {
+      const stageW = stageRef.current?.clientWidth || 320
+      const trackW = trackRef.current?.clientWidth || stageW
+      const logicalW = q?.width || 320
+      const logicalSize = q?.size || 58
+      const pieceRendered = (logicalSize / logicalW) * stageW
+      const next = {
+        handleMax: Math.max(1, trackW - HANDLE - INSET * 2),
+        pieceMax: Math.max(1, stageW - pieceRendered),
+        stageW,
+      }
+      boundsRef.current = next
+      setBounds(next)
     }
     calc()
+    const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(calc) : null
+    ro?.observe(stageRef.current)
     window.addEventListener('resize', calc)
-    return () => window.removeEventListener('resize', calc)
-  }, [q])
+    return () => {
+      ro?.disconnect()
+      window.removeEventListener('resize', calc)
+    }
+  }, [open, q])
 
-  // 拖动上限取两者较小值：滑块不出轨道、拼图块不出背景右边（缺口 x 上限 258/320，仍在范围内）
-  const dragMax = Math.min(bounds.handleMax, bounds.pieceMax)
-  const pieceLeft = Math.min(offset, bounds.pieceMax)
+  if (!open) return null
+
+  const toLogicalX = (handleOffset: number, question: CaptchaQuestion) => {
+    const b = boundsRef.current
+    const pieceLeft = (handleOffset / b.handleMax) * b.pieceMax
+    return Math.round((pieceLeft / b.stageW) * question.width)
+  }
+
+  const pieceLeft = (offset / bounds.handleMax) * bounds.pieceMax
+
+  const triggerFail = (msg: string, autoReload: boolean) => {
+    setFailed(true)
+    setResetting(true)
+    setBanner({ type: 'fail', text: msg })
+    offsetRef.current = 0
+    setOffset(0)
+    if (autoReload) {
+      clearTimers()
+      timerRef.current = window.setTimeout(() => load(), 720)
+    }
+  }
 
   const onPointerDown = (e: React.PointerEvent) => {
-    if (verified || checking || !q) return
+    if (verified || checking || loading || !q) return
     e.preventDefault()
     try {
-      // 指针捕获失败不影响拖动（部分环境/合成事件会抛 NotFoundError）
-      ;(e.target as HTMLElement).setPointerCapture?.(e.pointerId)
+      ;(e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId)
     } catch { /* ignore */ }
-    dragging.current = { startX: e.clientX, base: offsetRef.current }
+    const startLogical = toLogicalX(offsetRef.current, q)
+    dragRef.current = {
+      startX: e.clientX,
+      startY: e.clientY,
+      base: offsetRef.current,
+      t0: performance.now(),
+      lastT: 0,
+      lastX: startLogical,
+      trail: [[0, startLogical, 0]],
+    }
+    setDraggingUI(true)
+    setResetting(false)
+    setFailed(false)
+    setBanner(null)
   }
 
   const onPointerMove = (e: React.PointerEvent) => {
-    if (!dragging.current) return
-    const next = Math.min(dragMax, Math.max(0, dragging.current.base + e.clientX - dragging.current.startX))
+    const st = dragRef.current
+    if (!st || !q) return
+    const next = Math.min(boundsRef.current.handleMax, Math.max(0, st.base + e.clientX - st.startX))
     offsetRef.current = next
     setOffset(next)
-    if (failed) setFailed(false)
+
+    const dt = Math.max(st.lastT, Math.round(performance.now() - st.t0))
+    const lx = toLogicalX(next, q)
+    const dy = Math.round(e.clientY - st.startY)
+    if (st.trail.length < 118 && (dt - st.lastT >= 12 || Math.abs(lx - st.lastX) >= 2)) {
+      st.trail.push([dt, lx, dy])
+      st.lastT = dt
+      st.lastX = lx
+    }
   }
 
-  const fail = () => {
-    setFailed(true)
-    onVerified(null)
-    offsetRef.current = 0
-    setOffset(0)
-    // 题目一次有效：失败后重新出图（延迟让抖动先播完）
-    window.clearTimeout(reloadTimer.current)
-    reloadTimer.current = window.setTimeout(() => load(), 600)
-  }
+  const onPointerUp = async (e: React.PointerEvent) => {
+    const st = dragRef.current
+    if (!st || !q) return
+    dragRef.current = null
+    setDraggingUI(false)
 
-  const onPointerUp = async () => {
-    if (!dragging.current || !q) return
-    dragging.current = null
-    // 用 ref 里的最新位移（state 可能还没 flush，尤其 pointermove/up 同帧触发时）
-    const current = offsetRef.current
-    const renderedW = boxRef.current?.clientWidth || q.width
-    const pieceMax = bounds.pieceMax || Math.max(0, renderedW - (q.size / q.width) * renderedW)
-    const sentLeft = Math.min(current, pieceMax)
-    const logical = Math.round((sentLeft / renderedW) * q.width)
+    const finalOffset = offsetRef.current
+    const logicalX = toLogicalX(finalOffset, q)
+    const durationMs = Math.max(st.lastT + 1, Math.round(performance.now() - st.t0))
+    const dy = Math.round(e.clientY - st.startY)
+    const last = st.trail[st.trail.length - 1]
+    if (!last || last[0] !== durationMs || last[1] !== logicalX) {
+      st.trail.push([durationMs, logicalX, dy])
+    }
+
     setChecking(true)
     try {
-      const r = await api.post('/api/auth/captcha/verify', { id: q.id, x: logical }, { skipHotel: true })
+      const r = await api.post(
+        '/api/auth/captcha/verify',
+        { id: q.id, x: logicalX, duration_ms: durationMs, trail: st.trail },
+        { skipHotel: true },
+      )
       if (r?.ok && r.captcha_token) {
         setVerified(true)
         setFailed(false)
-        onVerified(r.captcha_token)
+        setBanner({ type: 'ok', text: `验证通过 · ${(durationMs / 1000).toFixed(1)}s` })
+        clearTimers()
+        timerRef.current = window.setTimeout(() => {
+          onVerified(r.captcha_token)
+        }, 460)
       } else {
-        fail()
+        triggerFail('验证未通过，请重新对齐', true)
       }
-    } catch {
-      fail()
+    } catch (err: any) {
+      const isThrottle = err?.status === 429
+      triggerFail(isThrottle ? (err.message || '验证过于频繁，请稍后再试') : '验证未通过，请重新对齐', !isThrottle)
     } finally {
       setChecking(false)
     }
   }
 
-  if (!enabled) return null
+  const onPointerCancel = () => {
+    dragRef.current = null
+    setDraggingUI(false)
+  }
 
   return (
-    <div className={`captcha${failed ? ' captcha-fail' : ''}${verified ? ' captcha-ok' : ''}`}>
-      <div className="captcha-bg" ref={boxRef} style={{ aspectRatio: q ? `${q.width} / ${q.height}` : '2 / 1' }}>
-        {q && (
-          <>
-            <img src={q.bg} alt="拖动下方滑块完成拼图" draggable={false} />
-            <img
-              className="captcha-piece"
-              src={q.piece}
-              alt=""
-              draggable={false}
-              style={{
-                width: `${(q.size / q.width) * 100}%`,
-                top: `${(q.y / q.height) * 100}%`,
-                left: `${pieceLeft}px`,
-              }}
+    <div
+      className="overlay"
+      onClick={(e) => {
+        if (e.target === e.currentTarget && !checking && !verified) onClose()
+      }}
+    >
+      <div
+        className={`dialog captcha-modal${failed ? ' captcha-fail' : ''}${verified ? ' captcha-ok' : ''}`}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="captcha-modal-title"
+      >
+        <div className="captcha-head">
+          <div className="captcha-head-left">
+            <span className="captcha-shield" aria-hidden="true">
+              <ShieldCheck />
+            </span>
+            <div>
+              <div className="captcha-title-row">
+                <h2 className="captcha-title" id="captcha-modal-title">安全验证</h2>
+                {q?.escalated && <span className="badge badge-orange">强化验证</span>}
+              </div>
+              <p className="captcha-sub">拖动滑块对齐正确缺口</p>
+            </div>
+          </div>
+          <div className="captcha-actions">
+            <button
+              type="button"
+              className={`icon-btn${loading ? ' spinning' : ''}`}
+              title="换一张"
+              aria-label="换一张"
+              disabled={loading || checking || verified}
+              onClick={() => load()}
+            >
+              <RefreshCw />
+            </button>
+            <button
+              type="button"
+              className="icon-btn"
+              title="关闭"
+              aria-label="关闭"
+              disabled={checking || verified}
+              onClick={onClose}
+            >
+              <X />
+            </button>
+          </div>
+        </div>
+
+        <div className="captcha-body">
+          <div
+            ref={stageRef}
+            className={`captcha-stage${draggingUI ? ' is-dragging' : ''}${resetting ? ' is-resetting' : ''}`}
+            style={{ aspectRatio: q ? `${q.width} / ${q.height}` : '2 / 1' }}
+          >
+            {loading && !q && <div className="captcha-skeleton">正在生成拼图…</div>}
+            {q && (
+              <>
+                <img src={q.bg} alt="拖动下方滑块对齐拼图缺口" draggable={false} />
+                <img
+                  className="captcha-piece"
+                  src={q.piece}
+                  alt=""
+                  draggable={false}
+                  style={{
+                    width: `${(q.size / q.width) * 100}%`,
+                    top: `${(q.y / q.height) * 100}%`,
+                    left: `${pieceLeft}px`,
+                  }}
+                />
+              </>
+            )}
+            {banner && (
+              <div className={`captcha-banner ${banner.type}`} role="status">
+                {banner.type === 'ok' ? <Check /> : <X />}
+                <span>{banner.text}</span>
+              </div>
+            )}
+          </div>
+
+          <div
+            ref={trackRef}
+            className={`captcha-track${draggingUI ? ' is-dragging' : ''}${resetting ? ' is-resetting' : ''}`}
+          >
+            <div
+              className="captcha-fill"
+              style={{ width: offset > 0 ? offset + HANDLE + INSET * 2 : 0 }}
             />
-            {verified && <span className="captcha-badge">验证通过</span>}
-          </>
-        )}
-      </div>
-      <div className="captcha-track">
-        <div className="captcha-fill" style={{ width: offset + HANDLE + INSET * 2 }} />
-        <span className="captcha-tip">
-          {verified ? '验证通过' : failed ? '验证未通过，请重试' : checking ? '校验中…' : '按住滑块，拖动拼图'}
-        </span>
-        <button
-          type="button"
-          className="captcha-handle"
-          style={{ transform: `translateX(${offset}px)` }}
-          aria-label="滑动验证"
-          disabled={verified || checking || !q}
-          onPointerDown={onPointerDown}
-          onPointerMove={onPointerMove}
-          onPointerUp={onPointerUp}
-          onPointerCancel={() => { dragging.current = null }}
-        >
-          {verified ? '✓' : '→'}
-        </button>
+            <span className="captcha-tip">
+              {verified ? '验证通过' : checking ? '校验中…' : failed ? '验证未通过，请重试' : '向右拖动滑块完成拼图'}
+            </span>
+            <button
+              type="button"
+              className="captcha-handle"
+              style={{ transform: `translateX(${offset}px)` }}
+              aria-label="向右拖动滑块完成拼图"
+              disabled={verified || checking || loading || !q}
+              onPointerDown={onPointerDown}
+              onPointerMove={onPointerMove}
+              onPointerUp={onPointerUp}
+              onPointerCancel={onPointerCancel}
+            >
+              {verified ? <Check /> : checking ? <Loader2 className="captcha-spin-icon" /> : failed ? <X /> : <ArrowRight />}
+            </button>
+          </div>
+        </div>
       </div>
     </div>
   )

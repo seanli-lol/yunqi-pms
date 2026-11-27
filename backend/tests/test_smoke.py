@@ -773,54 +773,143 @@ def test_early_checkout_resale():
     assert "stub_nights" not in blk and "resale_nights" not in blk
 
 
+def _human_trail(target_x: int, duration_ms: int = 780) -> list[list[int]]:
+    """生成带真实加减速与微抖动的人机轨迹 [[t, x, dy], ...]"""
+    steps = [
+        (0, 0.00, 0),
+        (55, 0.04, 0),
+        (125, 0.16, 1),
+        (205, 0.36, 1),
+        (295, 0.59, 0),
+        (395, 0.78, -1),
+        (505, 0.91, -1),
+        (615, 0.97, 0),
+        (705, 1.01, 0),
+        (duration_ms, 1.00, 0),
+    ]
+    return [[t, round(target_x * frac), dy] for t, frac, dy in steps]
+
+
 def test_captcha_login_flow():
-    """滑块验证码：出题 → 错误偏移 400 → 正确偏移换票据 → 登录必须带票据（一次性）"""
+    """新版滑块验证码：PNG 位图 → 拦截无轨迹/瞬移/匀速脚本 → 连续失败升阶 → 人类轨迹通过 → 指纹防重放 → 校验限流"""
+    import base64
     import app.captcha as captcha
-    from app.routers.auth import _captcha_hits, _login_attempts
+    from app.routers.auth import _captcha_hits, _captcha_verify_hits, _login_attempts
+
     _login_attempts.clear()
     _captcha_hits.clear()
+    _captcha_verify_hits.clear()
+    captcha.reset_state()
     captcha.set_enabled(True)
+    ua_main = {"User-Agent": "YunqiTestBrowser/1.0"}
+    ua_other = {"User-Agent": "AttackerReplay/2.0"}
     try:
-        r = client.get("/api/auth/captcha")
+        # 1. 配置探测接口
+        cfg = client.get("/api/auth/captcha/config")
+        assert cfg.status_code == 200 and cfg.json() == {"enabled": True}
+
+        # 2. 出图必须是真位图（JPEG 背景 + PNG 拼图块，禁止 SVG 明文坐标泄露）
+        r = client.get("/api/auth/captcha", headers=ua_main)
         assert r.status_code == 200, r.text
         q = r.json()
-        assert q["enabled"] is True and q["bg"].startswith("data:image/svg+xml;base64,")
-        answer = captcha._challenges[q["id"]]["x"]
+        assert q["enabled"] is True and q["escalated"] is False
+        assert q["bg"].startswith("data:image/jpeg;base64,")
+        assert q["piece"].startswith("data:image/png;base64,")
+        bg_bytes = base64.b64decode(q["bg"].split(",", 1)[1])
+        piece_bytes = base64.b64decode(q["piece"].split(",", 1)[1])
+        assert bg_bytes[:3] == b"\xff\xd8\xff"
+        assert piece_bytes[:8] == b"\x89PNG\r\n\x1a\n"
 
-        # 错误偏移：400，且题目作废（重取才能再试）
-        r = client.post("/api/auth/captcha/verify", json={"id": q["id"], "x": answer + 40})
+        # 3. 瞬移攻击（出图后 <0.35s 立即提交正确坐标 + 合法轨迹）→ 400 且题目作废
+        answer = captcha._challenges[q["id"]]["x"]
+        r = client.post(
+            "/api/auth/captcha/verify",
+            json={"id": q["id"], "x": answer, "duration_ms": 780, "trail": _human_trail(answer)},
+            headers=ua_main,
+        )
         assert r.status_code == 400, r.text
         assert q["id"] not in captcha._challenges
 
-        # 正确偏移：拿到一次性票据
-        q = client.get("/api/auth/captcha").json()
-        answer = captcha._challenges[q["id"]]["x"]
-        r = client.post("/api/auth/captcha/verify", json={"id": q["id"], "x": answer + 4})
+        # 4. 缺轨迹 / 匀速直线机器人攻击（即使服务端间隔充足且 x 完全准确）→ 400
+        q2 = client.get("/api/auth/captcha", headers=ua_main).json()
+        captcha._challenges[q2["id"]]["created"] -= 2.0
+        ans2 = captcha._challenges[q2["id"]]["x"]
+        linear_trail = [[i * 80, round(ans2 * i / 10), 0] for i in range(11)]
+        r = client.post(
+            "/api/auth/captcha/verify",
+            json={"id": q2["id"], "x": ans2, "duration_ms": 800, "trail": linear_trail},
+            headers=ua_main,
+        )
+        assert r.status_code == 400, r.text
+
+        # 5. 连续失败 2 次后自动触发「强化验证」（escalated=True，容差收紧至 ±4px）
+        q3 = client.get("/api/auth/captcha", headers=ua_main).json()
+        assert q3["escalated"] is True
+        assert captcha._challenges[q3["id"]]["tol"] == captcha.ESCALATED_TOLERANCE
+        captcha._challenges[q3["id"]]["created"] -= 2.0
+        ans3 = captcha._challenges[q3["id"]]["x"]
+
+        # 6. 合法人类变速轨迹（误差 3px ≤ 4px）→ 200 拿到一次性票据，且重置升阶计数
+        r = client.post(
+            "/api/auth/captcha/verify",
+            json={"id": q3["id"], "x": ans3 + 3, "duration_ms": 780, "trail": _human_trail(ans3 + 3)},
+            headers=ua_main,
+        )
         assert r.status_code == 200, r.text
         ticket = r.json()["captcha_token"]
+        assert client.get("/api/auth/captcha", headers=ua_main).json()["escalated"] is False
 
-        # 不带票据登录 → 400「请先完成滑块验证」
-        r = client.post("/api/auth/login", json={"username": "zhouqi", "password": "123456", "hotel_id": 1})
+        # 7. 不带票据登录 → 400「请先完成滑块验证」
+        r = client.post("/api/auth/login", json={"username": "zhouqi", "password": "123456"}, headers=ua_main)
         assert r.status_code == 400, r.text
         assert "滑块验证" in r.json()["detail"]
 
-        # 带票据登录 → 200，且返回 refresh_token / expires_in
-        r = client.post("/api/auth/login", json={
-            "username": "zhouqi", "password": "123456", "hotel_id": 1, "captcha_token": ticket,
-        })
-        assert r.status_code == 200, r.text
-        assert r.json()["refresh_token"]
-        assert r.json()["expires_in"] > 0
-
-        # 票据一次性：再用一次就失效
-        r = client.post("/api/auth/login", json={
-            "username": "zhouqi", "password": "123456", "hotel_id": 1, "captcha_token": ticket,
-        })
+        # 8. 跨客户端指纹（不同 UA）中继重放票据 → 400 且票据作废
+        r = client.post(
+            "/api/auth/login",
+            json={"username": "zhouqi", "password": "123456", "captcha_token": ticket},
+            headers=ua_other,
+        )
         assert r.status_code == 400, r.text
+
+        # 9. 同客户端正常验证 + 登录 → 200；票据一次性复用 → 400
+        q4 = client.get("/api/auth/captcha", headers=ua_main).json()
+        captcha._challenges[q4["id"]]["created"] -= 2.0
+        ans4 = captcha._challenges[q4["id"]]["x"]
+        ticket2 = client.post(
+            "/api/auth/captcha/verify",
+            json={"id": q4["id"], "x": ans4, "duration_ms": 780, "trail": _human_trail(ans4)},
+            headers=ua_main,
+        ).json()["captcha_token"]
+
+        r = client.post(
+            "/api/auth/login",
+            json={"username": "zhouqi", "password": "123456", "captcha_token": ticket2},
+            headers=ua_main,
+        )
+        assert r.status_code == 200, r.text
+        assert r.json()["refresh_token"] and r.json()["expires_in"] > 0
+
+        r = client.post(
+            "/api/auth/login",
+            json={"username": "zhouqi", "password": "123456", "captcha_token": ticket2},
+            headers=ua_main,
+        )
+        assert r.status_code == 400, r.text
+
+        # 10. /captcha/verify 独立限流（每分钟 20 次）→ 超限返回 429
+        _captcha_verify_hits.clear()
+        for _ in range(20):
+            rr = client.post("/api/auth/captcha/verify", json={"id": "bad", "x": 10}, headers=ua_main)
+            assert rr.status_code == 400
+        rr = client.post("/api/auth/captcha/verify", json={"id": "bad", "x": 10}, headers=ua_main)
+        assert rr.status_code == 429
     finally:
         captcha.set_enabled(False)
+        captcha.reset_state()
         _login_attempts.clear()
         _captcha_hits.clear()
+        _captcha_verify_hits.clear()
 
 
 def test_refresh_rotation_and_logout():

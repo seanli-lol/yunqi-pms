@@ -1,8 +1,9 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Monitor, Moon, Sun } from 'lucide-react'
+import { api } from '../api'
 import { useAuth } from '../auth'
-import { SliderCaptcha } from '../captcha'
+import { CaptchaModal } from '../captcha'
 import { useTheme, type ThemeMode } from '../theme'
 import { useToast } from '../ui'
 
@@ -18,10 +19,9 @@ export default function Login() {
   const [password, setPassword] = useState('123456')
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState('')
-  // 滑块验证码：captchaEnabled 由组件回报（后端可关闭），captchaToken 通过后一次性票据
+  // 滑块验证码：挂载时轻量探测是否开启；开启时点击「登录」弹出安全验证浮层，滑过自动完成登录
   const [captchaEnabled, setCaptchaEnabled] = useState(true)
-  const [captchaToken, setCaptchaToken] = useState<string | null>(null)
-  const [captchaKey, setCaptchaKey] = useState(0)
+  const [captchaOpen, setCaptchaOpen] = useState(false)
   // 主题：登录页无侧栏，用右上角浮动圆钮三态循环（与设计稿 login.html 一致）
   const { mode: themeMode, setMode: setThemeMode } = useTheme()
   const ThemeIcon = THEME_ICON[themeMode]
@@ -29,25 +29,43 @@ export default function Login() {
     setThemeMode(THEME_ORDER[(THEME_ORDER.indexOf(themeMode) + 1) % THEME_ORDER.length])
   }
 
-  const submit = async () => {
-    if (captchaEnabled && !captchaToken) {
-      setErr('请先完成滑块验证')
-      return
-    }
+  useEffect(() => {
+    let alive = true
+    api.get('/api/auth/captcha/config', { skipHotel: true })
+      .then((r) => {
+        if (alive && typeof r?.enabled === 'boolean') setCaptchaEnabled(r.enabled)
+      })
+      .catch(() => { /* 默认按开启处理，避免漏弹验证 */ })
+    return () => { alive = false }
+  }, [])
+
+  const doLogin = async (captchaToken: string | null) => {
+    setCaptchaOpen(false)
     setBusy(true)
     setErr('')
     try {
       // 账号密码直登：员工默认进主店，绑定多店的账号在顶栏切换（不再选店，无管理员入口）
-      await login(username, password, captchaToken)
+      await login(username, password, captchaToken || null)
       toast('登录成功')
       setTimeout(() => nav('/'), 400)
     } catch (e: any) {
       setErr(e.message ?? '登录失败')
       setBusy(false)
-      // 票据一次性：失败后必须重新滑动
-      setCaptchaToken(null)
-      setCaptchaKey(k => k + 1)
     }
+  }
+
+  const submit = () => {
+    if (busy) return
+    if (!username.trim() || !password) {
+      setErr('请输入账号和密码')
+      return
+    }
+    setErr('')
+    if (captchaEnabled) {
+      setCaptchaOpen(true)
+      return
+    }
+    void doLogin(null)
   }
 
   return (
@@ -76,14 +94,9 @@ export default function Login() {
             <label className="label">密码</label>
             <input className="input" type="password" value={password} onChange={e => setPassword(e.target.value)} autoComplete="current-password" />
           </div>
-          <SliderCaptcha
-            resetKey={captchaKey}
-            onVerified={setCaptchaToken}
-            onEnabled={setCaptchaEnabled}
-          />
           {err && <p className="hint warn" style={{ marginBottom: 12 }}>{err}</p>}
-          <button className="btn btn-primary btn-lg btn-block" type="submit" disabled={busy || (captchaEnabled && !captchaToken)}>
-            {busy ? '登录中…' : captchaEnabled && !captchaToken ? '请先完成滑块验证' : '登录'}
+          <button className="btn btn-primary btn-lg btn-block" type="submit" disabled={busy} style={{ marginTop: 6 }}>
+            {busy ? '登录中…' : '登录'}
           </button>
         </form>
 
@@ -93,6 +106,12 @@ export default function Login() {
           </p>
         )}
       </main>
+
+      <CaptchaModal
+        open={captchaOpen}
+        onClose={() => setCaptchaOpen(false)}
+        onVerified={(token) => { void doLogin(token) }}
+      />
     </div>
   )
 }
