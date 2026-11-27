@@ -242,7 +242,7 @@ class OtaAlert(Base):
     hotel_id: Mapped[int] = mapped_column(ForeignKey("hotels.id"), index=True)
     channel_id: Mapped[int | None] = mapped_column(ForeignKey("channels.id"), nullable=True)
     external_ref: Mapped[str] = mapped_column(String(64), default="")  # 渠道单号（不含 #间序号）
-    kind: Mapped[str] = mapped_column(String(20))  # no_room / cancel_manual / unmapped / sync_error
+    kind: Mapped[str] = mapped_column(String(20))  # no_room / cancel_manual / modify_manual / unmapped / sync_error
     title: Mapped[str] = mapped_column(String(120), default="")
     detail: Mapped[str] = mapped_column(String(500), default="")
     created_at: Mapped[datetime] = mapped_column(DateTimeMS, default=datetime.now)

@@ -387,6 +387,22 @@ class OtaCancelBody(BaseModel):
     external_ref: str
 
 
+class OtaModifyBody(BaseModel):
+    """渠道改签：按新的住期 / 房型 / 间数 / 结算价原地更新已登记的预订。
+
+    new_external_ref：改签生成了新单号时填新单号，预订改挂到新单号；同单号改期留空"""
+    channel_id: int
+    external_ref: str                 # 当前登记在 PMS 的渠道单号
+    new_external_ref: str = ""
+    room_type_id: int
+    room_count: int = 1
+    check_in: date
+    check_out: date
+    stay_type: Literal["normal", "hourly"] = "normal"
+    hours: int = 0
+    settle_total: Money
+
+
 class OtaGuestBody(BaseModel):
     """更正渠道订单的客人姓名：建单时渠道只给了打码名（刘*），之后读到全名再补"""
     channel_id: int
