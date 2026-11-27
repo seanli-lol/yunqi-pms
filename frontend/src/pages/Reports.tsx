@@ -5,6 +5,7 @@ import {
   ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from 'recharts'
 import { api, fmtMoney, todayIso } from '../api'
+import { DateRangeInput, DateRangePopover, useDateRangePicker } from '../datePicker'
 import { PageHead, Segmented, Spinner, useToast } from '../ui'
 
 type Preset = '1' | '3' | '7' | '30' | 'month' | 'custom'
@@ -38,6 +39,23 @@ export default function Reports() {
   const [cFrom, setCFrom] = useState(shiftDays(today, -29))
   const [cTo, setCTo] = useState(today)
   const [applied, setApplied] = useState<{ from: string; to: string }>({ from: shiftDays(today, -29), to: today })
+
+  const rangePicker = useDateRangePicker({
+    start: cFrom,
+    end: cTo,
+    onStartChange: (v) => setCFrom(v),
+    onEndChange: (v) => setCTo(v),
+    // 选完第二个日期后直接自动应用自定义时间范围
+    onComplete: (from, to) => {
+      if (from <= to) {
+        setApplied({ from, to })
+        toast('已应用自定义时间范围')
+      }
+    },
+    allowSameDay: true,
+    startLabel: '开始日期',
+    endLabel: '结束日期',
+  })
 
   const range = (() => {
     if (preset === '1') return { from: today, to: today, label: `统计周期：今天（${today}）` }
@@ -88,14 +106,14 @@ export default function Reports() {
 
       {preset === 'custom' && (
         <div className="card card-pad mb-24">
-          <div className="day-pick" style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+          <div className="day-pick" style={{ display: 'flex', alignItems: 'flex-end', gap: 10, flexWrap: 'wrap' }}>
             <div>
               <div className="label" style={{ marginBottom: 6 }}>开始日期</div>
-              <input className="input" type="date" value={cFrom} onChange={e => setCFrom(e.target.value)} />
+              <DateRangeInput ctrl={rangePicker} side="start" />
             </div>
             <div>
               <div className="label" style={{ marginBottom: 6 }}>结束日期</div>
-              <input className="input" type="date" value={cTo} onChange={e => setCTo(e.target.value)} />
+              <DateRangeInput ctrl={rangePicker} side="end" />
             </div>
             <button
               className="btn btn-primary"
@@ -106,6 +124,7 @@ export default function Reports() {
               }}
             >应用</button>
           </div>
+          <DateRangePopover ctrl={rangePicker} />
         </div>
       )}
 

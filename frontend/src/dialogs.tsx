@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { api, addDaysIso, fmtMoney, md, moneyInputText, round2, usePayMethods, type Channel, type Reservation, type Room } from './api'
 import { Dialog, Drawer, Field } from './ui'
+import { DateRangeInput, DateRangePopover, diffDaysIso, shiftIso, useDateRangePicker } from './datePicker'
 import { GuestNameInput } from './GuestNameInput'
 
 /** 入住选房：放宽后可用（脏房/前客未退）与不可用（维修）的标记 */
@@ -280,6 +281,38 @@ export function EditBookingDialog({ res, channels, busy, onClose, onConfirm }: {
     if (v) setNightsText(String(Math.max(1, Math.round(Number(nightsText) || 1))))
   }
 
+  const checkOut = addDaysIso(checkIn, nights)
+  const datePicker = useDateRangePicker({
+    start: checkIn,
+    end: checkOut,
+    onStartChange: (v, keepEnd) => {
+      if (keepEnd) {
+        setCheckIn(v)
+        const n = Math.max(1, diffDaysIso(v, checkOut))
+        onNightsChange(String(n))
+      } else {
+        onCheckInChange(v)
+      }
+    },
+    onEndChange: (v) => {
+      const n = diffDaysIso(checkIn, v)
+      if (n >= 1) {
+        onNightsChange(String(n))
+      } else {
+        setCheckIn(shiftIso(v, -1))
+        onNightsChange('1')
+      }
+    },
+    allowSameDay: false,
+    endDisabled: hourly,
+    startLabel: '入住日期',
+    endLabel: '离店日期',
+  })
+
+  useEffect(() => {
+    if (!open) datePicker.close()
+  }, [open, datePicker.close])
+
   const submit = () => {
     if (!name.trim()) return
     onConfirm({
@@ -304,10 +337,10 @@ export function EditBookingDialog({ res, channels, busy, onClose, onConfirm }: {
       </div>
       <div className="form-row">
         <Field label="入住日期" required>
-          <input className="input" type="date" value={checkIn} onChange={e => onCheckInChange(e.target.value)} />
+          <DateRangeInput ctrl={datePicker} side="start" />
         </Field>
         {!hourly ? (
-          <Field label="入住天数" required hint={`离店日 ${md(addDaysIso(checkIn, nights))}；所选时段被占用时保存会被拦截。`}>
+          <Field label="入住天数" required hint={`离店日 ${md(checkOut)}；所选时段被占用时保存会被拦截。`}>
             <input className="input" inputMode="numeric" value={nightsText} onChange={e => onNightsChange(e.target.value)} />
           </Field>
         ) : (
@@ -319,12 +352,7 @@ export function EditBookingDialog({ res, channels, busy, onClose, onConfirm }: {
       {!hourly && (
         <div className="form-row">
           <Field label="离店日期" required>
-            <input className="input" type="date"
-                   value={addDaysIso(checkIn, nights)}
-                   onChange={e => {
-                     const n = Math.round((new Date(e.target.value).getTime() - new Date(checkIn).getTime()) / 86400000)
-                     if (n >= 1) onNightsChange(String(n))
-                   }} />
+            <DateRangeInput ctrl={datePicker} side="end" />
           </Field>
           <Field
             label="房价总额（整单，元）"
@@ -337,6 +365,7 @@ export function EditBookingDialog({ res, channels, busy, onClose, onConfirm }: {
           </Field>
         </div>
       )}
+      <DateRangePopover ctrl={datePicker} />
       {hourly && (
         <Field
           label="房价总额（整单，元）"

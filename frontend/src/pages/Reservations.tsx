@@ -7,6 +7,7 @@ import {
   type Channel, type Reservation, type RoomType,
 } from '../api'
 import { ConfirmDialog, Dialog, Field, PageHead, Segmented, Spinner, useToast, RES_STATUS_BADGE } from '../ui'
+import { DateRangeInput, DateRangePopover, diffDaysIso, shiftIso, useDateRangePicker } from '../datePicker'
 import { AddPaymentDialog, EditBookingDialog } from '../dialogs'
 import { GuestNameInput } from '../GuestNameInput'
 
@@ -331,15 +332,45 @@ function NewReservationDialog({ open, onClose, channels, types, onSubmit, onDone
     setTotalText(String(round2(n * u)))
     setTotalTouched(true)
   }
-  /** 改离店日期：反推天数 */
+  /** 改离店日期：反推天数；若所选离店日不晚于入住日，自动将入住日回推 1 天 */
   const onCoutChange = (value: string) => {
     setCout(value)
-    const n = Math.max(1, Math.round((new Date(value).getTime() - new Date(cin).getTime()) / 86400000) || 1)
+    const diff = diffDaysIso(cin, value)
+    if (diff < 1) {
+      setCin(shiftIso(value, -1))
+    }
+    const n = Math.max(1, diff)
     setNightsText(String(n))
     const u = (units > 0 ? round2(total / units) : 0) || (type?.base_price ?? 0)
     setTotalText(String(round2(n * u)))
     setTotalTouched(true)
   }
+
+  const datePicker = useDateRangePicker({
+    start: cin,
+    end: cout,
+    onStartChange: (v, keepEnd) => {
+      setCin(v)
+      if (keepEnd) {
+        const n = Math.max(1, diffDaysIso(v, cout))
+        setNightsText(String(n))
+        const u = (units > 0 ? round2(total / units) : 0) || (type?.base_price ?? 0)
+        setTotalText(String(round2(n * u)))
+        setTotalTouched(true)
+      } else {
+        setCout(addDaysIso(v, nights))
+      }
+    },
+    onEndChange: onCoutChange,
+    allowSameDay: false,
+    endDisabled: stayType === 'hourly',
+    startLabel: '入住日期',
+    endLabel: '离店日期',
+  })
+
+  useEffect(() => {
+    if (!open) datePicker.close()
+  }, [open, datePicker.close])
 
   const submit = () => {
     if (!name.trim()) { toast('请输入客人姓名'); return }
@@ -414,7 +445,7 @@ function NewReservationDialog({ open, onClose, channels, types, onSubmit, onDone
       )}
       <div className="form-row">
         <Field label="入住日期" required>
-          <input className="input" type="date" value={cin} onChange={e => { setCin(e.target.value); setCout(addDaysIso(e.target.value, nights)) }} />
+          <DateRangeInput ctrl={datePicker} side="start" />
         </Field>
         <Field label="入住天数" required>
           <input className="input" inputMode="numeric" value={nightsText} onChange={e => onNightsChange(e.target.value)} />
@@ -422,7 +453,7 @@ function NewReservationDialog({ open, onClose, channels, types, onSubmit, onDone
       </div>
       <div className="form-row">
         <Field label="离店日期" required>
-          <input className="input" type="date" value={cout} onChange={e => onCoutChange(e.target.value)} disabled={stayType === 'hourly'} />
+          <DateRangeInput ctrl={datePicker} side="end" />
         </Field>
         <Field
           label="协议总价（整单，元）"
@@ -434,6 +465,7 @@ function NewReservationDialog({ open, onClose, channels, types, onSubmit, onDone
           />
         </Field>
       </div>
+      <DateRangePopover ctrl={datePicker} />
       <p className="hint">
         {stayType === 'hourly' && hourlyAvail
           ? `钟点房费 ${fmtMoney(finalTotal)}（${hours} 小时 × ${fmtMoney(unitPrice)}）`
