@@ -1,0 +1,15 @@
+{
+    # 仅监听自定义 HTTPS 端口，不占用 80/443
+    auto_https disable_redirects
+}
+
+https://{$PMS_DOMAIN}:{$PMS_PORT:8081} {
+    tls {
+        dns cloudflare {env.CF_API_TOKEN}
+        resolvers 223.5.5.5 1.1.1.1
+    }
+
+    reverse_proxy frontend:80 {
+        header_up CF-Connecting-IP {remote_host}
+    }
+}

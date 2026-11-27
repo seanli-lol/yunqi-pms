@@ -1,0 +1,35 @@
+# 云栖 PMS · 国内直连 HTTPS 叠加编排（Caddy + Cloudflare DNS-01 自动证书，无需开放 80/443）
+#
+#   启动：docker compose -f docker-compose.yml -f docker-compose.tls.yml up -d --build
+#   访问：https://<PMS_DOMAIN>:<PMS_PORT>
+#   需在同目录 .env 中增加：
+#     PMS_DOMAIN=pms.example.com
+#     CF_API_TOKEN=<Cloudflare API 令牌（权限：区域 -> DNS -> 编辑）>
+
+services:
+  frontend:
+    # 对外端口交由 caddy 接管提供 HTTPS，frontend 仅保留 compose 内网 80
+    ports: !reset []
+
+  caddy:
+    build:
+      context: ./caddy
+    container_name: pms-caddy
+    restart: unless-stopped
+    ports:
+      - "${PMS_PORT:-8081}:${PMS_PORT:-8081}"
+    environment:
+      PMS_DOMAIN: ${PMS_DOMAIN}
+      PMS_PORT: ${PMS_PORT:-8081}
+      CF_API_TOKEN: ${CF_API_TOKEN}
+      TZ: Asia/Shanghai
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - frontend
+
+volumes:
+  caddy-data:
+  caddy-config:
