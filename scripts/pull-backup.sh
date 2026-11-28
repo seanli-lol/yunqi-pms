@@ -11,25 +11,39 @@
 #   手动   ./scripts/pull-backup.sh
 #   定时   由 launchd 调起（见 ~/Library/LaunchAgents/com.yunqi.pms.backup-pull.plist）
 #
-# 可调环境变量：
+# 可调环境变量（优先读取命令行环境变量，其次加载本机 scripts/.pull-backup.env，不入库）：
 #   PULL_DEST   本地存放目录（默认 <仓库根>/backups，已被 .gitignore 忽略）
 #   KEEP_DAYS   本地保留天数（默认 30 天，比服务器 14 天更久——异地留底要长一些）
-#   SSH_KEY / SSH_PORT / SSH_USER / SSH_HOST  连接参数
+#   SSH_KEY / SSH_PORT / SSH_USER / SSH_HOST / REMOTE_DIR  连接参数
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
+# 如存在本机私有配置（已加入 .gitignore），按需补齐未显式传入的变量
+if [ -f "$SCRIPT_DIR/.pull-backup.env" ]; then
+  while IFS='=' read -r k v; do
+    [[ -z "$k" || "$k" == \#* ]] && continue
+    k="$(printf '%s' "$k" | tr -d '[:space:]')"
+    v="${v%$'\r'}"
+    v="${v#\"}" ; v="${v%\"}"
+    v="${v#\'}" ; v="${v%\'}"
+    [ -z "${!k:-}" ] && export "$k=$v"
+  done < "$SCRIPT_DIR/.pull-backup.env"
+fi
+
 SSH_KEY="${SSH_KEY:-$HOME/.ssh/pms_deploy}"
 SSH_PORT="${SSH_PORT:-22}"
 SSH_USER="${SSH_USER:-deploy}"
-SSH_HOST="${SSH_HOST:-YOUR_SERVER_IP}"
-REMOTE_DIR="${REMOTE_DIR:-/home/deploy/backups}"
+SSH_HOST="${SSH_HOST:-}"
+REMOTE_DIR="${REMOTE_DIR:-/home/$SSH_USER/backups}"
 PULL_DEST="${PULL_DEST:-$REPO_DIR/backups}"
 KEEP_DAYS="${KEEP_DAYS:-30}"
 
 log() { printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"; }
 die() { log "ERROR: $*"; exit 1; }
+
+[ -n "$SSH_HOST" ] && [ "$SSH_HOST" != "YOUR_SERVER_IP" ] || die "未配置 SSH_HOST，请创建 scripts/.pull-backup.env 或通过环境变量传入"
 
 mkdir -p "$PULL_DEST"
 

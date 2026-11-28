@@ -86,9 +86,9 @@ launchctl unload ~/Library/LaunchAgents/com.yunqi.pms.backup-pull.plist
 
 ## 可调参数
 
-`backup.sh`：`BACKUP_DIR`（默认 `/home/deploy/backups`）、`KEEP_DAYS`（默认 14）、`BACKUP_PREFIX`
+`backup.sh`：`BACKUP_DIR`（默认 `$HOME/backups`）、`KEEP_DAYS`（默认 14）、`BACKUP_PREFIX`
 `pull-backup.sh`：`PULL_DEST`（默认 `<仓库根>/backups`，已被 `.gitignore` 忽略）、`KEEP_DAYS`（默认 30）、
-`SSH_KEY`/`SSH_PORT`/`SSH_USER`/`SSH_HOST`
+`SSH_KEY`/`SSH_PORT`/`SSH_USER`/`SSH_HOST`/`REMOTE_DIR`（建议写入本机 `scripts/.pull-backup.env`，已被 `.gitignore` 忽略）
 
 > 本机备份落在项目根目录的 `backups/` 下（不再放用户家目录），在项目里直接就能找到；
 > `.gitignore` 已忽略 `backups/`、`*.sql.gz`、`*.summary.txt`，备份文件**永远不会被 git 追踪**。

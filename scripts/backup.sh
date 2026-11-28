@@ -5,10 +5,10 @@
 #         $BACKUP_DIR，并按保留策略清理过期文件；失败时保留现场并返回非 0。
 # 怎么用：
 #   手动         ./scripts/backup.sh
-#   定时（cron） 0 3 * * * /path/to/repo/scripts/backup.sh >> /home/deploy/backups/backup.log 2>&1
+#   定时（cron） 0 3 * * * /path/to/repo/scripts/backup.sh >> "$HOME/backups/backup.log" 2>&1
 #
 # 可调环境变量（都有默认值）：
-#   BACKUP_DIR     备份目录（默认 /home/deploy/backups）
+#   BACKUP_DIR     备份目录（默认 $HOME/backups）
 #   KEEP_DAYS      保留天数（默认 14 天；每天一份，够回滚两周）
 #   BACKUP_PREFIX  文件名前缀（默认 pms）
 #   COMPOSE_FILE   compose 文件路径（默认仓库根的 docker-compose.yml）
@@ -21,7 +21,7 @@
 #     —— 一个 0 字节的"备份"比没有备份更危险，它会让人以为有退路。
 set -euo pipefail
 
-BACKUP_DIR="${BACKUP_DIR:-/home/deploy/backups}"
+BACKUP_DIR="${BACKUP_DIR:-$HOME/backups}"
 KEEP_DAYS="${KEEP_DAYS:-14}"
 BACKUP_PREFIX="${BACKUP_PREFIX:-pms}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
