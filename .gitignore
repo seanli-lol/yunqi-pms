@@ -46,6 +46,8 @@ backups/
 *.sql.gz
 *.summary.txt
 
-# 美团插件录制数据（含客人姓名/电话，绝不入库）
-extensions/meituan-sync/captures/
+# 本地 OTA 浏览器插件及对接设计文档（仅本机使用，绝不入库）
+extensions/
+docs/meituan-sync-design.md
+docs/ctrip-sync-design.md
 frontend/tsconfig.tsbuildinfo

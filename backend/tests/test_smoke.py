@@ -2264,6 +2264,15 @@ def test_ota_order_sync():
     assert r.status_code == 200 and r.json()["resolved_at"] and r.json()["resolved_by_name"]
     assert all(a["external_ref"] != "900005" for a in client.get("/api/ota/alerts", headers=h).json())
 
+    # 多渠道隔离：携程渠道用与美团相同的 external_ref 独立建单，互不串单，取消互不影响
+    ctrip = next(c for c in client.get("/api/channels", headers=h).json() if c["name"] == "携程")
+    ct_body = {**body, "channel_id": ctrip["id"], "guest_name": "携程测试客", "settle_total": 318.5}
+    r = client.post("/api/ota/orders", headers=h, json=ct_body)
+    assert r.status_code == 200, r.text
+    ct_res = r.json()["created"][0]
+    assert ct_res["id"] != res["id"] and ct_res["channel_id"] == ctrip["id"]
+    assert ct_res["room_charge_total"] == 318.5 and "携程单号 5044043434093207958" in ct_res["notes"]
+
     # 跨店隔离：别店账号看不到、也处理不了本店提醒
     other = _headers(_login("xumin")["token"])
     assert all(a["id"] != alert["id"] for a in client.get("/api/ota/alerts", headers=other).json())
@@ -2273,6 +2282,10 @@ def test_ota_order_sync():
     client.post(f"/api/reservations/{tr['id']}/undo-check-in", headers=h)
     for ref in ("900004", "5044043434093207958", "900001"):
         client.post("/api/ota/orders/cancel", headers=h, json={"channel_id": meituan["id"], "external_ref": ref})
+    # 美团同单号取消不影响携程单，再单独取消携程单
+    assert client.get(f"/api/reservations/{ct_res['id']}", headers=h).json()["status"] == "confirmed"
+    r = client.post("/api/ota/orders/cancel", headers=h, json={"channel_id": ctrip["id"], "external_ref": "5044043434093207958"})
+    assert r.status_code == 200 and r.json()["cancelled"] == [ct_res["code"]]
 
 
 def test_ota_guest_name_fix():
